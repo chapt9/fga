@@ -87,6 +87,10 @@ type Request struct {
 	Actions        []string
 	// Now is captured once per batch by the caller (POL-008).
 	Now time.Time
+	// Operation holds the operation facts the adapter validated against
+	// its schema, such as a tool's arguments. They are bound to the
+	// operation digest and visible to conditions as request.operation.
+	Operation map[string]any
 }
 
 // ActionResult is the engine's result for one requested action.

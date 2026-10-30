@@ -249,7 +249,7 @@ func activation(req policy.Request) map[string]any {
 			"scope":      req.Resource.Scope,
 			"attributes": orEmptyMap(req.Resource.Attributes),
 		},
-		"request": map[string]any{"now": req.Now},
+		"request": map[string]any{"now": req.Now, "operation": orEmptyMap(req.Operation)},
 	}
 }
 

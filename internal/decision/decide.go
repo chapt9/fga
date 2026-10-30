@@ -113,6 +113,8 @@ type Batch struct {
 	Envelope       Envelope
 	SnapshotDigest string
 	Checks         []Check
+	// Operation holds the validated operation facts shared by every check.
+	Operation map[string]any
 }
 
 // CheckResult reports one check. The business and ceiling effects are kept
@@ -244,11 +246,11 @@ func (d *Decider) decideCheck(ctx context.Context, b Batch, principal policy.Pri
 	if err := ctx.Err(); err != nil {
 		return CheckResult{}, err
 	}
-	ceiling, err := d.evaluate(ctx, policy.SetCeiling, b.SnapshotDigest, principal, c, now)
+	ceiling, err := d.evaluate(ctx, policy.SetCeiling, b, principal, c, now)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	business, err := d.evaluate(ctx, policy.SetBusiness, b.SnapshotDigest, principal, c, now)
+	business, err := d.evaluate(ctx, policy.SetBusiness, b, principal, c, now)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -273,9 +275,10 @@ func requiresOf(effect CheckEffect, business policy.ActionResult) []string {
 
 // evaluate returns the result for the check's action. An action the engine
 // did not answer gets the zero ActionResult, whose effect is EffectUnknown.
-func (d *Decider) evaluate(ctx context.Context, set policy.Set, snapshot string, principal policy.Principal, c Check, now time.Time) (policy.ActionResult, error) {
+func (d *Decider) evaluate(ctx context.Context, set policy.Set, b Batch, principal policy.Principal, c Check, now time.Time) (policy.ActionResult, error) {
 	res, err := d.evaluator.Evaluate(ctx, policy.Request{
-		SnapshotDigest: snapshot,
+		SnapshotDigest: b.SnapshotDigest,
+		Operation:      b.Operation,
 		Set:            set,
 		Principal:      principal,
 		Resource:       c.Resource,

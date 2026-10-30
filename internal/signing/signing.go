@@ -58,21 +58,28 @@ type Check struct {
 
 // Record is the signed content of an allowed decision.
 type Record struct {
-	Version             string    `json:"version"`
-	DecisionID          string    `json:"decision_id"`
-	Audience            string    `json:"audience"`
-	Tenant              string    `json:"tenant"`
-	Actor               Ref       `json:"actor"`
-	Subject             Ref       `json:"subject"`
-	Delegation          string    `json:"delegation"`
-	DelegationRevisions []uint64  `json:"delegation_revisions"`
-	OperationDigest     string    `json:"operation_digest"`
-	Checks              []Check   `json:"checks"`
-	BundleDigest        string    `json:"bundle_digest"`
-	PolicyEpoch         uint64    `json:"policy_epoch"`
-	SingleUse           bool      `json:"single_use"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ValidUntil          time.Time `json:"valid_until"`
+	Version             string   `json:"version"`
+	DecisionID          string   `json:"decision_id"`
+	Audience            string   `json:"audience"`
+	Tenant              string   `json:"tenant"`
+	Actor               Ref      `json:"actor"`
+	Subject             Ref      `json:"subject"`
+	Delegation          string   `json:"delegation"`
+	DelegationRevisions []uint64 `json:"delegation_revisions"`
+	OperationDigest     string   `json:"operation_digest"`
+	Checks              []Check  `json:"checks"`
+	BundleDigest        string   `json:"bundle_digest"`
+	PolicyEpoch         uint64   `json:"policy_epoch"`
+	SingleUse           bool     `json:"single_use"`
+	// Adapter is the executor that presented the request; delegation
+	// rechecks need it (DLG-001).
+	Adapter string `json:"adapter"`
+	// ApprovalID and InvocationID name the satisfied prerequisites the
+	// decision relied on (DEC-002).
+	ApprovalID   string    `json:"approval_id"`
+	InvocationID string    `json:"invocation_id"`
+	IssuedAt     time.Time `json:"issued_at"`
+	ValidUntil   time.Time `json:"valid_until"`
 }
 
 // Signed is a record's exact bytes and its detached compact JWS.
@@ -154,6 +161,30 @@ func NewVerifier(audience string, keys func() map[string]Key, consumption Consum
 // Verify checks the signature, key, record, audience and validity, and
 // consumes a single-use decision. It returns the record only if all hold.
 func (v *Verifier) Verify(ctx context.Context, s Signed) (Record, error) {
+	rec, err := v.check(s, true)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.SingleUse {
+		first, err := v.consumption.Consume(ctx, rec.DecisionID, rec.ValidUntil)
+		if err != nil {
+			return Record{}, fmt.Errorf("signing: record consumption: %w", err)
+		}
+		if !first {
+			return Record{}, ErrReplayed
+		}
+	}
+	return rec, nil
+}
+
+// Inspect checks a decision's signature, key, record and validity for any
+// audience and consumes nothing. The decision role uses it to recheck its
+// own decisions for the roles that will act on them.
+func (v *Verifier) Inspect(s Signed) (Record, error) {
+	return v.check(s, false)
+}
+
+func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 	obj, err := jose.ParseDetached(s.JWS, s.Payload, []jose.SignatureAlgorithm{jose.EdDSA})
 	if err != nil || len(obj.Signatures) != 1 {
 		return Record{}, ErrSignature
@@ -177,21 +208,12 @@ func (v *Verifier) Verify(ctx context.Context, s Signed) (Record, error) {
 	switch {
 	case rec.IssuedAt.Before(key.NotBefore) || !rec.IssuedAt.Before(key.NotAfter):
 		return Record{}, ErrKeyValidity
-	case rec.Audience != v.audience:
+	case matchAudience && rec.Audience != v.audience:
 		return Record{}, ErrAudience
 	case rec.IssuedAt.After(now.Add(MaxClockSkew)):
 		return Record{}, ErrNotYetValid
 	case !now.Before(rec.ValidUntil):
 		return Record{}, ErrExpired
-	}
-	if rec.SingleUse {
-		first, err := v.consumption.Consume(ctx, rec.DecisionID, rec.ValidUntil)
-		if err != nil {
-			return Record{}, fmt.Errorf("signing: record consumption: %w", err)
-		}
-		if !first {
-			return Record{}, ErrReplayed
-		}
 	}
 	return rec, nil
 }
