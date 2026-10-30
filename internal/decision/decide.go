@@ -74,12 +74,31 @@ type Check struct {
 	Resource policy.Resource
 }
 
+// Ref names an identity at the revision the request was built from.
+type Ref struct {
+	ID       string
+	Revision uint64
+}
+
+// Envelope is the authority a batch is evaluated under. The gate validates
+// it before any policy runs (POL-003 step 1).
+type Envelope struct {
+	Tenant string
+	// Adapter is the executor presenting the batch; a delegation must name it
+	// as its audience (DLG-001).
+	Adapter string
+	Actor   Ref
+	// Subject and Delegation are empty when the actor acts for itself.
+	Subject    Ref
+	Delegation string
+}
+
 // Batch is a set of checks evaluated under one authority envelope and one
 // policy snapshot (DEC-004). A compound operation is one batch and is allowed
 // only if every check is allowed (RES-006).
 type Batch struct {
+	Envelope       Envelope
 	SnapshotDigest string
-	Principal      policy.Principal
 	Checks         []Check
 }
 
@@ -110,10 +129,11 @@ type Rejection struct {
 func (r *Rejection) Error() string { return "rejected: " + string(r.Reason) }
 
 // Gate validates the execution envelope (identity, tenant binding,
-// delegation, freshness, required epoch) before policy evaluation (POL-003
-// step 1).
+// delegation, freshness) before policy evaluation (POL-003 step 1) and
+// returns the business principal built from authoritative state. A batch
+// never supplies its own principal, roles or attributes (ID-002).
 type Gate interface {
-	Admit(ctx context.Context, b Batch) error
+	Admit(ctx context.Context, b Batch) (policy.Principal, error)
 }
 
 // Decider decides batches.
@@ -142,7 +162,8 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 	if reason := malformed(b); reason != "" {
 		return Decision{Outcome: OutcomeDeny, Reason: reason, Results: results}
 	}
-	if err := d.gate.Admit(ctx, b); err != nil {
+	principal, err := d.gate.Admit(ctx, b)
+	if err != nil {
 		var rejection *Rejection
 		if errors.As(err, &rejection) {
 			return Decision{Outcome: OutcomeDeny, Reason: rejection.Reason, Results: results}
@@ -153,7 +174,7 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 	now := d.now()
 	decision := Decision{Outcome: OutcomeAllow, Results: results}
 	for i, c := range b.Checks {
-		result, err := d.decideCheck(ctx, b, c, now)
+		result, err := d.decideCheck(ctx, b, principal, c, now)
 		if err != nil {
 			reason := ReasonEngineUnavailable
 			if ctx.Err() != nil {
@@ -188,15 +209,15 @@ func malformed(b Batch) Reason {
 // decideCheck evaluates the ceiling set and then the business set. Both are
 // always evaluated, so the ceiling result never depends on the business
 // result (POL-003 step 1b) and the response reports both effects.
-func (d *Decider) decideCheck(ctx context.Context, b Batch, c Check, now time.Time) (CheckResult, error) {
+func (d *Decider) decideCheck(ctx context.Context, b Batch, principal policy.Principal, c Check, now time.Time) (CheckResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CheckResult{}, err
 	}
-	ceiling, err := d.evaluate(ctx, policy.SetCeiling, b, c, now)
+	ceiling, err := d.evaluate(ctx, policy.SetCeiling, b.SnapshotDigest, principal, c, now)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	business, err := d.evaluate(ctx, policy.SetBusiness, b, c, now)
+	business, err := d.evaluate(ctx, policy.SetBusiness, b.SnapshotDigest, principal, c, now)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -212,11 +233,11 @@ func (d *Decider) decideCheck(ctx context.Context, b Batch, c Check, now time.Ti
 
 // evaluate returns the result for the check's action. An action the engine
 // did not answer gets the zero ActionResult, whose effect is EffectUnknown.
-func (d *Decider) evaluate(ctx context.Context, set policy.Set, b Batch, c Check, now time.Time) (policy.ActionResult, error) {
+func (d *Decider) evaluate(ctx context.Context, set policy.Set, snapshot string, principal policy.Principal, c Check, now time.Time) (policy.ActionResult, error) {
 	res, err := d.evaluator.Evaluate(ctx, policy.Request{
-		SnapshotDigest: b.SnapshotDigest,
+		SnapshotDigest: snapshot,
 		Set:            set,
-		Principal:      b.Principal,
+		Principal:      principal,
 		Resource:       c.Resource,
 		Actions:        []string{c.Action},
 		Now:            now,

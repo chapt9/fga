@@ -37,11 +37,13 @@ func (f *fakeEvaluator) Evaluate(_ context.Context, req policy.Request) (policy.
 	return out, nil
 }
 
-type gateFunc func(context.Context, Batch) error
+type gateFunc func(context.Context, Batch) (policy.Principal, error)
 
-func (g gateFunc) Admit(ctx context.Context, b Batch) error { return g(ctx, b) }
+func (g gateFunc) Admit(ctx context.Context, b Batch) (policy.Principal, error) { return g(ctx, b) }
 
-var admitAll = gateFunc(func(context.Context, Batch) error { return nil })
+var reviewer = policy.Principal{ID: "user-42", Roles: []string{"reviewer"}}
+
+var admitAll = gateFunc(func(context.Context, Batch) (policy.Principal, error) { return reviewer, nil })
 
 func fixedClock(t time.Time, reads *int) func() time.Time {
 	return func() time.Time {
@@ -61,7 +63,7 @@ func newDecider(t *testing.T, gate Gate, ev policy.Evaluator) *Decider {
 }
 
 func batch(actions ...string) Batch {
-	b := Batch{SnapshotDigest: "sha256:bundle", Principal: policy.Principal{ID: "user-42", Roles: []string{"reviewer"}}}
+	b := Batch{SnapshotDigest: "sha256:bundle"}
 	for i, a := range actions {
 		b.Checks = append(b.Checks, Check{ID: "c" + string(rune('1'+i)), Action: a, Resource: policy.Resource{Kind: "document_unit", ID: "u-1"}})
 	}
@@ -155,6 +157,9 @@ func TestBatchKeepsOrderAndOneClockRead(t *testing.T) {
 		t.Fatalf("evaluator called %d times, want 6 (ceiling and business per check)", len(ev.calls))
 	}
 	for _, c := range ev.calls {
+		if c.Principal.ID != reviewer.ID {
+			t.Errorf("request %v/%s evaluated principal %q, want the gate's principal", c.Set, c.Actions, c.Principal.ID)
+		}
 		if !c.Now.Equal(ev.calls[0].Now) || c.SnapshotDigest != "sha256:bundle" {
 			t.Errorf("request %v/%s uses time %v and snapshot %q; want one time and one snapshot per batch", c.Set, c.Actions, c.Now, c.SnapshotDigest)
 		}
@@ -185,11 +190,11 @@ func TestNothingIsAllowedWhenEvaluationStops(t *testing.T) {
 	}{
 		{"empty batch", context.Background(), admitAll, nil, Batch{}, OutcomeDeny, ReasonEmptyBatch, false},
 		{"duplicate check IDs", context.Background(), admitAll, nil, duplicate, OutcomeDeny, ReasonDuplicateCheckID, false},
-		{"gate rejection", context.Background(), gateFunc(func(context.Context, Batch) error {
-			return &Rejection{Reason: "DELEGATION_EXPIRED"}
+		{"gate rejection", context.Background(), gateFunc(func(context.Context, Batch) (policy.Principal, error) {
+			return policy.Principal{}, &Rejection{Reason: "DELEGATION_EXPIRED"}
 		}), nil, batch("read"), OutcomeDeny, "DELEGATION_EXPIRED", false},
-		{"gate failure", context.Background(), gateFunc(func(context.Context, Batch) error {
-			return errors.New("catalog unreachable")
+		{"gate failure", context.Background(), gateFunc(func(context.Context, Batch) (policy.Principal, error) {
+			return policy.Principal{}, errors.New("catalog unreachable")
 		}), nil, batch("read"), OutcomeError, ReasonGateUnavailable, false},
 		{"engine failure (V-015)", context.Background(), admitAll, errors.New("cost limit exceeded"), batch("read"), OutcomeError, ReasonEngineUnavailable, true},
 		{"cancelled request", cancelled, admitAll, nil, batch("read"), OutcomeError, ReasonCancelled, false},
