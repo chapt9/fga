@@ -88,3 +88,24 @@ func TestScopeChain(t *testing.T) {
 		}
 	}
 }
+
+func TestValidatePrerequisites(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit    func(*Document)
+		wantErr string
+	}{
+		"unknown prerequisite":        {func(d *Document) { d.Rules[0].Requires = []string{"blessing"} }, "unknown prerequisite"},
+		"prerequisite on a deny rule": {func(d *Document) { d.Rules[0].Effect, d.Rules[0].Requires = EffectDeny, []string{RequireApproval} }, "only business allow"},
+	} {
+		d, _ := Parse([]byte(validDoc))
+		tc.edit(&d)
+		if err := ValidateBundle([]Document{d}, schema); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: error = %v, want containing %q", name, err, tc.wantErr)
+		}
+	}
+	d, _ := Parse([]byte(validDoc))
+	d.Rules[0].Requires = []string{RequireApproval, RequireReservation}
+	if err := ValidateBundle([]Document{d}, schema); err != nil {
+		t.Errorf("an allow rule requiring approval and a reservation was rejected: %v", err)
+	}
+}

@@ -33,6 +33,13 @@ func (s Set) String() string {
 	}
 }
 
+// Prerequisites an allow can carry (APR-001). Their names match the policy
+// format's "requires" values.
+const (
+	RequireApproval    = "approval"
+	RequireReservation = "reservation"
+)
+
 // Effect is an engine's result for one action.
 type Effect int
 
@@ -88,6 +95,9 @@ type ActionResult struct {
 	// Errored reports that a rule able to affect the action failed to
 	// evaluate. The production profile denies such an action (POL-005).
 	Errored bool
+	// Requires lists the prerequisites of an allow, sorted and without
+	// duplicates: the union over every matching allow rule (APR-007).
+	Requires []string
 }
 
 // Result maps each requested action to its result. An action that is absent

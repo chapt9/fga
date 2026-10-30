@@ -3,6 +3,7 @@ package decision
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -234,5 +235,35 @@ func TestNewDeciderRequiresEveryDependency(t *testing.T) {
 		if _, err := NewDecider(args.gate, args.ev, args.now); err == nil {
 			t.Errorf("%s: NewDecider succeeded, want error", name)
 		}
+	}
+}
+
+// TestPrerequisitesBecomeNeedsOutcomes covers DEC-002 and APR-001: an allow
+// that requires approval or a reservation is not an allow yet.
+func TestPrerequisitesBecomeNeedsOutcomes(t *testing.T) {
+	needs := func(r ...string) policy.ActionResult {
+		return policy.ActionResult{Effect: policy.EffectAllow, Requires: r}
+	}
+	tests := []struct {
+		name        string
+		business    map[string]policy.ActionResult
+		wantOutcome Outcome
+		wantReq     []string
+	}{
+		{"approval", map[string]policy.ActionResult{"read": needs(policy.RequireApproval), "stat": allow}, OutcomeNeedsApproval, []string{"approval"}},
+		{"reservation", map[string]policy.ActionResult{"read": needs(policy.RequireReservation), "stat": allow}, OutcomeNeedsReservation, []string{"reservation"}},
+		{"both, approval first", map[string]policy.ActionResult{"read": needs(policy.RequireReservation), "stat": needs(policy.RequireApproval)},
+			OutcomeNeedsApproval, []string{"approval", "reservation"}},
+		{"a denied check still denies", map[string]policy.ActionResult{"read": needs(policy.RequireApproval), "stat": deny}, OutcomeDeny, []string{"approval"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := &fakeEvaluator{results: map[policy.Set]map[string]policy.ActionResult{
+				policy.SetCeiling: {"read": allow, "stat": allow}, policy.SetBusiness: tt.business}}
+			got := newDecider(t, admitAll, ev).DecideBatch(context.Background(), batch("read", "stat"))
+			if got.Outcome != tt.wantOutcome || !slices.Equal(got.Requires, tt.wantReq) {
+				t.Fatalf("decision = %v %v, want %v %v", got.Outcome, got.Requires, tt.wantOutcome, tt.wantReq)
+			}
+		})
 	}
 }

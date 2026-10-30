@@ -94,6 +94,7 @@ type Response struct {
 	BundleDigest string          `json:"bundle_digest,omitempty"`
 	PolicyEpoch  uint64          `json:"policy_epoch,omitempty"`
 	Results      []Result        `json:"results"`
+	Requires     []string        `json:"requires,omitempty"`
 	ValidUntil   *time.Time      `json:"valid_until,omitempty"`
 	Signed       *SignedDecision `json:"signed,omitempty"`
 }
@@ -217,7 +218,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		env.Subject = decision.Ref(*req.Subject)
 	}
 	d := s.d.Decider.DecideBatch(ctx, decision.Batch{Envelope: env, SnapshotDigest: snap.Digest, Checks: checks})
-	resp.Outcome, resp.Reason = d.Outcome.String(), string(d.Reason)
+	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
 	for _, r := range d.Results {
 		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, Business: r.Business.String(), Ceiling: r.Ceiling.String(),
 			Effect: effectName(r.Effect), Reason: string(r.Reason)})

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/interpreter"
@@ -41,11 +42,12 @@ type ruleKey struct {
 }
 
 type rule struct {
-	id      string
-	deny    bool
-	actions map[string]bool
-	roles   map[string]bool
-	program cel.Program // nil when the rule has no condition
+	id       string
+	deny     bool
+	actions  map[string]bool
+	roles    map[string]bool
+	requires []string
+	program  cel.Program // nil when the rule has no condition
 }
 
 // Compile validates docs against schema and compiles every condition. The
@@ -79,10 +81,11 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 		key := ruleKey{set: set, resource: d.Resource, scope: d.Scope}
 		for _, r := range d.Rules {
 			compiled := rule{
-				id:      r.ID,
-				deny:    r.Effect == format.EffectDeny,
-				actions: toSet(r.Actions),
-				roles:   toSet(r.Roles),
+				id:       r.ID,
+				deny:     r.Effect == format.EffectDeny,
+				actions:  toSet(r.Actions),
+				roles:    toSet(r.Roles),
+				requires: r.Requires,
 			}
 			if r.When != "" {
 				prg, err := compileCondition(env, r.When, opts)
@@ -110,6 +113,18 @@ func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, err
 		return nil, fmt.Errorf("condition has type %s, want bool", ast.OutputType())
 	}
 	return env.Program(ast, cel.CostLimit(opts.CostLimit), cel.InterruptCheckFrequency(100))
+}
+
+func sortedKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func toSet(items []string) map[string]bool {
@@ -149,6 +164,7 @@ func (e *Engine) Evaluate(ctx context.Context, req policy.Request) (policy.Resul
 // evaluateAction applies the rules of Section 1.4.2 to one action.
 func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars map[string]any, action string) (policy.ActionResult, error) {
 	var allowed, denied, errored bool
+	requires := map[string]bool{}
 	for _, scope := range format.ScopeChain(req.Resource.Scope) {
 		for _, r := range e.rules[ruleKey{set: req.Set, resource: req.Resource.Kind, scope: scope}] {
 			if !r.applies(action, req.Principal.Roles) {
@@ -167,6 +183,9 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 				denied = true
 			} else if holds {
 				allowed = true
+				for _, p := range r.requires {
+					requires[p] = true
+				}
 			}
 		}
 	}
@@ -179,7 +198,7 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 		// No ceiling rule objects. This is not a grant.
 		return policy.ActionResult{Effect: policy.EffectAllow}, nil
 	case allowed:
-		return policy.ActionResult{Effect: policy.EffectAllow}, nil
+		return policy.ActionResult{Effect: policy.EffectAllow, Requires: sortedKeys(requires)}, nil
 	default:
 		return policy.ActionResult{Effect: policy.EffectDeny}, nil
 	}

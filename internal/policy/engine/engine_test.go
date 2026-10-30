@@ -180,3 +180,30 @@ func TestEvaluateConcurrently(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRequiresAreTheUnionOfMatchingAllows covers APR-007: prerequisites from
+// every matching allow rule are combined, and a deny leaves none.
+func TestRequiresAreTheUnionOfMatchingAllows(t *testing.T) {
+	e := compileBundle(t, []string{`{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+	  {"id":"read-with-approval","effect":"allow","actions":["read"],"roles":["reviewer"],"requires":["approval"]},
+	  {"id":"read-large-with-budget","effect":"allow","actions":["read"],"roles":["reviewer"],"requires":["reservation"],
+	   "when":"resource.attributes.size > 100"},
+	  {"id":"no-contractors","effect":"deny","actions":["read"],"roles":["contractor"]}]}`})
+	for name, tc := range map[string]struct {
+		roles []string
+		size  int
+		want  []string
+	}{
+		"one matching allow":   {[]string{"reviewer"}, 10, []string{"approval"}},
+		"two matching allows":  {[]string{"reviewer"}, 500, []string{"approval", "reservation"}},
+		"deny leaves no allow": {[]string{"reviewer", "contractor"}, 500, nil},
+	} {
+		res, err := e.Evaluate(context.Background(), request(policy.SetBusiness, "user-42", tc.roles, "", map[string]any{"size": tc.size}, "read"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Actions["read"].Requires; !slices.Equal(got, tc.want) {
+			t.Errorf("%s: requires = %v, want %v", name, got, tc.want)
+		}
+	}
+}

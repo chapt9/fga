@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"fga/internal/policy"
 	"fga/internal/strictjson"
 )
 
@@ -29,6 +30,13 @@ const (
 
 // Wildcard matches any action or any role.
 const Wildcard = "*"
+
+// Prerequisites an allow rule can require before the allow takes effect
+// (APR-001). They are satisfied through the control plane, never by policy.
+const (
+	RequireApproval    = policy.RequireApproval
+	RequireReservation = policy.RequireReservation
+)
 
 // Limits on a bundle (POL-009, DEC-009).
 const (
@@ -55,6 +63,8 @@ type Rule struct {
 	Roles   []string `json:"roles"`
 	// When is a CEL expression; empty means the rule always applies.
 	When string `json:"when,omitempty"`
+	// Requires lists prerequisites of an allow rule in the business set.
+	Requires []string `json:"requires,omitempty"`
 }
 
 // Schema reports which resource types and actions are registered (RES-001).
@@ -128,6 +138,14 @@ func ValidateBundle(docs []Document, schema Schema) error {
 				}
 			default:
 				fail("rule %q: unknown effect %q", r.ID, r.Effect)
+			}
+			for _, req := range r.Requires {
+				switch {
+				case req != RequireApproval && req != RequireReservation:
+					fail("rule %q: unknown prerequisite %q", r.ID, req)
+				case r.Effect != EffectAllow || d.Set != SetBusiness:
+					fail("rule %q: only business allow rules may require %q", r.ID, req)
+				}
 			}
 			if len(r.Actions) == 0 {
 				fail("rule %q: no actions", r.ID)

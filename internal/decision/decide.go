@@ -6,6 +6,7 @@ package decision
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"fga/internal/policy"
@@ -24,6 +25,12 @@ const (
 	OutcomeDeny
 	// OutcomeError means the service could not decide.
 	OutcomeError
+	// OutcomeNeedsApproval and OutcomeNeedsReservation mean every check is
+	// allowed only once a prerequisite is satisfied through the control
+	// plane; a new decision is then needed (DEC-002, APR-001). Approval is
+	// reported first when both are required.
+	OutcomeNeedsApproval
+	OutcomeNeedsReservation
 )
 
 func (o Outcome) String() string {
@@ -34,6 +41,10 @@ func (o Outcome) String() string {
 		return "DENY"
 	case OutcomeError:
 		return "ERROR"
+	case OutcomeNeedsApproval:
+		return "NEEDS_APPROVAL"
+	case OutcomeNeedsReservation:
+		return "NEEDS_RESERVATION"
 	default:
 		return "UNKNOWN"
 	}
@@ -55,16 +66,18 @@ const (
 type Reason string
 
 const (
-	ReasonEmptyBatch        Reason = "EMPTY_BATCH"
-	ReasonDuplicateCheckID  Reason = "DUPLICATE_CHECK_ID"
-	ReasonGateUnavailable   Reason = "GATE_UNAVAILABLE"
-	ReasonEngineUnavailable Reason = "ENGINE_UNAVAILABLE"
-	ReasonCancelled         Reason = "CANCELLED"
-	ReasonCeilingDeny       Reason = "CEILING_DENY"
-	ReasonCeilingError      Reason = "CEILING_ERROR"
-	ReasonBusinessDeny      Reason = "BUSINESS_DENY"
-	ReasonBusinessError     Reason = "BUSINESS_ERROR"
-	ReasonMissingResult     Reason = "MISSING_RESULT"
+	ReasonEmptyBatch          Reason = "EMPTY_BATCH"
+	ReasonDuplicateCheckID    Reason = "DUPLICATE_CHECK_ID"
+	ReasonGateUnavailable     Reason = "GATE_UNAVAILABLE"
+	ReasonEngineUnavailable   Reason = "ENGINE_UNAVAILABLE"
+	ReasonCancelled           Reason = "CANCELLED"
+	ReasonCeilingDeny         Reason = "CEILING_DENY"
+	ReasonCeilingError        Reason = "CEILING_ERROR"
+	ReasonBusinessDeny        Reason = "BUSINESS_DENY"
+	ReasonBusinessError       Reason = "BUSINESS_ERROR"
+	ReasonMissingResult       Reason = "MISSING_RESULT"
+	ReasonApprovalRequired    Reason = "APPROVAL_REQUIRED"
+	ReasonReservationRequired Reason = "RESERVATION_REQUIRED"
 )
 
 // Check is one action on one resource (specification Section 1.3).
@@ -110,6 +123,8 @@ type CheckResult struct {
 	Ceiling  policy.Effect
 	Effect   CheckEffect
 	Reason   Reason
+	// Requires lists the prerequisites of an allowed check.
+	Requires []string
 }
 
 // Decision is the result for a batch. Results follow the order of the
@@ -118,6 +133,8 @@ type Decision struct {
 	Outcome Outcome
 	Reason  Reason
 	Results []CheckResult
+	// Requires is the union of the checks' prerequisites, sorted.
+	Requires []string
 }
 
 // Rejection is the error a Gate returns to deny a batch before any policy is
@@ -187,6 +204,20 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 			decision.Outcome = OutcomeDeny
 			decision.Reason = result.Reason
 		}
+		for _, p := range result.Requires {
+			if !slices.Contains(decision.Requires, p) {
+				decision.Requires = append(decision.Requires, p)
+			}
+		}
+	}
+	slices.Sort(decision.Requires)
+	if decision.Outcome == OutcomeAllow && len(decision.Requires) > 0 {
+		decision.Outcome = OutcomeNeedsReservation
+		decision.Reason = ReasonReservationRequired
+		if slices.Contains(decision.Requires, policy.RequireApproval) {
+			decision.Outcome = OutcomeNeedsApproval
+			decision.Reason = ReasonApprovalRequired
+		}
 	}
 	return decision
 }
@@ -228,7 +259,16 @@ func (d *Decider) decideCheck(ctx context.Context, b Batch, principal policy.Pri
 		Ceiling:  ceiling.Effect,
 		Effect:   effect,
 		Reason:   reason,
+		Requires: requiresOf(effect, business),
 	}, nil
+}
+
+// requiresOf returns the prerequisites of an allowed check.
+func requiresOf(effect CheckEffect, business policy.ActionResult) []string {
+	if effect != CheckAllow {
+		return nil
+	}
+	return business.Requires
 }
 
 // evaluate returns the result for the check's action. An action the engine

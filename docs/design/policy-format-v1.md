@@ -35,6 +35,7 @@ The format is the project's own (D-01). Its ideas come from attribute-based poli
 | `rules[].actions` | Registered actions, or `*`. |
 | `rules[].roles` | Roles, or `*` for any role. |
 | `rules[].when` | Optional condition. Absent means always. |
+| `rules[].requires` | Optional prerequisites of a business allow rule: `approval`, `reservation` (added for R1-B). |
 
 ## Evaluation
 
@@ -44,7 +45,8 @@ For one principal, resource and action:
 2. **Match:** a rule matches if it lists the action (or `*`), the principal holds one of its roles (or `*`), and its condition is true or absent.
 3. **Business set:** any matching deny gives DENY; otherwise any matching allow gives ALLOW; otherwise DENY. Deny always overrides allow, across roles and across scopes.
 4. **Ceiling set:** any matching deny is an objection (DENY); otherwise no objection. No ceiling rule for a type means no objection.
-5. **Errors:** if any candidate rule's condition fails to evaluate, the action is DENY (business) or an objection (ceiling). There is no lenient mode.
+5. **Prerequisites:** an allow carries the union of the `requires` lists of every matching allow rule. The decision is then NEEDS_APPROVAL or NEEDS_RESERVATION until the prerequisite is satisfied through the control plane (APR-001, APR-007).
+6. **Errors:** if any candidate rule's condition fails to evaluate, the action is DENY (business) or an objection (ceiling). There is no lenient mode.
 
 The consequences of this design:
 - A tenant scope can add allows but cannot lift a parent's deny.
