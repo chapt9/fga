@@ -1,0 +1,251 @@
+// Package decision decides a batch of checks by combining the platform gate,
+// the ceiling set and the business set (specification 2.1, POL-003, POL-007,
+// DEC-002 to DEC-004).
+package decision
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"fga/internal/policy"
+)
+
+// Outcome is the decision for a whole batch.
+type Outcome int
+
+const (
+	// OutcomeUnknown is the zero value and never authorizes anything.
+	OutcomeUnknown Outcome = iota
+	// OutcomeAllow means every check was allowed. It is the only outcome on
+	// which an enforcement point may proceed (DEC-002).
+	OutcomeAllow
+	// OutcomeDeny means the batch was rejected or a check was not allowed.
+	OutcomeDeny
+	// OutcomeError means the service could not decide.
+	OutcomeError
+)
+
+func (o Outcome) String() string {
+	switch o {
+	case OutcomeAllow:
+		return "ALLOW"
+	case OutcomeDeny:
+		return "DENY"
+	case OutcomeError:
+		return "ERROR"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// CheckEffect is the effective result of one check.
+type CheckEffect int
+
+const (
+	// CheckNotEvaluated means evaluation stopped before the check was decided
+	// (DEC-003). It never authorizes anything.
+	CheckNotEvaluated CheckEffect = iota
+	CheckAllow
+	CheckDeny
+)
+
+// Reason identifies why a batch or check was not allowed. Reasons are stable
+// identifiers and carry no protected details (DEC-010).
+type Reason string
+
+const (
+	ReasonEmptyBatch        Reason = "EMPTY_BATCH"
+	ReasonDuplicateCheckID  Reason = "DUPLICATE_CHECK_ID"
+	ReasonGateUnavailable   Reason = "GATE_UNAVAILABLE"
+	ReasonEngineUnavailable Reason = "ENGINE_UNAVAILABLE"
+	ReasonCancelled         Reason = "CANCELLED"
+	ReasonCeilingDeny       Reason = "CEILING_DENY"
+	ReasonCeilingError      Reason = "CEILING_ERROR"
+	ReasonBusinessDeny      Reason = "BUSINESS_DENY"
+	ReasonBusinessError     Reason = "BUSINESS_ERROR"
+	ReasonMissingResult     Reason = "MISSING_RESULT"
+)
+
+// Check is one action on one resource (specification Section 1.3).
+type Check struct {
+	ID       string
+	Action   string
+	Resource policy.Resource
+}
+
+// Batch is a set of checks evaluated under one authority envelope and one
+// policy snapshot (DEC-004). A compound operation is one batch and is allowed
+// only if every check is allowed (RES-006).
+type Batch struct {
+	SnapshotDigest string
+	Principal      policy.Principal
+	Checks         []Check
+}
+
+// CheckResult reports one check. The business and ceiling effects are kept
+// apart from the effective result (DEC-003).
+type CheckResult struct {
+	CheckID  string
+	Business policy.Effect
+	Ceiling  policy.Effect
+	Effect   CheckEffect
+	Reason   Reason
+}
+
+// Decision is the result for a batch. Results follow the order of the
+// batch's checks.
+type Decision struct {
+	Outcome Outcome
+	Reason  Reason
+	Results []CheckResult
+}
+
+// Rejection is the error a Gate returns to deny a batch before any policy is
+// evaluated. Any other error from a Gate is a service failure.
+type Rejection struct {
+	Reason Reason
+}
+
+func (r *Rejection) Error() string { return "rejected: " + string(r.Reason) }
+
+// Gate validates the execution envelope (identity, tenant binding,
+// delegation, freshness, required epoch) before policy evaluation (POL-003
+// step 1).
+type Gate interface {
+	Admit(ctx context.Context, b Batch) error
+}
+
+// Decider decides batches.
+type Decider struct {
+	gate      Gate
+	evaluator policy.Evaluator
+	now       func() time.Time
+}
+
+// NewDecider returns a Decider. The clock is read once per batch (POL-008).
+func NewDecider(gate Gate, evaluator policy.Evaluator, now func() time.Time) (*Decider, error) {
+	if gate == nil || evaluator == nil || now == nil {
+		return nil, errors.New("decision: gate, evaluator and clock are required")
+	}
+	return &Decider{gate: gate, evaluator: evaluator, now: now}, nil
+}
+
+// DecideBatch evaluates every check of b. It returns OutcomeAllow only when
+// the gate admitted the batch and every check has an explicit business allow
+// and no ceiling objection.
+func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
+	results := make([]CheckResult, len(b.Checks))
+	for i, c := range b.Checks {
+		results[i] = CheckResult{CheckID: c.ID}
+	}
+	if reason := malformed(b); reason != "" {
+		return Decision{Outcome: OutcomeDeny, Reason: reason, Results: results}
+	}
+	if err := d.gate.Admit(ctx, b); err != nil {
+		var rejection *Rejection
+		if errors.As(err, &rejection) {
+			return Decision{Outcome: OutcomeDeny, Reason: rejection.Reason, Results: results}
+		}
+		return Decision{Outcome: OutcomeError, Reason: ReasonGateUnavailable, Results: results}
+	}
+
+	now := d.now()
+	decision := Decision{Outcome: OutcomeAllow, Results: results}
+	for i, c := range b.Checks {
+		result, err := d.decideCheck(ctx, b, c, now)
+		if err != nil {
+			reason := ReasonEngineUnavailable
+			if ctx.Err() != nil {
+				reason = ReasonCancelled
+			}
+			return Decision{Outcome: OutcomeError, Reason: reason, Results: results}
+		}
+		results[i] = result
+		if result.Effect != CheckAllow && decision.Outcome == OutcomeAllow {
+			decision.Outcome = OutcomeDeny
+			decision.Reason = result.Reason
+		}
+	}
+	return decision
+}
+
+// malformed returns the reason a batch cannot be evaluated, or "".
+func malformed(b Batch) Reason {
+	if len(b.Checks) == 0 {
+		return ReasonEmptyBatch
+	}
+	seen := make(map[string]bool, len(b.Checks))
+	for _, c := range b.Checks {
+		if seen[c.ID] {
+			return ReasonDuplicateCheckID
+		}
+		seen[c.ID] = true
+	}
+	return ""
+}
+
+// decideCheck evaluates the ceiling set and then the business set. Both are
+// always evaluated, so the ceiling result never depends on the business
+// result (POL-003 step 1b) and the response reports both effects.
+func (d *Decider) decideCheck(ctx context.Context, b Batch, c Check, now time.Time) (CheckResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CheckResult{}, err
+	}
+	ceiling, err := d.evaluate(ctx, policy.SetCeiling, b, c, now)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	business, err := d.evaluate(ctx, policy.SetBusiness, b, c, now)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	effect, reason := combine(ceiling, business)
+	return CheckResult{
+		CheckID:  c.ID,
+		Business: business.Effect,
+		Ceiling:  ceiling.Effect,
+		Effect:   effect,
+		Reason:   reason,
+	}, nil
+}
+
+// evaluate returns the result for the check's action. An action the engine
+// did not answer gets the zero ActionResult, whose effect is EffectUnknown.
+func (d *Decider) evaluate(ctx context.Context, set policy.Set, b Batch, c Check, now time.Time) (policy.ActionResult, error) {
+	res, err := d.evaluator.Evaluate(ctx, policy.Request{
+		SnapshotDigest: b.SnapshotDigest,
+		Set:            set,
+		Principal:      b.Principal,
+		Resource:       c.Resource,
+		Actions:        []string{c.Action},
+		Now:            now,
+	})
+	if err != nil {
+		return policy.ActionResult{}, err
+	}
+	return res.Actions[c.Action], nil
+}
+
+// combine applies POL-007 and POL-005. A ceiling objection or ceiling error
+// always denies. Otherwise the business result applies unchanged, except
+// that an errored business rule denies the action. A missing result from
+// either set denies.
+func combine(ceiling, business policy.ActionResult) (CheckEffect, Reason) {
+	switch {
+	case ceiling.Errored:
+		return CheckDeny, ReasonCeilingError
+	case ceiling.Effect == policy.EffectDeny:
+		return CheckDeny, ReasonCeilingDeny
+	case ceiling.Effect != policy.EffectAllow:
+		return CheckDeny, ReasonMissingResult
+	case business.Errored:
+		return CheckDeny, ReasonBusinessError
+	case business.Effect == policy.EffectAllow:
+		return CheckAllow, ""
+	case business.Effect == policy.EffectDeny:
+		return CheckDeny, ReasonBusinessDeny
+	default:
+		return CheckDeny, ReasonMissingResult
+	}
+}

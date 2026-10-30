@@ -1,0 +1,5 @@
+/bin/
+*.test
+*.out
+/docs/spec/main.pdf
+.DS_Store

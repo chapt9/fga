@@ -1,0 +1,86 @@
+v13_id,disposition,v2_ids,note
+SRC-001,kept,SRC-001,Moved to Part 6.
+SRC-002,kept,SRC-002,Moved to Part 6.
+SRC-003,kept,SRC-003,Moved to Part 6; license record added as SRC-004.
+QUAL-001,kept,QUAL-001,Moved to Part 6.
+QUAL-002,kept,QUAL-002,Moved to Part 6.
+QUAL-003,kept,QUAL-003,Moved to Part 6.
+QUAL-004,kept,QUAL-004,Moved to Part 6.
+QUAL-005,kept,QUAL-005,Moved to Part 6.
+LIB-001,split,LIB-001 S3P-004,Raw S3 routing requirement moved to the S3 profile.
+LIB-002,kept,LIB-002,Moved to Part 6.
+LIB-003,kept,LIB-003,Moved to Part 6.
+MOD-001,kept,MOD-001,Moved to Part 6.
+MOD-002,kept,MOD-002,Moved to Part 6; per-role import allowlist added as MOD-004.
+MOD-003,kept,MOD-003,Moved to Part 6.
+UNIFIED-001,split,CNT-001 CNT-002 TRU-006,Content service and the MCP principal rule separated.
+SMALL-001,moved,ENF-003,Adapter rule moved to the enforcement part.
+SMALL-002,kept,SMALL-002,Moved to Part 6.
+SMALL-003,kept,SMALL-003,Moved to Part 6.
+SMALL-004,kept,SMALL-004,Moved to Part 6.
+ID-001,split,ID-001 ID-002 ID-003 ID-004 ID-005 ID-006 ID-007,Also absorbs the context-provenance prose of 1.3 Section 4.5 and the token-profile prose of Section 3.3.
+ID-002,split,DLG-001 DLG-002 DLG-003 DLG-004 DLG-005 DLG-006 DLG-007,One obligation per requirement.
+CANON-001,split,RES-001 RES-002 RES-003 RES-006,Compound-operation rule from Section 4.2 prose added.
+CANON-002,split,RES-003 RES-004 RES-005 RES-007 RES-008,
+CANON-003,moved,CNT-003,Content-specific; moved to Part 3.
+COMPAT-001,split,POL-001 POL-002 POL-013,Evaluator contract (POL-001) makes the engine replaceable; YAML front end from Section 3.3 prose added.
+COMPAT-002,split,POL-003 POL-004 DLG-003,
+COMPAT-003,kept,POL-012,Strengthened with a differential reference oracle.
+POL-001,split,POL-008 POL-009,
+POL-002,split,POL-003 POL-007,Platform-ceiling rule added as POL-007.
+POL-003,split,POL-011 APR-007 APR-001 APR-002 APR-003,Approval prose of Section 5.5 moved to enforcement.
+POL-004,kept,POL-010,
+POL-005,split,POL-005 POL-006,Strict evaluation is now required in production.
+AUTH-001,split,DEC-002 DEC-003 DEC-010,
+AUTH-002,split,DEC-007 DEC-008 TRU-001 TRU-002,Signed decisions added.
+AUTH-003,split,DEC-005 DEC-006 DEC-009,
+AUTH-004,split,ENF-001 ENF-002 ENF-003 ENF-004,
+AUTH-005,split,DEC-004 DEC-001,
+DATA-001,split,DAT-001 DAT-002,
+DATA-002,split,DAT-003 DAT-004,Cache rules of Section 7.2 included.
+DATA-003,split,APR-004 APR-006 DAT-005 INV-007,
+STO-001,split,BKD-003 PUB-001,
+STO-002,split,S3P-001 S3P-002 S3P-009,Moved to Part 5 (R3).
+STO-003,split,S3P-002 S3P-003 S3P-006,Moved to Part 5 (R3).
+STO-004,split,S3P-007 CNT-004 CNT-008,Stream lease bound added.
+STO-005,split,PUB-002 PUB-003 PUB-007 PUB-008 S3P-008,
+STO-006,split,PUB-004 PUB-005 PUB-006 PUB-009,Deletion states added to the state machine.
+STO-007,split,CNT-005 CNT-006,No-hidden-effects prose of Section 8.7 included.
+STO-008,split,BKD-001 BKD-004 REP-010,
+AGT-001,split,AGT-001 AGT-002 AGT-007 AGT-008,Section 9.3 prose included.
+AGT-002,split,AGT-003 AGT-004 AGT-005 AGT-006,Invocation protocol of Section 9.2 included.
+AGT-003,split,INV-001 INV-002 INV-003 INV-004 INV-005 INV-008,UNKNOWN resolution added as INV-006.
+AGT-004,split,FLW-001 FLW-002 FLW-006,Session high-water mark added as FLW-003 to FLW-005.
+ADP-001,split,ENF-005 ENF-006 ADP-001,
+AI-001,split,MCP-004 DSC-006,
+AI-002,split,DSC-001 DSC-002 DSC-003 DRV-004,Section 10.5 steps included.
+DOC-001,split,DOC-001 DOC-002 DOC-003 DOC-004 DOC-005 DOC-008,Section 10.2 prose included.
+DOC-002,split,DOC-006 DOC-007,
+DOC-003,split,DSC-004 DSC-005 SRH-001 SRH-002 SRH-003 DRV-006,Derived-output rules rewritten as DRV-001 to DRV-005.
+MCP-001,split,MCP-002 MCP-003 MCP-006,
+MCP-002,split,MCP-003 MCP-001 MCP-005 SIZ-002,Section 10.7 scaling prose included.
+CRY-001,kept,CRY-001,
+CRY-002,split,CRY-002 CRY-003 CRY-004 CRY-005,
+CRY-003,split,CRY-006 CRY-007 CRY-008,
+KEY-001,split,KEY-002 KEY-003 KEY-011 KEY-004 KEY-005 KEY-006,Sections 12.3 and 12.4 prose included.
+KEY-002,kept,KEY-007,
+KEY-003,split,KEY-009 AUD-004,
+KEY-004,split,RCP-001 RCP-002 RCP-003,
+KEY-005,split,RCP-004 RCP-005 RCP-006 RCP-007 RCP-008,
+KEY-006,split,KEY-010 KEY-008 RCP-009 RCP-010,Rotation table of Section 12.6 included.
+REL-001,split,REL-001 REL-002 REL-004,
+REL-002,kept,REL-003,
+OPS-001,moved,REL-006,
+ADM-001,split,ADM-001 ADM-002 ADM-003,
+AUD-001,kept,AUD-003,
+AUD-002,split,AUD-001 AUD-002,
+HA-001,split,REP-001 REP-002,Moved to Part 5 (R3).
+HA-002,kept,REP-003,Moved to Part 5 (R3).
+HA-003,split,AVL-002 AVL-003 AVL-004 REP-009,Control-plane part moved to Part 1.
+HA-004,split,AVL-005 REP-011,
+HA-005,split,REP-004 REP-005 REP-006,
+MAINT-001,kept,REP-007,
+MAINT-002,kept,REP-008,
+SCALE-001,split,AVL-001 AVL-006 AVL-007,Topology table of Section 14.1 included.
+TEST-001,kept,TEST-001,
+TEST-002,kept,TEST-002,

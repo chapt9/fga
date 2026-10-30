@@ -1,0 +1,47 @@
+\section{Representative end-to-end scenarios}\label{app:scenarios}
+Each scenario names the requirements it exercises. They are illustrations; the vectors of Appendix~\ref{app:vectors} are the testable form.
+
+\subsection{An agent reads a document and submits an expense (R1-B, R1-C)}
+An authenticated agent acts for a user under a project-scoped delegation. The tool gateway prepares three checks in one batch: read the selected text unit, invoke the expense tool, and send to the registered expense service (\rr{RES-006}). The document manifest and unit bindings are fixed before authorization (\rr{DOC-001}).
+\begin{lstlisting}
+{ "request_id": "r-81", "tenant_id": "t-acme", "adapter_id": "tools-gw-1",
+  "operation_id": "op-9f3",
+  "actor":      {"id": "agent-7", "type": "agent", "identity_revision": 12},
+  "subject":    {"id": "user-42", "type": "user",  "identity_revision": 88},
+  "delegation": {"id": "dlg-5", "revision": 3},
+  "session":    {"id": "s-310", "binding_revision": 1, "context_key": "dlg-5",
+                 "mark_revision": 4, "label_order_generation": 2},
+  "checks": [
+    {"check_id": "c1", "action": "read",
+     "resource": {"type": "document.text_unit", "id": "u-1", "version": 4,
+                  "generation": 17, "metadata_revision": 2}},
+    {"check_id": "c2", "action": "invoke",
+     "resource": {"type": "agent.tool", "id": "expense.submit", "version": 3,
+                  "generation": 1, "metadata_revision": 1}},
+    {"check_id": "c3", "action": "send",
+     "resource": {"type": "network.destination", "id": "expenses.example",
+                  "version": 1, "generation": 1, "metadata_revision": 1}}],
+  "operation_digest": "sha256:...", "required_policy_epoch": 412 }
+\end{lstlisting}
+The amount is over the policy threshold, so the response is \code{NEEDS_APPROVAL}, with the approval summary rendered from the canonical plan (\rr{APR-005}). After approval and a reservation, a new \code{ALLOW} whose context revisions include both is required (\rr{DEC-002}). The executor dispatches with an idempotency key and a state precondition (\rr{AGT-006}); a timeout becomes UNKNOWN and is reconciled (\rr{INV-003}). Reading the document never grants submission authority.
+
+\subsection{Revocation during an upload (R1-C)}
+The uploader has a valid create decision and the blob is finalized. Before publication, project membership is revoked and its revision advances. The commit transaction compares the fresh decision's identity and delegation revisions and the object generation, rejects the old authority, and the catalog never publishes LIVE (\rr{PUB-003}). The blob stays staged for reconciliation and later collection (\rr{PUB-006}). A successful physical upload is not a successful authorized publication (vector V-061).
+
+\subsection{A remote AI reads only approved sections (R1-C; export in R2)}
+A remote analyst requests a report through MCP. Its actor and represented user may read the public overview and the financial appendix but not the personnel section. The proxy resolves the immutable manifest, checks parent and unit permissions and the requested model destination, and receives only approved plaintext units (\rr{DSC-001}). Search snippets and citations follow the same projection (\rr{DOC-007}). A direct original-file request is denied without full-document authority (\rr{CNT-003}). In R2, a compatible encrypted export gives the analyst's registered recipient key an HPKE package containing only those units' keysets (\rr{RCP-005}); revocation later blocks new releases but cannot recall keys or context already received (\rr{KEY-010}).
+
+\subsection{A retrieved document tries to give instructions (R1-C)}
+A unit returned by search contains text telling the agent to register a new tool and widen its delegation. The text is data, not authority (\rr{MCP-004}). The registry and delegation do not change, and any call the agent then makes is checked as an ordinary request (vector V-029). If the agent attempts to send content from that session to an external address, the context mark decides (next scenario).
+
+\subsection{The context high-water mark (R1-C)}
+During a session the agent reads a unit labeled \emph{restricted}. The mark of its execution context becomes \emph{restricted}; it is raised durably before the first byte is emitted and stays there (\rr{FLW-003}, \rr{FLW-007}). A later call to an email tool whose destination clearance is \emph{internal} is denied, or goes to approval if a policy output asks for that (vectors V-110, V-111). If the agent reconnects with a new MCP session under the same delegation, the mark is inherited (\rr{FLW-008}, vector V-114). A summary the agent derived from the unit keeps the restricted effective label even when it is saved in a public-default collection (\rr{DRV-007}, vector V-119). A different delegation or context key starts at the lowest level, so content that reaches an agent by a route the platform does not mediate is not covered (\rr{FLW-005}, N-02).
+
+\subsection{An external outcome is unknown (R1-B)}
+A payment call times out and the downstream service has no idempotency key support. The invocation becomes UNKNOWN and its reservation stays (\rr{INV-007}). After the tool's maximum hold age, an operator other than the requester resolves it as failed, with evidence, and the reservation is released (\rr{INV-006}, vector V-044); the requester's own attempt is denied (V-045).
+
+\subsection{Storage-node compromise (R2, R3)}
+An attacker reads disks on one blob node. It obtains ciphertext and non-secret storage metadata but no broker or KMS credentials, which protects payload confidentiality under the cryptographic assumptions (\rr{CRY-003}). File sizes and placement metadata may still leak. If the attacker instead compromises the server-managed encryption process, that process handles plaintext and data keys and the guarantee does not apply (N-03). The client-envelope profile narrows that boundary at the cost of a dedicated SDK and client-held keys. A compromised gateway still cannot obtain keys that no signed decision covers (\rr{TRU-005}).
+
+\subsection{One failure domain is lost (R1-C; blobs in R3)}
+Requests are routed away from failed gateways and decision nodes. A safely fenced database standby becomes primary when necessary (\rr{AVL-003}). With the custom backend, each acknowledged blob has a surviving durable copy under the two-receipt rule and healthy nodes serve verified bytes and repair toward three copies (\rr{REP-002}); with an external backend the backend's own guarantee applies (\rr{BKD-002}). Tool invocations with uncertain external outcomes are reconciled rather than duplicated (\rr{INV-008}), and backup recovery remains separate from this availability path (\rr{AVL-005}).

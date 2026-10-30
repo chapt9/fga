@@ -1,0 +1,106 @@
+// Package policy defines the contract between the decision service and the
+// business-policy engine (specification 2.1, Section 1.4.1, POL-001).
+//
+// The engine behind the contract is the open-source Cerbos PDP (decision
+// D-01). Code outside the evaluator implementation does not depend on which
+// engine runs.
+package policy
+
+import (
+	"context"
+	"time"
+)
+
+// Set selects the policy set a request is evaluated against.
+type Set int
+
+const (
+	// SetBusiness is the tenant-authored business policy set.
+	SetBusiness Set = iota + 1
+	// SetCeiling is the platform ceiling set (POL-007). EffectAllow from this
+	// set means only that no ceiling objects; it never grants anything.
+	SetCeiling
+)
+
+func (s Set) String() string {
+	switch s {
+	case SetBusiness:
+		return "BUSINESS"
+	case SetCeiling:
+		return "CEILING"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// Effect is an engine's result for one action.
+type Effect int
+
+const (
+	// EffectUnknown is the zero value. It is never treated as an allow.
+	EffectUnknown Effect = iota
+	EffectAllow
+	EffectDeny
+)
+
+func (e Effect) String() string {
+	switch e {
+	case EffectAllow:
+		return "ALLOW"
+	case EffectDeny:
+		return "DENY"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// Principal is the business principal: the represented subject, or the actor
+// when no delegation applies (DLG-003). Roles and attributes come from
+// authoritative state, never from the caller (ID-002, ID-003).
+type Principal struct {
+	ID         string
+	Roles      []string
+	Attributes map[string]any
+}
+
+// Resource is one canonical resource with its trusted attributes (RES-002).
+type Resource struct {
+	Kind       string
+	ID         string
+	Scope      string
+	Attributes map[string]any
+}
+
+// Request asks for the effect of each action on one resource.
+type Request struct {
+	SnapshotDigest string
+	Set            Set
+	Principal      Principal
+	Resource       Resource
+	Actions        []string
+	// Now is captured once per batch by the caller (POL-008).
+	Now time.Time
+}
+
+// ActionResult is the engine's result for one requested action.
+type ActionResult struct {
+	Effect Effect
+	// Errored reports that a rule able to affect the action failed to
+	// evaluate. The production profile denies such an action (POL-005).
+	Errored bool
+}
+
+// Result maps each requested action to its result. An action that is absent
+// from the map has no result and is never allowed (DEC-004).
+type Result struct {
+	Actions map[string]ActionResult
+}
+
+// Evaluator evaluates one request against one policy set.
+//
+// A returned error means the engine could not decide: it was unavailable,
+// timed out, was cancelled or exhausted a resource limit. Callers report it as
+// a service failure, never as an effect.
+type Evaluator interface {
+	Evaluate(ctx context.Context, req Request) (Result, error)
+}

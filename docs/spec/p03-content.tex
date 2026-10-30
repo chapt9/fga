@@ -1,0 +1,140 @@
+\section{Content, documents and disclosure}\label{sec:content}
+Part~3 defines the single content service, how content is published over a storage backend, how documents are split into independently authorized units and labeled, how units are disclosed to people, tools and models, and how derived outputs are controlled. In R1 the backend provides at-rest encryption; per-unit cryptographic separation is R2 (Part~4).
+
+\subsection{Content service}
+\begin{lstlisting}
+// Logical application interface; all callers retain verified identity context.
+type ContentService interface {
+    Read(ctx context.Context, req ReadContentRequest) (ContentReader, error)
+    Stat(ctx context.Context, req StatContentRequest) (ContentMetadata, error)
+    List(ctx context.Context, req ListContentRequest) (ContentPage, error)
+    Write(ctx context.Context, req WriteContentRequest) (PublishedVersion, error)
+    Delete(ctx context.Context, req DeleteContentRequest) (DeleteOutcome, error)
+    Export(ctx context.Context, req ExportContentRequest) (ExportHandle, error)
+}
+\end{lstlisting}
+\req{CNT-001}{R1-C}{T-06}{\code{internal/content} is the single application layer for content reads, stat and discovery, listing, writes, deletion and authorized export. HTTP, MCP and (in R3) S3 handlers delegate to it through typed calls. It resolves canonical aliases and versions, performs the compatible business checks and the mandatory execution guards, and then uses the storage and key services.}
+\req{CNT-002}{R1-C}{T-06}{Protocol adapters translate authentication evidence, selectors, operation parameters and response framing. They \mustnot\ perform a permissive content check and then bypass the shared service.}
+\req{CNT-003}{R1-C}{T-06}{A whole-document or original-file path authorizes its complete disclosure set. A parent allow or a permitted section cannot authorize a forbidden section through raw download, preview, export or an answer that quotes it. Original-file delivery requires an authoritative complete-content manifest and all corresponding decisions; unsupported or unclassified original content rejects that path. Authorized-subset projection is explicit and does not silently alter what an ordinary GET returns.}
+\req{CNT-004}{R1-C}{T-09}{HEAD and error responses \mustnot\ reveal existence or metadata to callers that lack stat or discovery authority.}
+\req{CNT-005}{R1-C}{T-09}{A listing authorizes bucket listing, scans committed catalog candidates in stable key order, batch-checks per-object discovery, and accumulates visible entries until the page size or a bounded scan or time budget is reached. A short or empty page may carry a continuation token and the cursor must make progress. Metadata is filtered as well as names. A continuation token binds tenant, principal, identity revision, query, prefix and delimiter, policy epoch, expiry and last scanned position; its contents are encrypted and authenticated or held in opaque server state, and replay under another identity or a changed query fails. \code{CommonPrefixes} \mustnot\ expose hidden children, and delimiter support stays disabled until safe prefix discovery passes tests.}
+\req{CNT-006}{R1-C}{T-09}{Listings and discovery are read-only from the caller's perspective. They may report a bounded integrity hint but \mustnot\ execute expiration, deletion, declassification or replication as a hidden side effect; background maintenance owns those effects under its own authority and job record.}
+\reqn{CNT-007}{R1-C}{T-09, T-22}{Candidate selection for listing and search may use a sound superset prefilter (for example tenant and project predicates evaluated in SQL). Every candidate that survives still receives an exact per-resource decision, and a prefilter is never the only check.}
+\req{CNT-008}{R1-C}{T-13}{A read revalidates decision and session expiry and revisions before response admission. An admitted stream holds a lease: at least every $T_{check}$ it compares every authority-bearing revision recorded in the disclosure plan (identity and delegation revisions, resource generation, metadata revision, access and label revisions of the parent and of each selected unit, context mark revision, policy epoch) and the decision's \code{valid_until} with their current values, without re-evaluating policy. If a comparison fails, or a check cannot complete within $2T_{check}$ because of overload or dependency failure, the connection is aborted so the client observes an error and not a normal end of stream; a check is never skipped under load. Cancellation by the client ends the checks. $T_{check}$ has an initial target of 5 s and is qualified under T-22. Bytes already emitted are not recalled.}
+
+\subsection{Publication protocol}\label{sec:publication}
+PostgreSQL controls logical namespace and visibility. Public bucket names and object keys are never used as filesystem paths.
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[st/.style={draw=ink!70,rounded corners=2pt,fill=pale,align=center,minimum height=8mm,minimum width=20mm,font=\small},arr/.style={-{Stealth[length=2mm]},ink}]
+\node[st] (res) {RESERVED};
+\node[st,right=10mm of res] (wr) {WRITING};
+\node[st,right=10mm of wr] (stg) {STAGED};
+\node[st,right=20mm of stg] (live) {LIVE};
+\node[st,right=10mm of live] (del) {DELETED};
+\node[st,below=9mm of wr,xshift=15mm] (ab) {ABORTED /\\QUARANTINED};
+\draw[arr] (res) -- (wr);
+\draw[arr] (wr) -- (stg);
+\draw[arr] (stg) -- node[above,font=\scriptsize]{commit CAS} (live);
+\draw[arr] (live) -- node[above,font=\scriptsize]{marker} (del);
+\draw[arr] (wr) -- (ab);
+\draw[arr] (stg) -- (ab);
+\end{tikzpicture}
+\caption[Version states during publication]{Catalog publication is the visibility boundary. Orphaned physical blobs never become readable merely because they exist. A \textsc{deleted} version is physically retired only after the retention and reference checks of \rr{PUB-005}.}\label{fig:pubstates}
+\end{figure}
+\req{PUB-001}{R1-C}{T-08}{PostgreSQL controls logical namespace and visibility. Public bucket names and object keys \mustnot\ be used directly as filesystem paths.}
+\req{PUB-002}{R1-C}{T-08}{Staging proceeds as follows. (1) Create an upload intent with tenant, actor, subject, delegation, stable object ID, expected object generation, expected current version, metadata revision and idempotency key. (2) Authorize create or new-version, and assign protected metadata on the server. (3) Stream authenticated input into an unpublished blob. (4) Validate body digest and length and finalize the blob through the backend contract, recording durable receipts, immutable identity and checksums; the version remains STAGED.}
+\req{PUB-003}{R1-C}{T-08}{Commit obtains a fresh commit decision and then, in one transaction, compares generation, current version, metadata, identity and delegation revisions, policy epoch, decision expiry and conditional-write preconditions; atomically publishes LIVE, updates the current pointer, increments the generation, consumes the intent and appends audit and outbox records. Only then is success acknowledged.}
+\req{PUB-004}{R1-C}{T-08}{A blob that is not referenced by a committed catalog version is never readable. A failed commit leaves an orphan that is eligible for later reconciliation, not a visible object.}
+\req{PUB-005}{R1-C}{T-08}{A key deletion first publishes a logical delete marker and advances the generation; older versions remain subject to explicit historical rights. Permanent version deletion checks retention and version-delete permission, durably withdraws the version, updates any current pointer according to documented version semantics, and schedules physical deletion. Bytes are not removed before the logical transition is committed.}
+\req{PUB-006}{R1-C}{T-08}{Garbage collection uses catalog references, intents, tombstones and a grace period; file age is not evidence of abandonment. Reconciliation is idempotent after crashes before or after blob finalization and catalog commit. A restore recovers catalog and blobs to a mutually consistent point or quarantines unmatched entries.}
+\req{PUB-007}{R1-C}{T-08}{\code{If-Match} and \code{If-None-Match} apply to the committed logical version and its documented ETag, not to a staging file. Conflicting commits serialize with row locks or compare-and-swap and a fixed lock order, and two concurrent overwrites \mustnot\ both publish against the same obsolete expected generation. An ETag is an opaque identifier and is not promised to be an MD5; plaintext and ciphertext checksums are stored separately.}
+\req{PUB-008}{R1-C}{T-08}{Version state moves only along RESERVED, WRITING, STAGED, LIVE and DELETED, with WRITING or STAGED able to move to ABORTED or QUARANTINED, as in Figure~\ref{fig:pubstates}.}
+\req{PUB-009}{R1-C}{REV}{The first release does not claim regulatory WORM or Object Lock compliance.}
+
+\subsection{Object backend contract}
+\begin{lstlisting}
+// Logical contract. All requests carry verified workload bindings.
+type ObjectBackend interface {
+    Begin(ctx context.Context, req BeginRequest) (StagedWriter, error)
+    Finalize(ctx context.Context, req FinalizeRequest) (DurableReceipt, error)
+    Open(ctx context.Context, req ReadRequest) (BlobReader, error)
+    Remove(ctx context.Context, req RetireRequest) (RemovalReceipt, error)
+}
+\end{lstlisting}
+\req{BKD-001}{R1-C}{T-08, T-15}{\code{Begin} binds operation, tenant, blob and placement. \code{Finalize} checks exact length and digest and returns a durable receipt only after the required file and directory flushes. Repeating the same identity and content is idempotent, and the same blob ID with different bytes rejects. A timeout is an unknown result reconciled by operation identity, not an assumed failed write. \code{Open} exposes exact immutable bytes, and \code{Remove} accepts only a current catalog-authorized retirement plan. The caller owns stream close, cancellation and logical publication.}
+\reqn{BKD-002}{R1-C}{T-08}{R1 production uses one external durable object store behind this contract (decision D-02), and a local filesystem backend is the development profile. The provider's actual durability, versioning and conditional-write or precondition behavior is qualified before use, and durability and availability claims quote the provider's own documented guarantees and \mustnot\ exceed them. Encryption at rest provided by the backend is not described as the per-unit cryptographic separation of R2.}
+\req{BKD-003}{R1-C}{T-08}{The local backend uses service-owned directories, restrictive permissions, descriptor-relative safe file operations and symlink and traversal protection. Finalized blobs are immutable, and file and required directory metadata are flushed before a catalog transaction publishes a LIVE reference. Storage clients have no direct filesystem or backend credentials.}
+\req{BKD-004}{R1-C}{T-08}{A different backend implements the same interface and needs its own consistency and durability tests. It does not duplicate user-facing policy combination in a second storage engine.}
+
+\subsection{Documents and text units}
+\req{DOC-001}{R1-C}{T-06, T-08}{A document version has an immutable, authenticated manifest listing its constituent text units in canonical order with their object and version identities, digests and the extraction and normalization version. The manifest digest is bound into read and export plans.}
+\req{DOC-002}{R1-C}{T-08}{Document publication atomically validates that every referenced unit and version is committed and has the required durable receipts, records protective references and advances the document generation in the catalog transaction. Incomplete ingestion remains unpublished and reconcilable, and staged internal units are not exposed through raw storage APIs. Garbage collection and retirement honor manifest references with the same lock and compare-and-swap discipline.}
+\req{DOC-003}{R1-C}{T-06}{Content is split at authorization boundaries into stable units such as sections, paragraphs or independently protected text entries; each unit is an existing immutable logical object. Boundaries are fixed at ingestion and re-splitting creates a new document version. Protected access labels and their revisions are separate mutable records.}
+\req{DOC-004}{R1-C}{T-09}{The first ingestion profile accepts bounded UTF-8 text and Markdown with a recorded normalization scheme. PDF, DOCX and other formats need a separately qualified extraction adapter with sandboxing, size and complexity limits and source-to-text mapping, and the platform makes no promise of universal document parsing. Extraction and indexing workers have explicit workload permissions and \mustnot\ silently send plaintext to an external converter or embedding provider.}
+\req{DOC-005}{R1-C}{T-06}{A text collection or conversation uses the same unit model through \code{text.entry}; no separate transcript authorization store exists. Manifests, text units, source references and policy metadata are tenant-bound catalog records, and unit IDs are not bearer permissions.}
+\req{DOC-006}{R1-C}{T-06}{A document-level permission to enumerate or read units does not grant every unit. Actor, subject and delegation checks apply at both the parent and the selected-unit boundaries. An original binary or download needs a separate full-document permission that is never inferred from a unit read, and raw, preview, thumbnail, version, manifest and key APIs preserve that distinction. Internal unit blobs are not exposed through a broadly authorized raw object endpoint.}
+\req{DOC-007}{R1-C}{T-06, T-09}{An explicit unit-ID request requires every requested disclosure to be allowed; otherwise it returns a generic denial without forbidden content. An explicit authorized-subset operation returns only permitted units with an opaque continuation and no placeholders or counts that disclose hidden units. Source positions, titles and citations require their own permitted metadata projection.}
+\req{DOC-008}{R1-C}{T-06}{Streaming-AEAD segments and HTTP byte ranges are not independent authorization units. If different spans need different rights they are split into separate units before publication.}
+
+\subsection{Labels}\label{sec:labels}
+Authorization needs a trusted classification for every unit. Neither client-supplied nor model-generated labels are authoritative.
+\reqn{LAB-001}{R1-C}{T-09}{Every published unit carries a protected classification label from the tenant's label order. Publication of an unlabeled unit is rejected.}
+\reqn{LAB-002}{R1-C}{T-09}{A label comes from, in order of precedence: (1) explicit labeling by an authorized principal within their delegation ceiling and at or above the collection's floor; (2) the collection or bucket default; (3) a proposal from a trusted classifier workload, which is advisory until accepted under (1). Client-supplied and model-generated labels are never applied directly.}
+\reqn{LAB-003}{R1-C}{T-09}{A unit whose label cannot be determined takes its collection's most restrictive default, and every collection declares one.}
+\reqn{LAB-004}{R1-C}{T-09}{Lowering the stored label of a unit or derived output is an explicit \code{relabel} action with its own audit record and, by default, an approval. The effective label of a derived output cannot go below its lineage maximum unless a \code{relabel} allow for that output says so (\rr{DRV-007}). Raising a label is an ordinary \code{label} action.}
+\reqn{LAB-005}{R1-C}{T-09}{A label change advances the access revision of the affected unit or output. Decisions, disclosure plans and stream leases bind that revision (\rr{DEC-006}, \rr{CNT-008}). A label change does not require re-encrypting payload.}
+
+\subsection{Disclosure}
+\begin{longtable}{@{}P{0.22\textwidth}P{0.27\textwidth}P{0.32\textwidth}P{0.08\textwidth}@{}}
+\caption{MCP operations and their disclosure boundaries}\label{tab:mcpops}\\
+\toprule MCP operation & Required action model & Disclosure boundary & Phase\\\midrule\endfirsthead
+\toprule MCP operation & Required action model & Disclosure boundary & Phase\\\midrule\endhead
+\code{documents.search} & Document discovery plus permitted unit and snippet discovery and read & Filter candidates before snippet text reaches the client, a remote reranker or a model; no raw global hit counts & R1-C\\
+\code{documents.read} & Parent read-units plus per-unit read & Exact document, version, manifest and permitted-unit selection; no implicit original-file access & R1-C\\
+\code{text.read} & Collection or entry and version-scoped read & Same underlying unit and context resolver; no unguarded text endpoint & R1-C\\
+\code{ai.ask} (optional) & Per-unit use-in-model, registered model submit and destination disclosure & The proxy builds the final permitted context and calls only the approved provider and model & R1-C\\
+\code{resources/list}, \code{resources/read} & Same discovery and read actions as tools & URI resolves through registry and catalog; no direct file, arbitrary URL or raw storage bypass & R1-C\\
+\code{documents.export} & All checks of the remote-export mapping (Table~\ref{tab:keyops}) & Compatible-client ciphertext and key envelope, separate from plaintext reads & R2\\
+\bottomrule
+\end{longtable}
+\req{DSC-001}{R1-C}{T-09}{Disclosure has three shared steps. \code{ResolveDocumentUnits} binds the document version, manifest digest, selected units, source lineage and current access revisions. \code{AuthorizeDisclosure} uses the bounded batch evaluator for parent and unit actions, current context, recipient and destination, and returns an exact immutable disclosure plan; a missing or misbound result denies. The storage service or proxy then discloses only what the plan lists. MCP handlers translate requests and responses and \mustnot\ implement a second copy of resolver, authorizer or decryptor.}
+\req{DSC-002}{R1-C}{T-09}{Authorization occurs before unauthorized plaintext enters a prompt, tool result, remote reranker, embedding API, log, cache or model context. Post-generation redaction and instructions to the model are not substitutes.}
+\req{DSC-003}{R1-C}{T-09}{Disclosure and the actual model or export outcome are recorded with unit and version identifiers and hashes, not with plaintext prompts, keys or full documents. Provider calls reuse invocation idempotency, budget and UNKNOWN-outcome handling.}
+\req{DSC-004}{R1-C}{T-09}{The same final per-unit checks apply to listings, citations, previews, notifications, prompt templates and subscriptions. An unsupported surface is disabled rather than assumed to be guarded by an SDK.}
+\req{DSC-005}{R1-C}{T-09}{Query caches are bound to tenant, authority, version and epoch and \mustnot\ reuse a result computed for a broader user for a narrower one. No raw totals or structural positions reveal denied units.}
+\req{DSC-006}{R1-C}{T-09}{A policy that requires a particular model destination uses controlled submission and \mustnot\ also grant unrestricted plaintext delivery or decrypt-capable material to arbitrary clients. Exporting a usable key is equivalent to plaintext disclosure for this constraint, and only an explicitly trusted controlled recipient that matches the allowed destination may receive such a capability.}
+
+\subsection{Search}
+\req{SRH-001}{R1-C}{T-09}{Search begins with tenant-scoped catalog metadata and PostgreSQL text-search candidates where plaintext indexing is authorized. A vector database or RAG framework is not a baseline dependency.}
+\req{SRH-002}{R1-C}{T-09}{A plaintext or embedding index is sensitive derived data inside the trusted processing boundary. It is encrypted at rest and in backups with the same custody as the catalog, and entries for deleted or retired units are removed within a configured bound. Client-envelope data cannot become server-searchable plaintext without an explicitly authorized decryption and indexing step.}
+\req{SRH-003}{R1-C}{T-09}{A remote search or embedding service is a disclosure destination and requires its own policy decision.}
+\reqn{SRH-004}{R1-C}{T-09}{Result values, ordering, scores and totals returned to a caller depend only on candidates that caller is authorized to see. Page shape (short or empty pages) and latency can reflect scan work over hidden candidates; they are bounded by the scan budget and tenant limits, but the platform does not claim that pagination is noninterfering with respect to hidden candidates.}
+
+\subsection{Derived outputs and declassification}\label{sec:derived}
+Summaries, extracted text and model answers are new resources whose confidentiality depends on what they were derived from.
+\reqn{DRV-001}{R1-C}{T-09, T-21}{A derived output records lineage: all units disclosed to the generating operation. Model-provided citations do not narrow it. Lineage is bounded and checked for cycles.}
+\reqn{DRV-002}{R1-C}{T-09}{An output is delivered to a recipient only if (a) the recipient is allowed \code{read} on every unit in its lineage, or (b) an explicit \code{declassify} decision allows delivery of that output, at that version, to that recipient. A use-in-model permission or a controlled-route permission never implies either, and a \code{declassify} allow authorizes that disclosure only: it does not change the stored label (\rr{DRV-008}).}
+\reqn{DRV-003}{R1-C}{T-09}{The intended recipient and the conservative lineage are bound to the disclosure plan before output starts. Final wording is not inspected to decide whether protected material leaked, and streamed output follows the same rule.}
+\req{DRV-004}{R1-C}{T-09}{In controlled model submission, a client-requested model name resolves to a registered model, endpoint and credential profile, and the caller cannot substitute a URL after approval. Changing a parameter or destination invalidates the prepared plan. The proxy builds only permitted context and calls only the approved provider and model.}
+\reqn{DRV-005}{R1-C}{T-09}{When the requesting subject is allowed \code{use-in-model} but not \code{read} on some lineage unit, the model result is held and delivered only on a \code{declassify} allow for that output and recipient; otherwise it is discarded and the request is denied.}
+\reqn{DRV-007}{R1-C}{T-09, T-21}{The effective label of a derived output is at least the highest effective label in its lineage. A collection default acts as a floor, so the effective label is the maximum of the collection default and the lineage maximum. Only an explicit \code{relabel} allow for that output can lower it, and the effective label is the one used when the output is reopened and when a context mark is updated.}
+\reqn{DRV-008}{R1-C}{T-09, T-21}{Disclosure to one recipient and relabeling are separate authorizations. A \code{declassify} allow is bound to output, version and recipient and records the label at which the delivered copy is treated for flow control; absent an explicit lower label, that is the lineage maximum. Lowering the stored label for everyone is a \code{relabel} action (\rr{LAB-004}).}
+\req{DRV-006}{R1-C}{REV}{The model and provider that receive plaintext belong to that disclosure's trust boundary. Provider retention and training behavior is a contractual or technical property outside the cryptographic guarantee, released text cannot be recalled, and the conservative lineage model is not proof that an output contains no sensitive inference.}
+
+\subsection{Sizing and scaling}
+\reqn{SIZ-001}{R1-C}{T-22}{Qualification publishes a sizing model with the quantities in Table~\ref{tab:sizing}, uses the reference documents named there, and reports measured values. In R2 the model also covers key wraps, unwraps and release batches.}
+\req{SIZ-002}{R1-C}{T-22}{The MCP adapter scales with the \code{tools} role and the content service with the \code{storage} role, using bounded unit fan-out, parallel reads, key-release batches and context-size limits. No new permission database, duplicate evaluator, distributed cache or custom model-routing framework is introduced for the AI proxy.}
+\begin{longtable}{@{}P{0.28\textwidth}P{0.44\textwidth}P{0.18\textwidth}@{}}
+\caption{Sizing quantities (formulas; values are measured, not assumed)}\label{tab:sizing}\\
+\toprule Quantity & Formula, with $u$ units per document version and $c$ search candidates & Release\\\midrule\endfirsthead
+\toprule Quantity & Formula, with $u$ units per document version and $c$ search candidates & Release\\\midrule\endhead
+Decision batches to read a whole document & $\lceil (u+1)/50 \rceil$ (one parent check plus $u$ unit checks) & R1-C\\
+Decision batches per search page & $\lceil c/50 \rceil$ before any prefilter (\rr{CNT-007}) & R1-C\\
+Blobs, catalog rows per ingest & $u$ blobs, $u$ unit rows, 1 manifest & R1-C\\
+Key wraps at ingest, flat wrapping & $u$ KMS wraps & R2\\
+Key wraps at ingest, two-level (\rr{KEY-001}) & 1 KMS wrap plus $u$ local wraps & R2\\
+Durable receipts per publication & Backend-defined; 2 per unit with the custom store & R1-C, R3\\
+Reference documents & $u = 10$, $u = 1{,}000$ and $u = 10{,}000$ & R1-C\\
+\bottomrule
+\end{longtable}

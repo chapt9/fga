@@ -1,0 +1,91 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=23mm,headheight=15pt]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor,graphicx,booktabs,longtable,tabularx,array}
+\usepackage{enumitem,listings,fancyhdr,titlesec,needspace,etoolbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric}
+\usepackage{xurl}
+\usepackage[colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!45!black,citecolor=blue!45!black,pdfborder={0 0 0}]{hyperref}
+\hypersetup{hypertexnames=false,pdftitle={Fine-Grained Access Platform: Specification 2.1},pdfauthor={Engineering design specification},pdfsubject={Access decision, enforcement, documents and key custody for agents, tools and storage}}
+\definecolor{ink}{HTML}{163447}
+\definecolor{accent}{HTML}{187F86}
+\definecolor{pale}{HTML}{EEF4F6}
+\titleformat{\section}{\Large\bfseries\color{ink}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries\color{ink}}{\thesubsection}{0.7em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.7em}{}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlength{\emergencystretch}{3em}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.17}
+\setlist{nosep,leftmargin=1.5em,topsep=4pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{ink}FINE-GRAINED ACCESS PLATFORM}
+\fancyhead[R]{\small Specification 2.1 (draft)}
+\fancyfoot[L]{\small 30 October 2026}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\newcommand{\must}{\textbf{MUST}}
+\newcommand{\mustnot}{\textbf{MUST NOT}}
+\newcommand{\should}{\textbf{SHOULD}}
+\newcommand{\term}[1]{\textbf{#1}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\arrowto}{$\rightarrow$}
+\newcommand{\rr}[1]{\hyperlink{req:#1}{#1}}
+\newcommand{\reqtag}[2]{{\footnotesize\color{accent}(#1\,$\cdot$\,#2)}}
+\newcommand{\req}[4]{\par\noindent\hypertarget{req:#1}{\textbf{[#1]}}\ #4\ \reqtag{#2}{#3}\par}
+\newcommand{\reqn}[4]{\par\noindent\hypertarget{req:#1}{\textbf{[#1]}}\textsuperscript{\color{accent}\tiny NEW}\ #4\ \reqtag{#2}{#3}\par}
+\newcommand{\testrow}[4]{\hypertarget{test:#1}{\textbf{#1}} & #2 & #3 & #4\\}
+\lstset{basicstyle=\ttfamily\small,backgroundcolor=\color{pale},frame=single,rulecolor=\color{pale},breaklines=true,columns=fullflexible,keepspaces=true,showstringspaces=false,tabsize=2,xleftmargin=5pt,xrightmargin=5pt,aboveskip=8pt,belowskip=8pt}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\BeforeBeginEnvironment{lstlisting}{\Needspace{12\baselineskip}}
+\pretocmd{\subsection}{\Needspace{7\baselineskip}}{}{}
+\begin{document}
+\begin{titlepage}
+\vspace*{15mm}
+{\color{accent}\large ENGINEERING SPECIFICATION\par}
+\vspace{8mm}
+{\color{ink}\Huge\bfseries Fine-Grained Access\par Platform\par}
+\vspace{7mm}
+{\LARGE Decision, enforcement, documents\par and key custody for agents, tools and storage\par}
+\vspace{15mm}
+\begin{tabularx}{\textwidth}{@{}P{34mm}Y@{}}
+\toprule
+Version & 2.1 (draft for review), 30 October 2026. Supersedes 2.0 and 1.3. Incorporates an external review (Appendix~\ref{app:review}).\\
+Status & Restructured specification. No implementation exists. The test vectors have not been run against code, and policy-evaluation vectors marked for oracle confirmation are not yet frozen.\\
+Structure & Seven parts (0--6) built in three releases: R1 (decision core, enforcement, content and MCP over an external backend), R2 (key custody), R3 (S3 and replicated storage). Each requirement has one obligation, a phase and a verifying test.\\
+Core language & Go; one module; roles built from role-specific entrypoints.\\
+Open decisions & Eleven Phase 0 decisions (Section~\ref{sec:decisions}) must be closed before the work they gate.\\
+Deliverables & This LaTeX source and PDF; \texttt{vectors/} (machine-readable test vectors); \texttt{tools/check\_spec.py} (consistency check); generated tables.\\
+\bottomrule
+\end{tabularx}\par
+\vspace{8mm}
+\textbf{Central principle.} Every protected operation is an explicit action on a resource, evaluated with trusted identity, delegation, resource state and execution context. An enforcement point binds the resulting decision to the actual operation. Encryption and key release use the same model, with limits on revocation and offline use stated rather than implied.
+\vfill
+The component prefix \texttt{fga} is a placeholder, not a product or trademark selection. All described modules and APIs are proposed project code unless identified as external dependencies. Items carried over from version 1.3 that this revision could not re-verify (version pins, commit hashes, URLs, upstream license terms) are listed in Appendix~\ref{app:unverified}.
+\end{titlepage}
+\pagenumbering{roman}{\small\setlength{\parskip}{0pt}\tableofcontents}\clearpage\pagenumbering{arabic}
+
+\setcounter{section}{-1}
+\input{p00-overview}
+\input{p01-decision-core}
+\input{p02-enforcement}
+\input{p03-content}
+\input{p04-custody}
+\input{p05-storage}
+\input{p06-engineering}
+
+\appendix
+\input{appendix-scenarios}
+\input{appendix-vectors}
+\input{appendix-traceability}
+\input{appendix-review}
+\input{appendix-mapping}
+\input{appendix-references}
+\end{document}

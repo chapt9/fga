@@ -1,0 +1,129 @@
+\begin{longtable}{@{}P{0.08\textwidth}P{0.40\textwidth}P{0.24\textwidth}P{0.16\textwidth}@{}}
+\toprule ID & Given & Expected & Requirements\\\midrule\endhead
+\multicolumn{4}{@{}l}{\textbf{T-01} (R1-A)}\\
+V-001$^{\dagger}$ & Principal has role reviewer, same tenant, project in P.attr.project\_ids; Unit state is LIVE; Root and acme tenant policies of Section 1.4.2 are active & \code{ALLOW} & \rr{POL-002}, \rr{POL-003}\\
+V-002 & Same principal and unit; Check made through the HTTP adapter and through MCP resources/read\newline\textit{Business decision and resource-bindings digest are identical (G-02).} & \code{ALLOW}, \code{ALLOW} & \rr{RES-003}\\
+V-003 & Role reviewer requests action export on a document\_unit; No rule grants export\newline\textit{Unresolved actions ultimately deny.} & \code{DENY} & \rr{POL-003}\\
+V-004$^{\dagger}$ & One role path has a matching DENY rule and a matching ALLOW rule for the same action & \code{DENY} & \rr{POL-002}\\
+V-005$^{\dagger}$ & Principal holds roles A and B; Role A's rule denies read; Role B's rule allows read\newline\textit{Independent role paths: documented hazard, see Section 1.4.2.} & \code{ALLOW} & \rr{POL-002}\\
+V-006 & A principal policy allows read for this principal; The ceiling set denies read when state is not LIVE; Unit state is DRAFT\newline\textit{A principal-policy result cannot override a ceiling.} & \code{DENY} & \rr{POL-007}\\
+V-007 & Batch of three checks; Second check is denied by policy\newline\textit{Results keep request order and the deny does not affect the others.} & \code{ALLOW}, \code{DENY}, \code{ALLOW} & \rr{DEC-004}\\
+V-008$^{\dagger}$ & A principal policy denies read for this principal; The resource policy would allow read\newline\textit{A definitive principal effect ends that policy-type evaluation.} & \code{DENY} & \rr{POL-003}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-02} (R1-A)}\\
+V-010 & Production bundle sets strict evaluation to off & \code{REJECT_BUNDLE} & \rr{POL-005}\\
+V-011 & Production bundle sets attribute-schema enforcement to warn & \code{REJECT_BUNDLE} & \rr{POL-005}\\
+V-012$^{\dagger}$ & A DENY rule's condition reads R.attr.classification, which is absent; A broader ALLOW rule matches the action\newline\textit{Strict evaluation: an erroring rule denies the affected action instead of being skipped.} & \code{DENY} & \rr{POL-005}, \rr{POL-006}\\
+V-013 & A tenant-scope resource policy allows read of a DRAFT unit; The ceiling set denies read when state is not LIVE & \code{DENY} & \rr{POL-007}\\
+V-014 & Policy uses a construct that the pinned format version does not support\newline\textit{Never silently ignored.} & \code{REJECT_BUNDLE} & \rr{POL-002}\\
+V-015 & A condition exceeds the expression cost bound\newline\textit{A resource-limit failure is a platform failure, never an allow.} & \code{ERROR} & \rr{POL-009}\\
+V-016 & A condition iterates over a ten-million-element list supplied in the request & \code{ERROR} & \rr{POL-009}\\
+V-017 & A production bundle's ceiling set contains a principal policy & \code{REJECT_BUNDLE} & \rr{POL-007}\\
+V-018 & A ceiling rule's condition reads an attribute that is absent\newline\textit{A ceiling evaluation error denies the check.} & \code{DENY} & \rr{POL-007}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-03} (R1-A)}\\
+V-020 & Request body claims role admin; Roles resolved from authoritative state do not permit the action & \code{DENY} & \rr{ID-002}\\
+V-021 & Delegation expiry has passed\newline\textit{Platform reason DELEGATION\_EXPIRED; business effects are NOT\_EVALUATED.} & \code{DENY} & \rr{DLG-001}\\
+V-022 & A child delegation lists an action that its parent does not & \code{DENY} & \rr{DLG-002}\\
+V-023 & Delegation audience is executor A; Presented by executor B & \code{DENY} & \rr{DLG-001}\\
+V-024 & Subject is permitted to invoke the tool; The agent actor lacks execution capability for the tool\newline\textit{Effective authority is the intersection.} & \code{DENY} & \rr{DLG-004}\\
+V-025 & A signed decision whose audience is the storage role is presented to the keys role & \code{DENY} & \rr{TRU-004}\\
+V-026 & A single-use signed decision for a mutation is presented a second time & \code{DENY} & \rr{DEC-008}\\
+V-027 & The request carries an actor identity revision older than the current revision & \code{DENY} & \rr{ID-004}\\
+V-028 & The MCP adapter calls the content service with its workload identity and caller-asserted claims only; No signed decision or verifiable delegation reference & \code{DENY} & \rr{TRU-003}\\
+V-029 & A retrieved document says to register a new tool and widen the delegation; The agent only reads it\newline\textit{The read is allowed if otherwise permitted. The text causes no change to the registry or the delegation.} & \code{ALLOW} & \rr{MCP-004}\\
+V-120 & After reading that document, the agent asks to register a new tool\newline\textit{An unauthorized follow-up is denied as an ordinary request.} & \code{DENY} & \rr{MCP-004}\\
+V-121 & Two replicas present the same single-use signed decision at the same time & \code{EXECUTED_ONCE}, \code{DENY} & \rr{DEC-011}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-04} (R1-B)}\\
+V-030 & Expense of 500.00 USD was approved; The amount is changed to 5000.00 USD before dispatch\newline\textit{New operation digest, so the old approval no longer applies.} & \code{NEEDS_APPROVAL} & \rr{APR-001}, \rr{AGT-004}\\
+V-031 & The decision lists a required obligation type that the executor does not implement & \code{NOT_EXECUTED} & \rr{ENF-001}\\
+V-032 & The connector receives a redirect to a host that is not the registered destination & \code{NOT_EXECUTED} & \rr{AGT-005}\\
+V-033 & The agent's description says Pay vendor X 50.00; The canonical plan says 5000.00 to vendor Y\newline\textit{The approver sees the canonical plan; the agent text is shown only as an unverified note.} & \code{RENDER_CANONICAL} & \rr{APR-005}\\
+V-034 & The tool's schema digest differs from its registry record & \code{NOT_EXECUTED} & \rr{AGT-001}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-05} (R1-B)}\\
+V-040 & Two executions try to consume the same single-use approval at the same time & \code{EXECUTED_ONCE}, \code{DENY} & \rr{APR-002}, \rr{APR-003}\\
+V-041 & Remaining budget is 1000; Two concurrent reservations of 600 each & \code{RESERVED}, \code{DENY} & \rr{APR-004}\\
+V-042 & Dispatch times out; The downstream service offers no idempotency or reconciliation\newline\textit{No redispatch; the reservation stays.} & \code{UNKNOWN_RETAINED} & \rr{INV-005}, \rr{INV-007}\\
+V-043 & A worker's lease expired while the invocation was DISPATCHING; A replacement worker picks it up & \code{RECONCILE} & \rr{INV-003}\\
+V-044 & An UNKNOWN financial invocation is older than the tool's maximum hold age; A principal other than the requester records a failure verified by evidence & \code{RESERVATION_RELEASED} & \rr{INV-006}\\
+V-045 & The original requester tries to resolve their own UNKNOWN financial invocation & \code{DENY} & \rr{INV-006}\\
+V-046 & An operator marks an UNKNOWN financial invocation ABANDONED without verified evidence of failure\newline\textit{The reservation stays charged and the approval stays consumed; redispatch is denied.} & \code{RESERVATION_RETAINED}, \code{DENY} & \rr{INV-009}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-06} (R1-A, R1-C)}\\
+V-035 & Tool invoke is allowed; Source read is allowed; Send to the destination is denied\newline\textit{One denied check denies the compound operation.} & \code{DENY} & \rr{RES-006}\\
+V-050 & Same principal and unit; HTTP GET, MCP resources/read and the MCP read tool\newline\textit{S3 GET joins this set in R3.} & \code{ALLOW}, \code{ALLOW}, \code{ALLOW} & \rr{RES-002}, \rr{CNT-001}\\
+V-051 & An alias resolved to version 7; Version 8 is published before admission\newline\textit{Generation mismatch; the caller retries and resolves again.} & \code{DENY} & \rr{RES-004}\\
+V-052 & Whole-document download is requested; The manifest has an unclassified attachment & \code{DENY} & \rr{CNT-003}\\
+V-053 & The parent document allows read-units; The personnel unit is denied; A whole-document path is requested & \code{DENY} & \rr{CNT-003}, \rr{DOC-006}\\
+V-054 & An explicit unit-ID request mixes permitted and denied units\newline\textit{Generic denial; no content and no hint of which unit was denied.} & \code{DENY} & \rr{DOC-007}\\
+V-055 & The same selection is sent as an authorized-subset request\newline\textit{Permitted units only, no placeholders and no counts of hidden units.} & \code{FILTERED} & \rr{DOC-007}\\
+V-056 & An object key is renamed; The same principal is still allowed on the resource\newline\textit{Permission identity does not change with the alias.} & \code{ALLOW} & \rr{RES-005}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-08} (R1-C)}\\
+V-060 & Two writers stage versions against the same expected generation & \code{COMMITTED}, \code{REJECTED} & \rr{PUB-003}, \rr{PUB-007}\\
+V-061 & The uploader's project membership is revoked between staging and commit\newline\textit{The blob stays staged for reconciliation; the object is not LIVE.} & \code{REJECTED} & \rr{PUB-003}\\
+V-062 & The process crashes after blob finalization and before catalog commit\newline\textit{Collected only after the grace period.} & \code{NOT_VISIBLE} & \rr{PUB-004}, \rr{PUB-006}\\
+V-063 & Manifest commit is interrupted after 3 of 5 units are committed & \code{NOT_VISIBLE} & \rr{DOC-002}\\
+V-064 & Garbage collection finds an old blob that a document manifest still references\newline\textit{The deletion does not run.} & \code{NOT_EXECUTED} & \rr{PUB-006}, \rr{DOC-002}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-09} (R1-C)}\\
+V-070 & A search has 20 candidate units; 5 are denied to the caller\newline\textit{No total count; values and ordering depend only on the 15 permitted units. Page shape is not claimed to be noninterfering (SRH-004).} & \code{FILTERED} & \rr{SRH-004}, \rr{DSC-005}\\
+V-071 & An answer's citation metadata contains the title of a denied unit & \code{DENY} & \rr{DOC-007}, \rr{DSC-004}\\
+V-072 & A summary is derived from unit A (readable) and unit B (not readable by the recipient); No declassify decision exists & \code{DENY} & \rr{DRV-002}\\
+V-073 & Same summary; A declassify decision allows delivery of this output to this recipient & \code{ALLOW} & \rr{DRV-002}\\
+V-074 & Policy requires the controlled model route; The client requests raw text export & \code{DENY} & \rr{DSC-006}\\
+V-075 & use-in-model is allowed on unit B; read is denied on unit B; The model produces a result\newline\textit{Delivered only on a declassify allow; otherwise discarded.} & \code{HELD} & \rr{DRV-005}\\
+V-076 & A query result was cached for a user with broader rights; A user with narrower rights repeats the query & \code{NOT_REUSED} & \rr{DSC-005}\\
+V-077 & Publication of a unit that has no classification label & \code{REJECTED} & \rr{LAB-001}\\
+V-078 & A classifier workload proposes a lower label for a stored unit\newline\textit{Advisory until accepted by an authorized principal.} & \code{NOT_APPLIED} & \rr{LAB-002}\\
+V-079 & HEAD on an object that exists but is hidden from the caller; HEAD on an object that does not exist\newline\textit{Both return the same response.} & \code{DENY} & \rr{CNT-004}\\
+V-080 & A listing continuation token issued to principal P is replayed by principal Q & \code{DENY} & \rr{CNT-005}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-11} (R2)}\\
+V-132 & Remote export of selected units; Parent export on the document is denied; all other checks are allowed & \code{DENY} & \rr{KEY-012}, \rr{RCP-005}\\
+V-133 & Remote export of selected units; Export-key on a selected unit is denied; all other checks are allowed & \code{DENY} & \rr{KEY-012}, \rr{RCP-005}\\
+V-134 & Remote export of selected units; Receive-key on the recipient is denied; all other checks are allowed & \code{DENY} & \rr{KEY-012}, \rr{RCP-005}\\
+V-135 & Remote export of selected units; Release on a selected unit's envelope is denied; all other checks are allowed & \code{DENY} & \rr{KEY-012}, \rr{RCP-005}\\
+V-136 & A validly signed decision for remote export lacks the receive-key check; It is presented to the broker\newline\textit{The broker verifies the complete check set, not only the signature.} & \code{DENY} & \rr{TRU-005}, \rr{KEY-012}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-13} (R1-A, R1-C, R2)}\\
+V-085 & A delegation is revoked while a 200 MB stream is in progress\newline\textit{Aborted at the next lease check, within T\_check; bytes already sent are not recalled (N-01).} & \code{ABORT_STREAM} & \rr{CNT-008}, \rr{DLG-005}\\
+V-086 & A decision is presented after its valid\_until & \code{DENY} & \rr{DEC-005}\\
+V-087 & The resource generation advances between decision and execution & \code{DENY} & \rr{DEC-006}\\
+V-088 & A key-release request is retried after the grant was revoked\newline\textit{R2.} & \code{DENY} & \rr{KEY-010}\\
+V-122 & A signed decision has a valid signature; The delegation revision has advanced since it was issued\newline\textit{A signature does not replace the revision check.} & \code{DENY} & \rr{DEC-006}\\
+V-129 & A 200 MB stream is in progress; A unit's label is raised; the content generation is unchanged & \code{ABORT_STREAM} & \rr{CNT-008}\\
+V-130 & A lease check cannot complete within twice T\_check because the catalog is overloaded & \code{ABORT_STREAM} & \rr{CNT-008}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-14} (R1-A)}\\
+V-090 & A candidate bundle fails compilation on an instance\newline\textit{The prior snapshot stays active and readiness is unchanged.} & \code{REJECT_ACTIVATION} & \rr{REL-001}\\
+V-091 & A node holds a bundle older than the tenant's required epoch & \code{DENY} & \rr{REL-003}\\
+V-092 & A batch of 50 checks spans a bundle activation & \code{SAME_DIGEST} & \rr{REL-002}\\
+V-093 & An older bundle is re-published as a rollback & \code{EPOCH_INCREASES} & \rr{REL-004}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-16} (R1-C)}\\
+V-123 & A client cancels while the primary waits for synchronous replication; The transaction is visible on the primary; The standby flush position is behind the commit position\newline\textit{A lookup by operation ID is not evidence of durability; the outcome stays unknown.} & \code{NOT_EXECUTED} & \rr{AVL-004}\\
+V-124 & Same transaction; A later synchronous commit is acknowledged, or the standby flush position reaches the commit position, on the fenced timeline & \code{EXECUTED_ONCE} & \rr{AVL-004}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-20} (R1-A)}\\
+V-100 & An ordinary API request asks to add a trusted issuer & \code{DENY} & \rr{ADM-002}\\
+V-101 & The keys role's import graph contains the S3 handler package & \code{REJECT_BUILD} & \rr{MOD-004}\\
+V-137 & The decision role's import graph contains the MCP SDK package & \code{REJECT_BUILD} & \rr{MOD-004}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-21} (R1-C)}\\
+V-110 & The session has read a unit labeled restricted; It calls an email tool whose destination clearance is internal & \code{DENY} & \rr{FLW-003}\\
+V-111 & Same session and call; A policy output asks for approval for this case & \code{NEEDS_APPROVAL} & \rr{FLW-003}\\
+V-112 & The session has read only public units; Same email call; all other checks pass & \code{ALLOW} & \rr{FLW-003}\\
+V-113 & The session reads a unit with no label; It then calls the internal-clearance email tool\newline\textit{An unlabeled unit counts as the highest level.} & \code{DENY} & \rr{FLW-004}\\
+V-114 & The context has read a restricted unit; The agent reconnects with a new MCP session under the same delegation; It calls the internal-clearance email tool\newline\textit{The mark is inherited by context key and is not reset by a connection.} & \code{DENY} & \rr{FLW-008}\\
+V-115 & A session identifier bound to actor A is presented by actor B & \code{DENY} & \rr{MCP-007}\\
+V-116 & A different delegation, and so a different context key, starts work\newline\textit{Content that reaches the agent by an unmediated route is outside the guarantee (N-02).} & \code{ALLOW} & \rr{FLW-008}\\
+V-117 & An internal-destination call is allowed at mark revision 5; A restricted read raises the mark to revision 6 before dispatch\newline\textit{Dispatch rechecks the mark revision; a new decision is required.} & \code{NOT_EXECUTED} & \rr{FLW-007}\\
+V-118 & Two concurrent reads disclose a restricted unit and a confidential unit\newline\textit{Neither update can overwrite the other.} & \code{MARK_RAISED_TO_MAX} & \rr{FLW-007}\\
+V-119 & A summary of restricted units is saved in a collection whose default label is public; It is reopened in a new connection under the same delegation; The agent calls the internal-clearance email tool\newline\textit{The effective label stays at the lineage maximum.} & \code{DENY} & \rr{DRV-007}\\
+V-127 & A mark was computed under label-order generation 3; Generation 4 activates with a different order and no mapping; The context calls the internal-clearance email tool\newline\textit{An older-generation mark is treated as the highest level.} & \code{DENY} & \rr{FLW-004}\\
+V-128 & A declassify decision allows delivery of a restricted-lineage output to recipient R; The output is later reopened in another context that calls the internal-clearance email tool\newline\textit{Declassification did not relabel the stored output.} & \code{DENY} & \rr{DRV-008}\\
+\bottomrule
+\end{longtable}

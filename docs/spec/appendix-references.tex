@@ -1,0 +1,11 @@
+\section{Carried-over items not verified in this revision}\label{app:unverified}
+Versions 2.0 and 2.1 restructure and rewrite version 1.3 and did not repeat the upstream research, apart from the two sourced claims named in Appendix~\ref{app:review}. The following items come from version 1.3 and have not been re-checked; each should be confirmed before the decision or requirement that depends on it is relied on.
+\begin{itemize}
+\item \textbf{Version pins and dates} in the reference list (the Go toolchain, CEL for Go, Tink for Go, OpenBao, PostgreSQL 18 documentation, and MCP protocol revision 2026-07-28). The specification itself pins nothing; pins are recorded at dependency admission (\rr{LIB-003}).
+\item \textbf{Upstream commit hashes and source anchors} for MinIO and Cerbos, and the ``completed functionality mapping'' (97 MinIO and 71 Cerbos feature records) that version 1.3 cites as its evidence base. That mapping file is not part of this package, so the feature records cannot be checked from it.
+\item \textbf{Upstream license terms.} Version 1.3 does not state them. Expected here: AGPL-3.0 for MinIO and Apache-2.0 for Cerbos. A reviewer reports that the pinned Cerbos LICENSE is Apache-2.0; that report has not been verified here. The question is the subject of \rr{SRC-004} and decision D-01.
+\item \textbf{Third-party behavior that requirements rely on:} Cerbos principal-first precedence (confirmed against the public evaluation documentation during the 2.1 revision) and role-path combination (V-005, V-008); OpenBao Transit associated-data and rewrap behavior (\rr{KEY-005}); the Tink hybrid-encryption suite name and framing (\rr{RCP-004}, \rr{RCP-007}); the default checksum behavior of current AWS SDK releases (\rr{S3P-005}); and PostgreSQL's behavior when a synchronous wait is cancelled (confirmed against the Patroni documentation, \rr{AVL-004}).
+\item \textbf{Proposed numbers:} the decision limits of \rr{DEC-009}, the lease check interval of \rr{CNT-008}, the maximum hold age of \rr{INV-006}, the replication counts and the five-minute recovery objective of \rr{AVL-005}.
+\end{itemize}
+
+\input{references-body}
