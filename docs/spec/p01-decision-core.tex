@@ -69,51 +69,48 @@ EvaluatorResult {
 }
 \end{lstlisting}
 \req{POL-001}{R1-A}{T-01}{Business policy evaluation sits behind the evaluator contract. The conformance corpus (\rr{TEST-003}) applies to any engine that implements the contract.}
-\req{POL-002}{R1-A}{T-01, T-02}{The evaluator supports the pinned public policy format and its evaluation semantics: resource, principal, role, derived-role, exported-variable and exported-constant definitions; scopes; conditions; outputs; schemas; imports. A construct that is not supported is rejected at bundle validation and \mustnot\ be silently ignored.}
-\req{POL-003}{R1-A}{T-01}{Evaluation proceeds in this order: (1) authenticate and validate the execution envelope; (1b) evaluate the ceiling set for every check, as an always-run gate that does not depend on the business result; (2) normalize resource, action and principal input and resolve policy version, scope and configuration; (3) evaluate the business set with the compatible algorithm, including principal-first evaluation, independent role paths and definitive early results; (4) apply the business result unchanged to that check and combine it with the ceiling result so that a ceiling \code{DENY} always wins; (5) fulfil platform prerequisites and obligations. Platform steps add rejections only. They \mustnot\ turn a business denial into an allow, and the business evaluator's own precedence is not altered.}
+\req{POL-002}{R1-A}{T-01, T-02}{The evaluator implements the project's own policy format and evaluation rules of Section~\ref{sec:policyformat}. A document or construct that the format does not define is rejected at bundle validation and \mustnot\ be silently ignored.}
+\req{POL-003}{R1-A}{T-01}{Evaluation proceeds in this order: (1) authenticate and validate the execution envelope; (1b) evaluate the ceiling set for every check, as an always-run gate that does not depend on the business result; (2) normalize resource, action and principal input and resolve the scope chain; (3) evaluate the business set by the rules of Section~\ref{sec:policyformat}, in which a matching deny always overrides an allow; (4) apply the business result unchanged to that check and combine it with the ceiling result so that a ceiling \code{DENY} always wins; (5) fulfil platform prerequisites and obligations. Platform steps add rejections only and \mustnot\ turn a business denial into an allow.}
 \req{POL-004}{R1-A}{T-01}{The response records the business decision and any platform rejection reason separately. A protocol or authentication failure \mustnot\ be reported as a policy-combination rule, and no adapter implements alternate granting logic.}
-\req{POL-005}{R1-A}{T-02}{The production profile sets strict evaluation on and attribute-schema enforcement to reject, and bundle validation rejects a bundle or configuration that selects otherwise. An evaluation error in any rule that can affect a requested action yields \code{DENY} for that action. This is a deliberate narrowing of the compatible tuning options: the non-strict modes remain available only in non-production profiles used for compatibility testing.}
+\req{POL-005}{R1-A}{T-02}{Evaluation is strict. An error in the condition of any candidate rule for a requested action yields \code{DENY} for that action, or an objection in the ceiling set. The format has no lenient mode, so no configuration can select one.}
 \req{POL-006}{R1-A}{T-02}{A missing business attribute is handled by the production profile and \mustnot\ fall through to an allow. Trusted-envelope facts never depend on business-schema settings: invalid credentials, wrong tenant or resource binding, unavailable authority, malformed transport, process faults and exhausted limits always reject.}
 \req{POL-007}{R1-A}{T-01, T-02}{Platform ceilings are a separate, deny-only ceiling set in the signed bundle. Every check is also evaluated against the ceiling set through the evaluator contract (\code{policy_set: CEILING}) before and independently of the business evaluation, and a ceiling \code{DENY} or a ceiling evaluation error denies the check whatever any principal, role, derived-role or scope result says. Bundle validation rejects a ceiling set that contains a principal policy, an allow rule or a scope override.}
 \req{POL-008}{R1-A}{T-01}{Time is captured freshly for each request or batch and never frozen at bundle preparation. Admission and commit checks use current server time.}
 \req{POL-009}{R1-A}{T-02}{Policy expressions cannot fetch network data, read files, execute scripts or acquire credentials. Compilation, input size, evaluation cost, memory and concurrency are bounded independently of business-policy options.}
 \req{POL-010}{R1-A}{T-01}{A snapshot is prepared once per immutable bundle. It contains the validated policy graph, schemas, checked executable expressions, configuration and dispatch indexes keyed by static resource, action, version and scope facts. The index \mustnot\ omit a rule because another path looks permissive. A compiled expression is shared only when the complete environment identity (types, function signatures, schema digests, library and options versions, cost model, evaluator-semantics version) matches.}
 \req{POL-011}{R1-A}{T-01}{Policy outputs are data. A mapping from selected output fields to platform obligations is allowed only when explicitly configured, versioned and validated. No mandatory proprietary policy field is introduced for approvals or storage behavior.}
-\reqn{POL-012}{R1-A}{T-01}{Before compatibility is advertised, the schema, configuration and function contract at the pinned revision is captured and the conformance corpus is run against a pinned reference engine used only as a test oracle. Differences are triaged as defects or documented departures. Use of an upstream binary as an oracle is recorded in the provenance record (\rr{SRC-004}).}
+\reqn{POL-012}{R1-A}{T-01}{The conformance corpus of policy-evaluation vectors is part of this specification and runs against the engine in CI. No upstream engine is used as a reference or oracle (D-01).}
 \req{POL-013}{R1-A}{T-02}{YAML authoring is converted offline into the same strict typed representation as JSON. Ambiguous or unsafe constructs are rejected, and evaluation never runs a YAML parser.}
-\reqn{POL-014}{R1-A}{T-01}{Scope inheritance and the scope-permission modes of the pinned format remain business-policy behavior. No platform guarantee depends on them; a guarantee that must hold across tenants is expressed in the ceiling set (\rr{POL-007}) or in a platform gate.}
+\reqn{POL-014}{R1-A}{T-01}{Scopes form a dot-separated chain from the request's scope to the root. Rules from every scope on the chain are combined by the same deny-overrides rule, so a child scope can add allows but cannot lift a deny from a parent scope or from the root.}
 
-\subsubsection{Platform ceilings and scopes}
-A tenant scope is a policy selector, not proof of tenant identity (tenant binding is a platform gate). Scope inheritance is business-policy behavior of the pinned format and is not what enforces a platform ceiling. In the pinned semantics a principal policy's explicit result is final for its action, so a ceiling written as an ordinary resource rule could be bypassed by a principal policy. Ceilings therefore live in a separate deny-only set that is evaluated for every check (\rr{POL-007}).
+\subsubsection{Policy format}\label{sec:policyformat}
+The policy format is the project's own (D-01). A document holds rules for one resource type in one scope and one policy set:
 \begin{lstlisting}
-# Ceiling set (policy_set: CEILING): deny rules only, no principal policies.
-apiVersion: api.cerbos.dev/v1
-resourcePolicy:
-  resource: document_unit
-  version: default
-  rules:
-    - actions: ["read", "use-in-model"]
-      effect: EFFECT_DENY
-      roles: ["*"]
-      condition:
-        match:
-          expr: R.attr.state != "LIVE"
----
-# Business set (policy_set: BUSINESS): ordinary tenant policy.
-apiVersion: api.cerbos.dev/v1
-resourcePolicy:
-  resource: document_unit
-  version: default
-  scope: acme
-  rules:
-    - actions: ["read"]
-      effect: EFFECT_ALLOW
-      roles: ["reviewer"]
-      condition:
-        match:
-          expr: R.attr.project_id in P.attr.project_ids
+{
+  "format": "fga.policy/v1",
+  "set": "business",
+  "resource": "document.text_unit",
+  "scope": "acme",
+  "rules": [
+    {"id": "reviewers-read-own-projects",
+     "effect": "allow",
+     "actions": ["read"],
+     "roles": ["reviewer"],
+     "when": "resource.attributes.project_id in principal.attributes.project_ids"}
+  ]
+}
 \end{lstlisting}
-Role-path semantics are inherited from the pinned format and are a known trap: an explicit deny reached through one role path does not stop an allow reached through another role the principal also holds (vector V-005). Policy review tooling \should\ flag principals with overlapping roles.
+The ceiling set uses the same document shape with \code{"set": "ceiling"} and deny rules only, for example a rule that denies \code{read} for any role \code{when} the unit is not LIVE.
+
+For one principal, resource and action, the engine:
+\begin{enumerate}
+\item collects the candidate rules of the requested set for the resource type from the request's scope and each ancestor up to the root;
+\item treats a rule as matching when it lists the action (or \code{*}), the principal holds one of its roles (or \code{*}), and its condition is true or absent;
+\item for the business set, returns \code{DENY} if any matching rule denies, otherwise \code{ALLOW} if any matching rule allows, otherwise \code{DENY};
+\item for the ceiling set, reports an objection if any matching rule denies, and no objection otherwise;
+\item denies (or objects) when the condition of any candidate rule fails to evaluate.
+\end{enumerate}
+Conditions are CEL expressions over \code{principal} (\code{id}, \code{roles}, \code{attributes}), \code{resource} (\code{type}, \code{id}, \code{scope}, \code{attributes}) and \code{request} (\code{now}). They are compiled once per bundle and run under a cost limit. Because a deny always overrides an allow, holding an extra role cannot undo a deny, and no business rule can bypass a ceiling. Principal-specific policies, derived roles, shared variables and outputs are not part of version 1; they can be added later without changing the meaning of existing policies.
 
 \subsection{Decision API}\label{sec:decisionapi}
 \begin{lstlisting}
@@ -152,7 +149,7 @@ DecisionResponse {
 \req{DEC-005}{R1-A}{T-13}{\code{valid_until} is bounded by the earliest of identity or session expiry, delegation expiry, approval or grant expiry, context freshness limit, request deadline and a conservative decision-age limit. A decision is not a general bearer permission.}
 \req{DEC-006}{R1-A}{T-13}{At read admission and immediately before a mutation's irreversible or egress checkpoint, the executor rechecks expiry and every authority-bearing revision recorded with the decision: resource generation; metadata revision; access and label revisions of the parent and of each selected unit; delegation and identity revisions; context mark revision and label-order generation; and the required policy epoch. A mismatch requires a new decision or rejection. The executor uses the same canonical operation that was evaluated.}
 \req{DEC-007}{R1-A}{T-03}{Identity and capability checks are enforced at the decision API itself. mTLS workload identity or an equivalent bound credential identifies the adapter, and an ordinary user cannot submit fabricated verified context.}
-\reqn{DEC-008}{R1-A}{T-03}{The decision service signs each \code{ALLOW} record with a registered decision-signing key, used for no other purpose, whenever the decision will be used across a process or role boundary or retained. The signed bytes are one canonical serialization (strict Protobuf, no maps or unknown fields, signed exactly as transmitted) containing: decision ID; audience (deployment, role and service); tenant; actor, subject, delegation and context identity with their revisions; operation digest; every check with its resource binding and effect; bundle digest and policy epoch; access, label and context-mark revisions and the label-order generation; and issue time and \code{valid_until}. A verifier checks signature, audience, validity and the replay rule, and still performs the fresh revision checks of \rr{DEC-006}: a signature does not replace them. A role \mustnot\ accept a decision whose audience is another role. A signed decision proves that the sole authority evaluated the request it describes; it is not proof that the user's intent or the request's context was validly established.}
+\reqn{DEC-008}{R1-A}{T-03}{The decision service signs each \code{ALLOW} record with a registered decision-signing key, used for no other purpose, whenever the decision will be used across a process or role boundary or retained. The signed bytes are one canonical serialization (strict JSON with no unknown or duplicate fields, signed exactly as transmitted) containing: decision ID; audience (deployment, role and service); tenant; actor, subject, delegation and context identity with their revisions; operation digest; every check with its resource binding and effect; bundle digest and policy epoch; access, label and context-mark revisions and the label-order generation; and issue time and \code{valid_until}. A verifier checks signature, audience, validity and the replay rule, and still performs the fresh revision checks of \rr{DEC-006}: a signature does not replace them. A role \mustnot\ accept a decision whose audience is another role. A signed decision proves that the sole authority evaluated the request it describes; it is not proof that the user's intent or the request's context was validly established.}
 \req{DEC-009}{R1-A}{T-22}{Initial qualification limits are a 250 ms single-decision budget, 64 KiB of context, 50 resources per batch, 8 KiB of expression text, bounded AST depth, 10,000 expression cost units per condition and a total request budget. These are proposed limits, not measured guarantees; independent input, compilation, allocation, concurrency and cancellation limits are mandatory, and cancellation reaches both queued and running evaluation.}
 \req{DEC-010}{R1-A}{T-01}{Error diagnostics distinguish a policy denial from a service failure without exposing protected details to unauthorized clients.}
 \reqn{DEC-011}{R1-A}{T-03}{Consumption of a single-use signed decision (mutation and key release) is an atomic, durably acknowledged compare-and-set in the catalog, shared by every replica of the verifying role and recorded before the effect begins. A replica that cannot reach the consumption store refuses the decision.}

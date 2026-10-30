@@ -1,9 +1,9 @@
 // Package policy defines the contract between the decision service and the
 // business-policy engine (specification 2.1, Section 1.4.1, POL-001).
 //
-// The engine behind the contract is the open-source Cerbos PDP (decision
-// D-01). Code outside the evaluator implementation does not depend on which
-// engine runs.
+// The engine behind the contract is the project's own evaluator for its own
+// policy format (decision D-01). Code outside the evaluator implementation
+// does not depend on how the engine works.
 package policy
 
 import (

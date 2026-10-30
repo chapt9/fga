@@ -1,4 +1,4 @@
-Fine-Grained Access Platform - Specification 2.1 (draft)
+Fine-Grained Access Platform - Specification 2.2 (draft)
 
 Files:
   main.tex, p00..p06-*.tex, appendix-*.tex   LaTeX source (Parts 0-6, appendices A-F)
@@ -7,7 +7,7 @@ Files:
   tools/check_spec.py                       Consistency check and table generator
   generated/*.tex                           Output of check_spec.py (traceability, mapping, vectors)
   references-body.tex                       Reference list carried over from 1.3 (unverified)
-  fine-grained-access-spec-v2.1.pdf         Compiled PDF (2.0 kept alongside as fine-grained-access-spec-v2.0.pdf)
+  fine-grained-access-spec-v2.2.pdf         Compiled PDF
 
 Build (tested with Tectonic 0.17.0, Python 3.13):
   python3 -I tools/check_spec.py     # validates and regenerates generated/*.tex

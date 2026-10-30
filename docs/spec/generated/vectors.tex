@@ -1,24 +1,24 @@
 \begin{longtable}{@{}P{0.08\textwidth}P{0.40\textwidth}P{0.24\textwidth}P{0.16\textwidth}@{}}
 \toprule ID & Given & Expected & Requirements\\\midrule\endhead
 \multicolumn{4}{@{}l}{\textbf{T-01} (R1-A)}\\
-V-001$^{\dagger}$ & Principal has role reviewer, same tenant, project in P.attr.project\_ids; Unit state is LIVE; Root and acme tenant policies of Section 1.4.2 are active & \code{ALLOW} & \rr{POL-002}, \rr{POL-003}\\
+V-001 & Principal has role reviewer, same tenant, and the unit's project is in the principal's projects; Unit state is LIVE; The example policy of Section 1.4.2 is active & \code{ALLOW} & \rr{POL-002}, \rr{POL-003}\\
 V-002 & Same principal and unit; Check made through the HTTP adapter and through MCP resources/read\newline\textit{Business decision and resource-bindings digest are identical (G-02).} & \code{ALLOW}, \code{ALLOW} & \rr{RES-003}\\
 V-003 & Role reviewer requests action export on a document\_unit; No rule grants export\newline\textit{Unresolved actions ultimately deny.} & \code{DENY} & \rr{POL-003}\\
-V-004$^{\dagger}$ & One role path has a matching DENY rule and a matching ALLOW rule for the same action & \code{DENY} & \rr{POL-002}\\
-V-005$^{\dagger}$ & Principal holds roles A and B; Role A's rule denies read; Role B's rule allows read\newline\textit{Independent role paths: documented hazard, see Section 1.4.2.} & \code{ALLOW} & \rr{POL-002}\\
-V-006 & A principal policy allows read for this principal; The ceiling set denies read when state is not LIVE; Unit state is DRAFT\newline\textit{A principal-policy result cannot override a ceiling.} & \code{DENY} & \rr{POL-007}\\
+V-004 & One role path has a matching DENY rule and a matching ALLOW rule for the same action & \code{DENY} & \rr{POL-002}\\
+V-005 & Principal holds roles A and B; Role A's rule denies read; Role B's rule allows read\newline\textit{Deny overrides allow across roles (Section 1.4.2).} & \code{DENY} & \rr{POL-002}\\
+V-006 & A business rule allows read for this principal; The ceiling set denies read when state is not LIVE; Unit state is DRAFT\newline\textit{No business allow overrides a ceiling.} & \code{DENY} & \rr{POL-007}\\
 V-007 & Batch of three checks; Second check is denied by policy\newline\textit{Results keep request order and the deny does not affect the others.} & \code{ALLOW}, \code{DENY}, \code{ALLOW} & \rr{DEC-004}\\
-V-008$^{\dagger}$ & A principal policy denies read for this principal; The resource policy would allow read\newline\textit{A definitive principal effect ends that policy-type evaluation.} & \code{DENY} & \rr{POL-003}\\
+V-008 & A business rule denies read when principal.id is this principal; Another business rule allows read for the principal's role\newline\textit{Version 1 has no principal policies; a per-principal rule is a condition, and deny overrides allow.} & \code{DENY} & \rr{POL-003}\\
 \midrule
 \multicolumn{4}{@{}l}{\textbf{T-02} (R1-A)}\\
-V-010 & Production bundle sets strict evaluation to off & \code{REJECT_BUNDLE} & \rr{POL-005}\\
-V-011 & Production bundle sets attribute-schema enforcement to warn & \code{REJECT_BUNDLE} & \rr{POL-005}\\
-V-012$^{\dagger}$ & A DENY rule's condition reads R.attr.classification, which is absent; A broader ALLOW rule matches the action\newline\textit{Strict evaluation: an erroring rule denies the affected action instead of being skipped.} & \code{DENY} & \rr{POL-005}, \rr{POL-006}\\
+V-010 & A policy document has an unknown field, for example a lenient-mode setting & \code{REJECT_BUNDLE} & \rr{POL-002}\\
+V-011 & A rule names an action that is not registered for its resource type & \code{REJECT_BUNDLE} & \rr{POL-002}\\
+V-012 & A DENY rule's condition reads resource.attributes.classification, which is absent; A broader ALLOW rule matches the action\newline\textit{Strict evaluation: an erroring rule denies the affected action.} & \code{DENY} & \rr{POL-005}, \rr{POL-006}\\
 V-013 & A tenant-scope resource policy allows read of a DRAFT unit; The ceiling set denies read when state is not LIVE & \code{DENY} & \rr{POL-007}\\
-V-014 & Policy uses a construct that the pinned format version does not support\newline\textit{Never silently ignored.} & \code{REJECT_BUNDLE} & \rr{POL-002}\\
+V-014 & A policy document's format field is not fga.policy/v1\newline\textit{Never silently ignored.} & \code{REJECT_BUNDLE} & \rr{POL-002}\\
 V-015 & A condition exceeds the expression cost bound\newline\textit{A resource-limit failure is a platform failure, never an allow.} & \code{ERROR} & \rr{POL-009}\\
 V-016 & A condition iterates over a ten-million-element list supplied in the request & \code{ERROR} & \rr{POL-009}\\
-V-017 & A production bundle's ceiling set contains a principal policy & \code{REJECT_BUNDLE} & \rr{POL-007}\\
+V-017 & A ceiling document contains an allow rule & \code{REJECT_BUNDLE} & \rr{POL-007}\\
 V-018 & A ceiling rule's condition reads an attribute that is absent\newline\textit{A ceiling evaluation error denies the check.} & \code{DENY} & \rr{POL-007}\\
 \midrule
 \multicolumn{4}{@{}l}{\textbf{T-03} (R1-A)}\\

@@ -9,7 +9,12 @@ Phase R1-A (decision core) has started. So far:
 - **Evaluator contract** (`internal/policy`, POL-001).
 - **Batch decision** (`internal/decision`): the platform gate, then the ceiling set, then the business set, combined so that a ceiling denial always wins and nothing is allowed without an explicit business allow (POL-003, POL-007, DEC-002 to DEC-004).
 
-The Cerbos adapter, identity and delegation, the resource registry and signed decisions are not written yet. Decision records are in [docs/decisions](docs/decisions).
+Not written yet: our own policy engine (its format is a proposal in [docs/design](docs/design)), identity and delegation, the resource registry and signed decisions.
+
+Decision records are in [docs/decisions](docs/decisions):
+- **D-01:** our own policy engine and format.
+- **D-02:** our own object storage. R1 is single-node; everything runs locally.
+- **D-03:** Cerbos and MinIO are studied for ideas only, never used as code.
 
 ## Layout
 
