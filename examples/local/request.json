@@ -1,0 +1,4 @@
+{"request_id": "r-1", "tenant": "t-acme", "operation_id": "op-1", "operation_digest": "sha256:example",
+ "audience": "storage", "single_use": false,
+ "actor": {"id": "agent-7", "revision": 12}, "subject": {"id": "user-42", "revision": 88}, "delegation": "dlg-5",
+ "checks": [{"id": "c1", "action": "read", "resource": {"namespace": "mcp", "name": "doc://q3#overview"}}]}

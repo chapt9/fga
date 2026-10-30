@@ -1,0 +1,15 @@
+{
+  "epoch": 0,
+  "key_id": "",
+  "signature": "",
+  "sentinels": [
+    {"name": "reviewer reads a live unit of their project", "set": "business",
+     "principal": {"id": "user-42", "roles": ["reviewer"], "attributes": {"project_ids": ["p1"]}},
+     "resource": {"type": "document.text_unit", "id": "u-1", "scope": "", "attributes": {"project_id": "p1", "state": "LIVE"}},
+     "action": "read", "want": "allow"},
+    {"name": "ceiling objects to a draft unit", "set": "ceiling",
+     "principal": {"id": "user-42", "roles": ["reviewer"], "attributes": {}},
+     "resource": {"type": "document.text_unit", "id": "u-2", "scope": "", "attributes": {"state": "DRAFT"}},
+     "action": "read", "want": "deny"}
+  ]
+}

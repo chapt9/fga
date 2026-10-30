@@ -1,0 +1,28 @@
+# Packages the decision role may link (MOD-004). One import-path prefix per
+# line. Adding a line needs review: it widens the role's attack surface.
+fga/cmd/fga-decision
+fga/internal/audit
+fga/internal/catalog
+fga/internal/decision
+fga/internal/decisionsvc
+fga/internal/delegation
+fga/internal/gate
+fga/internal/identity
+fga/internal/policy
+fga/internal/registry
+fga/internal/release
+fga/internal/signing
+fga/internal/strictjson
+cel.dev/
+github.com/antlr4-go/antlr/
+github.com/go-jose/go-jose/
+github.com/jackc/
+golang.org/x/exp/
+golang.org/x/sync/
+golang.org/x/text/
+google.golang.org/genproto/googleapis/api/
+# Linked by cel-go, reviewed 2026-10-30: rpc/status for CEL error values,
+# yaml for cel-go's environment configuration support.
+google.golang.org/genproto/googleapis/rpc/status
+go.yaml.in/yaml/v3
+google.golang.org/protobuf/

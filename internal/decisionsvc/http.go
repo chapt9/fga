@@ -1,0 +1,72 @@
+package decisionsvc
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+
+	"fga/internal/strictjson"
+)
+
+// MaxRequestBytes bounds a request body (DEC-009).
+const MaxRequestBytes = 64 << 10
+
+// AdapterOf returns the authenticated adapter behind a request, or an error.
+type AdapterOf func(*http.Request) (string, error)
+
+// AdapterFromClientCert identifies the adapter by its verified client
+// certificate: the first URI SAN, otherwise the subject common name
+// (DEC-007, TRU-002).
+func AdapterFromClientCert(r *http.Request) (string, error) {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return "", errors.New("no verified client certificate")
+	}
+	leaf := r.TLS.VerifiedChains[0][0]
+	if len(leaf.URIs) > 0 {
+		return leaf.URIs[0].String(), nil
+	}
+	if leaf.Subject.CommonName != "" {
+		return leaf.Subject.CommonName, nil
+	}
+	return "", errors.New("client certificate names no adapter")
+}
+
+// Handler serves the JSON facade (DEC-001) and the health endpoints
+// (REL-006): POST /v1/decide-batch, GET /healthz, GET /readyz.
+func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/decide-batch", func(w http.ResponseWriter, r *http.Request) {
+		adapter, err := adapterOf(r)
+		if err != nil {
+			http.Error(w, "unauthenticated adapter", http.StatusUnauthorized)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
+		if err != nil {
+			http.Error(w, "request too large or unreadable", http.StatusRequestEntityTooLarge)
+			return
+		}
+		var req Request
+		if err := strictjson.Decode(body, &req); err != nil {
+			http.Error(w, "malformed request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(s.Decide(r.Context(), adapter, req))
+	})
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !s.Ready() {
+			http.Error(w, "no active policy snapshot", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	return mux
+}
+
+func encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
