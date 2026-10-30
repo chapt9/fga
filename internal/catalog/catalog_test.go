@@ -3,14 +3,11 @@ package catalog
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/audit"
@@ -18,6 +15,7 @@ import (
 	"fga/internal/delegation"
 	"fga/internal/gate"
 	"fga/internal/identity"
+	"fga/internal/pgtest"
 	"fga/internal/policy"
 	"fga/internal/registry"
 )
@@ -28,38 +26,8 @@ var now = time.Unix(1_800_000_000, 0).UTC()
 // FGA_TEST_DATABASE_URL and loads a small fixture. Tests skip without it.
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	url := os.Getenv("FGA_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("FGA_TEST_DATABASE_URL is not set")
-	}
+	pool := pgtest.Pool(t, Migrate)
 	ctx := context.Background()
-	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		_ = admin.Close(context.Background())
-	})
-	for range 2 { // the second run must be a no-op
-		if err := Migrate(ctx, pool); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for _, stmt := range []string{
 		`INSERT INTO identities VALUES ('t-acme','user-42',88,false,'{reviewer}','{"project_ids":["p1"]}'),
 		                               ('t-acme','agent-7',12,false,'{agent}','{}'),

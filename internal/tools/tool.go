@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -305,4 +306,18 @@ func Summarize(t Tool, a Args, resources map[string]string, agentNote string) Su
 	return Summary{Tool: t.ID, Version: t.Version, Description: t.Description, Destination: t.Destination,
 		Endpoint: t.Endpoint, Arguments: a.Canonical(), Resources: resources, OperationDigest: OperationDigest(t, a),
 		UnverifiedNote: agentNote}
+}
+
+// Destination is a registered downstream service. The connector reaches it
+// only at BaseURL, only at addresses inside AllowedCIDRs, and with the
+// credential read from CredentialFile, never one supplied by an agent
+// (AGT-005, AGT-006).
+type Destination struct {
+	ID             string
+	BaseURL        string
+	AllowedCIDRs   []netip.Prefix
+	CredentialFile string
+	// ReconcilePath, when set, lets the connector ask the destination for the
+	// outcome of an idempotency key (INV-003). It contains "{key}".
+	ReconcilePath string
 }
