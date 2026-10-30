@@ -2,7 +2,10 @@ module fga
 
 go 1.27.3
 
-require cel.dev/cel-go v0.33.2
+require (
+	cel.dev/cel-go v0.33.2
+	github.com/go-jose/go-jose/v4 v4.1.7
+)
 
 require (
 	cel.dev/expr v0.25.1 // indirect
