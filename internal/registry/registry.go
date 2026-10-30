@@ -66,7 +66,7 @@ func NewTypes(defs []TypeDef) (*Types, error) {
 // R1Types returns the resource types of release R1 (specification Section 1.3).
 func R1Types() *Types {
 	t, err := NewTypes([]TypeDef{
-		{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure"}},
+		{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure", "approve"}},
 		{Name: "network.destination", Actions: []string{"connect", "send"}},
 		{Name: "business.record", Actions: []string{"read", "update", "approve", "export"}},
 		{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover"}},
