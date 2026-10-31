@@ -349,3 +349,37 @@ func TestTimeConditionBoundsValidity(t *testing.T) {
 		t.Fatalf("signed record = %+v, %v", rec, err)
 	}
 }
+
+// TestPublicProjection covers DEC-010: in the public projection an unknown
+// target, a business denial, a ceiling denial and a prerequisite outcome
+// look the same, while the internal response keeps them apart; request
+// errors and failures stay distinguishable without naming a target.
+func TestPublicProjection(t *testing.T) {
+	f := newFixture(t, 100)
+	ctx := context.Background()
+	unknown := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#missing"))
+	ceilingDenied := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#draft"))
+	businessDenied := f.svc.Decide(ctx, "storage-1", shareRequest("sha256:77", "sha256:90"))
+	if unknown.Reason != string(ReasonUnknownResource) || ceilingDenied.Reason != "CEILING_DENY" || businessDenied.Reason != "BUSINESS_DENY" {
+		t.Fatalf("internal reasons = %s, %s, %s", unknown.Reason, ceilingDenied.Reason, businessDenied.Reason)
+	}
+	for name, r := range map[string]Response{"unknown": unknown, "ceiling": ceilingDenied, "business": businessDenied,
+		"approval": {DecisionID: "x", Outcome: "NEEDS_APPROVAL", Reason: "APPROVAL_REQUIRED"}} {
+		p := r.Public()
+		p.DecisionID = ""
+		if p != (PublicResponse{Outcome: "DENY", Reason: PublicDenied}) {
+			t.Errorf("%s: public projection %+v", name, p)
+		}
+	}
+	bad := request("doc://q3#overview")
+	bad.Operation = "unit.erase"
+	if p := f.svc.Decide(ctx, "tools-gw-1", bad).Public(); p.Reason != PublicInvalid {
+		t.Errorf("unknown operation: %+v, want %s", p, PublicInvalid)
+	}
+	if p := (Response{Outcome: "ERROR", Reason: string(ReasonCatalogUnavailable)}).Public(); p.Outcome != "ERROR" || p.Reason != PublicUnavailable {
+		t.Errorf("failure: %+v", p)
+	}
+	if p := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#overview")).Public(); p.Outcome != "ALLOW" {
+		t.Errorf("allow: %+v", p)
+	}
+}
