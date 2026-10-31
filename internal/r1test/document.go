@@ -70,8 +70,26 @@ func (c *Client) PrepareDocumentSpecs(ctx context.Context, bucket, key string, p
 // and an optional original file (nil for none).
 func (c *Client) PrepareDocumentFull(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
 	reuse map[int]*crypto.SealedUnit, original []byte, to ...*Client) (DocumentUpload, error) {
+	return c.prepare(ctx, bucket, key, paragraphs, specs, reuse, original, false, to...)
+}
+
+// PrepareCollection prepares a version of a text collection (DOC-005):
+// entries are new text entries, except the positions in reuse, which keep
+// earlier entries.
+func (c *Client) PrepareCollection(bucket, key string, entries []string, reuse map[int]*crypto.SealedUnit, to ...*Client) (DocumentUpload, error) {
+	specs := make([]content.DocumentUnitSpec, len(entries))
+	for i := range entries {
+		if u, ok := reuse[i]; ok {
+			specs[i] = content.DocumentUnitSpec{ReuseUnit: u.Params.Unit.String(), ReuseVersion: u.Params.UnitVersion.String()}
+		}
+	}
+	return c.prepare(context.Background(), bucket, key, entries, specs, reuse, nil, true, to...)
+}
+
+func (c *Client) prepare(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
+	reuse map[int]*crypto.SealedUnit, original []byte, collection bool, to ...*Client) (DocumentUpload, error) {
 	in, err := c.st.Content.BeginDocument(ctx, c.Caller, content.DocumentBeginRequest{Bucket: bucket, Key: key,
-		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs, Original: original != nil})
+		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs, Original: original != nil, Collection: collection})
 	if err != nil {
 		return DocumentUpload{}, err
 	}

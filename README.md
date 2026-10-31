@@ -22,7 +22,9 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 
   - derived outputs with signed lineage: label at least the lineage maximum, delivery only to readers of the whole transitive lineage or by declassification, streams ended when a source changes.
 
-  Export, metadata search and text entries are not built yet.
+  - export of units to a recipient with the full check set, metadata search without totals, and text collections of `text.entry` entries.
+
+  R1-C has no step left beyond the final pass; see the known gaps below.
 - **R2 and R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.

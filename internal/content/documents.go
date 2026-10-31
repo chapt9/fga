@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -51,6 +52,10 @@ type DocumentBeginRequest struct {
 	// ciphertext under its own key, disclosed only with raw-read on the
 	// version and read on every unit.
 	Original bool
+	// Collection makes a new key a text collection (DOC-005): its units are
+	// text.entry resources, and a new version replaces or appends entries
+	// by reusing earlier ones. A key keeps its kind.
+	Collection bool
 }
 
 func (r DocumentBeginRequest) digest() string {
@@ -61,6 +66,9 @@ func (r DocumentBeginRequest) digest() string {
 	}
 	if r.Original {
 		fmt.Fprintf(h, "original\n")
+	}
+	if r.Collection {
+		fmt.Fprintf(h, "collection\n")
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
@@ -155,12 +163,20 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	case errors.Is(err, pgx.ErrNoRows):
 		in.Document, in.newDocument = cryptowire.NewUUID().String(), true
 		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label, "kind": "document"}
+		if r.Collection {
+			in.attributes["kind"] = "collection"
+		}
 	case err != nil:
 		return DocumentIntent{}, err
 	case kind != "document":
 		return DocumentIntent{}, fmt.Errorf("%w: the key holds an object", ErrConflict)
 	}
 	docLabel, _ := in.attributes["label"].(string)
+	docKind, _ := in.attributes["kind"].(string)
+	types := unitsOf(docKind)
+	if r.Collection != (docKind == "collection") || types == textEntries && r.Original {
+		return DocumentIntent{}, fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
+	}
 	for i, u := range r.Units {
 		ui := UnitIntent{Position: i, Label: u.Label}
 		switch {
@@ -168,10 +184,13 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			if u.Label != "" {
 				return DocumentIntent{}, fmt.Errorf("%w: a reused unit keeps its label", ErrInvalid)
 			}
-			if ui, err = s.reusable(ctx, c.Tenant, i, u); err != nil {
+			if ui, err = s.reusable(ctx, c.Tenant, i, u, types.typ); err != nil {
 				return DocumentIntent{}, err
 			}
 		default:
+			if u.Label != "" && types == textEntries {
+				return DocumentIntent{}, fmt.Errorf("%w: entries take their collection's label", ErrInvalid)
+			}
 			if u.Label != "" {
 				if err := s.labelAllowed(ctx, u.Label, b.Label); err != nil {
 					return DocumentIntent{}, err
@@ -193,7 +212,7 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		return DocumentIntent{}, err
 	}
 	versionAttrs := map[string]any{"document": in.Document}
-	for _, k := range []string{"bucket", "owner", "project", "label"} {
+	for _, k := range []string{"bucket", "owner", "project", "label", "kind"} {
 		versionAttrs[k] = in.attributes[k]
 	}
 	va, _ := json.Marshal(versionAttrs)
@@ -237,6 +256,9 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			if u.Label != "" {
 				attrs["label"] = u.Label
 			}
+			if types == textEntries {
+				attrs["entry"] = true
+			}
 			ua, _ := json.Marshal(attrs)
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
@@ -258,13 +280,14 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 
 // reusable returns the unit intent of an existing LIVE unit version of the
 // tenant.
-func (s *Service) reusable(ctx context.Context, tenant string, position int, u DocumentUnitSpec) (UnitIntent, error) {
+func (s *Service) reusable(ctx context.Context, tenant string, position int, u DocumentUnitSpec, typ string) (UnitIntent, error) {
 	ui := UnitIntent{Position: position, Unit: u.ReuseUnit, UnitVersion: u.ReuseVersion, Reused: true}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `
 		SELECT v.crypto_version::text, v.blob::text, v.ciphertext_sha256, v.ciphertext_length FROM object_versions v
 		  JOIN objects o ON o.tenant = v.tenant AND o.id = v.object
+		  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text AND r.type = $4
 		 WHERE v.tenant = $1 AND o.id::text = $2 AND v.id::text = $3 AND o.kind = 'unit' AND v.state = 'LIVE'`,
-		tenant, u.ReuseUnit, u.ReuseVersion).Scan(&ui.CryptoVersion, &ui.Blob, &ui.CiphertextSHA256, &ui.CiphertextLength)
+		tenant, u.ReuseUnit, u.ReuseVersion, typ).Scan(&ui.CryptoVersion, &ui.Blob, &ui.CiphertextSHA256, &ui.CiphertextLength)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ui, ErrNotFound
 	}
@@ -537,9 +560,11 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 		return nil, err
 	}
 	recs := []signing.Record{rec}
+	kind, _ := in.attributes["kind"].(string)
+	types := unitsOf(kind)
 	unitRef := func(u checkedUnit) (string, decisionsvc.Alias) {
 		if u.Reused {
-			return u.Unit, canonical("document.text_unit", u.Unit)
+			return u.Unit, canonical(types.typ, u.Unit)
 		}
 		return "intent:" + u.IntentID, planned(registry.PlannedObject, u.IntentID)
 	}
@@ -558,7 +583,7 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 			fp, m := e.ctx.Recipient.String(), n+"-"+strconv.Itoa(j)
 			recipients[fp] = true
 			shares = append(shares, []check{
-				{id: "share-" + m, role: registry.RoleShare, action: "share", ref: ref},
+				{id: "share-" + m, role: registry.RoleShare, action: types.write, ref: ref},
 				{id: "envelope-" + m, role: registry.RoleEnvelope, action: "create", ref: planned(registry.PlannedEnvelope, name+"|"+fp+"|"+e.id.String())},
 				{id: "recipient-read-" + m, role: registry.RoleRecipientRead, action: "read", ref: ref, recipient: fp},
 				{id: "recipient-key-" + m, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp},
@@ -593,7 +618,7 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 	for _, g := range []struct {
 		op     string
 		groups [][]check
-	}{{registry.OpDocLabelUnits, labels}, {registry.OpDocReuseUnits, reuse}, {registry.OpDocShareVersion, versions}, {registry.OpDocShareUnits, shares},
+	}{{registry.OpDocLabelUnits, labels}, {types.reuseOp, reuse}, {registry.OpDocShareVersion, versions}, {types.shareOp, shares},
 		{registry.OpDocShareOriginal, originals}} {
 		for _, batch := range batches(g.groups, maxBatch) {
 			_, rec, err := s.decide(ctx, c, g.op, Audience, true, batch)
@@ -660,7 +685,11 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 		}
 		var generation uint64
 		if in.newDocument {
-			attrs, _ := json.Marshal(in.attributes)
+			// The document's own attributes: the intent's, without the
+			// version's link to its document.
+			docAttrs := maps.Clone(in.attributes)
+			delete(docAttrs, "document")
+			attrs, _ := json.Marshal(docAttrs)
 			if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'storage.object', $3, 1, 1, 1, $4)`, c.Tenant, in.Document, in.scope, attrs); err != nil {
 				return err
 			}
@@ -689,7 +718,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			return err
 		}
 		versionAttrs := map[string]any{"document": in.Document}
-		for _, k := range []string{"bucket", "owner", "project", "label"} {
+		for _, k := range []string{"bucket", "owner", "project", "label", "kind"} {
 			versionAttrs[k] = in.attributes[k]
 		}
 		va, _ := json.Marshal(versionAttrs)
@@ -697,6 +726,8 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			return err
 		}
 		dv, _ := cryptowire.ParseUUID(in.DocumentVersion)
+		docKind, _ := in.attributes["kind"].(string)
+		unitType := unitsOf(docKind).typ
 		targets := []audit.Target{{Type: "document.version", ID: in.DocumentVersion, Signer: signer, Digest: digest.String()}}
 		for i, u := range units {
 			unitID, _ := cryptowire.ParseUUID(u.Unit)
@@ -711,7 +742,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 				if state != "LIVE" {
 					return fmt.Errorf("%w: reused unit %d is no longer live", ErrConflict, i)
 				}
-			} else if err := s.publishUnit(ctx, tx, c, u, r.Units[i], now); err != nil {
+			} else if err := s.publishUnit(ctx, tx, c, u, r.Units[i], unitType, now); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO document_units VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -724,7 +755,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 					return err
 				}
 			}
-			targets = append(targets, audit.Target{Type: "document.text_unit", ID: u.Unit, Version: u.UnitVersion, Digest: u.descriptor.CiphertextSHA256})
+			targets = append(targets, audit.Target{Type: unitType, ID: u.Unit, Version: u.UnitVersion, Digest: u.descriptor.CiphertextSHA256})
 		}
 		if original != nil {
 			if err := s.publishOriginal(ctx, tx, c, in, original, *r.Original, &dv, now); err != nil {
@@ -753,7 +784,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 
 // publishUnit makes a staged unit LIVE: its object, resource and single
 // immutable version, and consumes its intent.
-func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checkedUnit, f UnitFinal, now time.Time) error {
+func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checkedUnit, f UnitFinal, typ string, now time.Time) error {
 	var state string
 	if err := tx.QueryRow(ctx, `SELECT state FROM upload_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, c.Tenant, u.staged.IntentID).Scan(&state); err != nil {
 		return err
@@ -762,7 +793,7 @@ func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checke
 		return fmt.Errorf("%w: unit intent is %s", ErrConflict, state)
 	}
 	attrs, _ := json.Marshal(u.staged.attributes)
-	if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.text_unit', $3, 1, 1, 1, $4)`, c.Tenant, u.Unit, u.staged.scope, attrs); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, $5, $3, 1, 1, 1, $4)`, c.Tenant, u.Unit, u.staged.scope, attrs, typ); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, '', 'unit')`, c.Tenant, u.Unit, u.staged.bucket); err != nil {

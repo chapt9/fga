@@ -65,6 +65,10 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return Export{}, err
 	}
+	if d.units != textUnits {
+		// Text entries have no export-key action (DOC-005).
+		return Export{}, ErrNotFound
+	}
 	ms, err := s.members(ctx, c.Tenant, d.id, 0, 0, units)
 	if err != nil {
 		return Export{}, err

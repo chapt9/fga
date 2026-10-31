@@ -41,7 +41,7 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		if err != nil {
 			return registry.Resource{}, err
 		}
-		if object.Type != "storage.object" && object.Type != "document.text_unit" && object.Type != "document.version" && object.Type != "document.derived" {
+		if object.Type != "storage.object" && object.Type != "document.text_unit" && object.Type != "document.version" && object.Type != "document.derived" && object.Type != "text.entry" {
 			return registry.Resource{}, registry.ErrUnknownResource
 		}
 		var principal string
@@ -103,6 +103,10 @@ func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (regis
 	}
 	if err := json.Unmarshal(attrs, &r.Attributes); err != nil {
 		return registry.Resource{}, err
+	}
+	// The entries of a text collection are text.entry resources (DOC-005).
+	if entry, _ := r.Attributes["entry"].(bool); entry && r.Type == "document.text_unit" {
+		r.Type = "text.entry"
 	}
 	// An explicit label is a proposed change like a relabel: policies see
 	// it as new_label beside the collection floor (LAB-002).

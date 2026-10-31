@@ -1,0 +1,4 @@
+{"format":"fga.policy/v1","set":"business","resource":"text.entry","scope":"","rules":[
+  {"id":"owner-entries","effect":"allow","actions":["read","update","use-in-model"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+  {"id":"members-read-entries","effect":"allow","actions":["read"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"}]}

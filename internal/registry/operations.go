@@ -83,6 +83,15 @@ const (
 	OpDocExport         = "document.export"
 	OpDocExportEnvelope = "document.export-envelope"
 	OpDocSearch         = "document.search"
+	// Text entries (DOC-005): a collection's units are text.entry
+	// resources. These operations are the unit operations with the entry
+	// type, and update in place of the writer's share.
+	OpDocReuseEntries     = "collection.reuse-entries"
+	OpDocShareEntries     = "collection.share-entries"
+	OpDocSelectEntries    = "collection.select-entries"
+	OpDocReadEntry        = "collection.entry.read"
+	OpDocManifestEntries  = "collection.manifest"
+	OpDocGetEntryEnvelope = "collection.entry.get-envelope"
 )
 
 // Check roles shared by several operations.
@@ -126,6 +135,38 @@ func envelopeChecks(repeated bool) []CheckSpec {
 }
 
 func r1Operations() []Operation {
+	ops := baseOperations()
+	return append(ops, entryTwins(ops)...)
+}
+
+// entryTwins are the text-entry forms of the unit operations (DOC-005):
+// the same checks with text.entry in place of document.text_unit, and
+// update, the entry's write action, in place of the writer's share.
+func entryTwins(ops []Operation) []Operation {
+	twins := map[string]string{OpDocReuseUnits: OpDocReuseEntries, OpDocShareUnits: OpDocShareEntries, OpDocSelectUnits: OpDocSelectEntries,
+		OpDocReadUnit: OpDocReadEntry, OpDocManifest: OpDocManifestEntries, OpDocGetUnitEnvelope: OpDocGetEntryEnvelope}
+	var out []Operation
+	for _, op := range ops {
+		name, ok := twins[op.Name]
+		if !ok {
+			continue
+		}
+		twin := Operation{Name: name}
+		for _, c := range op.Checks {
+			if c.ResourceType == "document.text_unit" {
+				c.ResourceType = "text.entry"
+				if c.Action == "share" {
+					c.Action = "update"
+				}
+			}
+			twin.Checks = append(twin.Checks, c)
+		}
+		out = append(out, twin)
+	}
+	return out
+}
+
+func baseOperations() []Operation {
 	one := func(name, role, typ, action string) Operation {
 		return Operation{Name: name, Checks: []CheckSpec{{Role: role, ResourceType: typ, Action: action}}}
 	}

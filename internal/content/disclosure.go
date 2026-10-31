@@ -44,6 +44,7 @@ type docVersion struct {
 	id       cryptowire.UUID
 	manifest []byte
 	sig      string
+	units    unitTypes
 }
 
 type member struct {
@@ -61,9 +62,12 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 	}
 	var d docVersion
 	var current *cryptowire.UUID
-	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id, current_document_version FROM objects
-	                                         WHERE tenant = $1 AND bucket = $2 AND key = $3 AND kind = 'document'`, tenant, b.ID, key).
-		Scan(&d.document, &current)
+	var kind string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id, o.current_document_version, coalesce(r.attributes->>'kind', '') FROM objects o
+	                                         JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
+	                                         WHERE o.tenant = $1 AND o.bucket = $2 AND o.key = $3 AND o.kind = 'document'`, tenant, b.ID, key).
+		Scan(&d.document, &current, &kind)
+	d.units = unitsOf(kind)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && current == nil && versionSel == "" {
 		return docVersion{}, ErrNotFound
 	}
@@ -117,11 +121,11 @@ func (s *Service) members(ctx context.Context, tenant string, dv cryptowire.UUID
 }
 
 // selectChecks are read-units on the version and read on each unit.
-func selectChecks(dv cryptowire.UUID, ms []member) []check {
-	out := []check{{id: "version", role: registry.RoleVersion, action: "read-units", ref: canonical("document.version", dv.String())}}
+func selectChecks(d docVersion, ms []member) []check {
+	out := []check{{id: "version", role: registry.RoleVersion, action: "read-units", ref: canonical("document.version", d.id.String())}}
 	for i, m := range ms {
 		out = append(out, check{id: "unit-" + strconv.Itoa(i), role: registry.RoleUnit, action: "read",
-			ref: canonical("document.text_unit", m.entry.Unit), version: m.entry.UnitVersion})
+			ref: canonical(d.units.typ, m.entry.Unit), version: m.entry.UnitVersion})
 	}
 	return out
 }
@@ -129,9 +133,9 @@ func selectChecks(dv cryptowire.UUID, ms []member) []check {
 // allowed decides read-units on the version and read on every one of ms,
 // in batches, and reports whether all are allowed. Any other failure is
 // returned.
-func (s *Service) allowed(ctx context.Context, c Caller, op string, dv cryptowire.UUID, ms []member) (bool, error) {
+func (s *Service) allowed(ctx context.Context, c Caller, op string, d docVersion, ms []member) (bool, error) {
 	for start := 0; start < len(ms); start += maxBatch - 1 {
-		_, rec, err := s.decide(ctx, c, op, Audience, false, selectChecks(dv, ms[start:min(len(ms), start+maxBatch-1)]))
+		_, rec, err := s.decide(ctx, c, op, Audience, false, selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)]))
 		if errors.Is(err, ErrNotFound) {
 			return false, nil
 		}
@@ -171,7 +175,7 @@ func (s *Service) SelectUnits(ctx context.Context, c Caller, bucketName, key, ve
 	if len(ms) != len(units) {
 		return nil, ErrNotFound
 	}
-	ok, err := s.allowed(ctx, c, registry.OpDocSelectUnits, d.id, ms)
+	ok, err := s.allowed(ctx, c, d.units.selectOp, d, ms)
 	if err != nil {
 		return nil, err
 	}
@@ -231,13 +235,13 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 			break
 		}
 		visible := make([]bool, len(ms))
-		all, err := s.allowed(ctx, c, registry.OpDocSelectUnits, d.id, ms)
+		all, err := s.allowed(ctx, c, d.units.selectOp, d, ms)
 		if err != nil {
 			return UnitPage{}, err
 		}
 		for i := range ms {
 			if visible[i] = all; !all {
-				if visible[i], err = s.allowed(ctx, c, registry.OpDocSelectUnits, d.id, ms[i:i+1]); err != nil {
+				if visible[i], err = s.allowed(ctx, c, d.units.selectOp, d, ms[i:i+1]); err != nil {
 					return UnitPage{}, err
 				}
 			}
@@ -275,7 +279,7 @@ func (s *Service) Manifest(ctx context.Context, c Caller, bucketName, key, versi
 	if err != nil {
 		return nil, "", err
 	}
-	ok, err := s.allowed(ctx, c, registry.OpDocManifest, d.id, ms)
+	ok, err := s.allowed(ctx, c, d.units.manifestOp, d, ms)
 	if err != nil {
 		return nil, "", err
 	}
@@ -301,10 +305,10 @@ func (s *Service) unitTarget(ctx context.Context, c Caller, bucketName, key, ver
 	return d, ms[0], nil
 }
 
-func unitReadChecks(dv cryptowire.UUID, m member) []check {
+func unitReadChecks(d docVersion, m member) []check {
 	return []check{
-		{id: "version", role: registry.RoleVersion, action: "read-units", ref: canonical("document.version", dv.String())},
-		{id: "unit", role: registry.RoleUnit, action: "read", ref: canonical("document.text_unit", m.entry.Unit), version: m.entry.UnitVersion},
+		{id: "version", role: registry.RoleVersion, action: "read-units", ref: canonical("document.version", d.id.String())},
+		{id: "unit", role: registry.RoleUnit, action: "read", ref: canonical(d.units.typ, m.entry.Unit), version: m.entry.UnitVersion},
 	}
 }
 
@@ -327,7 +331,7 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
-	_, rec, err := s.decide(ctx, c, registry.OpDocReadUnit, Audience, false, unitReadChecks(d.id, m))
+	_, rec, err := s.decide(ctx, c, d.units.readOp, Audience, false, unitReadChecks(d, m))
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
@@ -343,13 +347,13 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return UnitPackageOut{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	version, unitRef := canonical("document.version", d.id.String()), canonical("document.text_unit", m.entry.Unit)
-	checks := append(unitReadChecks(d.id, m),
+	version, unitRef := canonical("document.version", d.id.String()), canonical(d.units.typ, m.entry.Unit)
+	checks := append(unitReadChecks(d, m),
 		check{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: m.entry.UnitVersion},
 		check{id: "recipient-version", role: registry.RoleRecipientVersion, action: "read-units", ref: version, recipient: recipient},
 		check{id: "recipient-read", role: registry.RoleRecipientRead, action: "read", ref: unitRef, version: m.entry.UnitVersion, recipient: recipient},
 		check{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient})
-	signed, _, err := s.decide(ctx, c, registry.OpDocGetUnitEnvelope, KeysAudience, true, checks)
+	signed, _, err := s.decide(ctx, c, d.units.envelopeOp, KeysAudience, true, checks)
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
@@ -368,7 +372,7 @@ func (s *Service) ReadUnitCiphertext(ctx context.Context, c Caller, bucketName, 
 	if err != nil {
 		return nil, err
 	}
-	_, rec, err := s.decide(ctx, c, registry.OpDocReadUnit, Audience, true, unitReadChecks(d.id, m))
+	_, rec, err := s.decide(ctx, c, d.units.readOp, Audience, true, unitReadChecks(d, m))
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +404,7 @@ func (s *Service) admitUnit(ctx context.Context, c Caller, rec signing.Record, d
 			return err
 		}
 		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindReadAdmission, rec, "ADMITTED",
-			audit.Target{Type: "document.text_unit", ID: m.entry.Unit, Version: m.entry.UnitVersion, Digest: v.SHA256},
+			audit.Target{Type: d.units.typ, ID: m.entry.Unit, Version: m.entry.UnitVersion, Digest: v.SHA256},
 			audit.Target{Type: "document.version", ID: d.id.String()}))
 	})
 	if err != nil {
@@ -452,7 +456,7 @@ func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, s
 	var signed []signing.Signed
 	var recs []signing.Record
 	for start := 0; start < len(ms); start += maxBatch - 1 {
-		checks := selectChecks(d.id, ms[start:min(len(ms), start+maxBatch-1)])
+		checks := selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)])
 		checks[0].action = "raw-read"
 		sg, rec, err := s.decide(ctx, c, registry.OpDocRawRead, audience, singleUse, checks)
 		if err != nil {

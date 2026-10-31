@@ -194,7 +194,8 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
 	exported := rec.Operation == registry.OpDocExportEnvelope
-	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope || exported, rec.Operation == registry.OpDocGetOriginalEnvelope
+	unit := rec.Operation == registry.OpDocGetUnitEnvelope || rec.Operation == registry.OpDocGetEntryEnvelope || exported
+	original := rec.Operation == registry.OpDocGetOriginalEnvelope
 	derived := rec.Operation == registry.OpDerivedGetEnvelope
 	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived) ||
 		!s.exactly(rec) {
@@ -222,7 +223,7 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			ok = c.ResourceID == e.ID.String() && c.Version == e.Version.String()
 		case "storage.object read", "storage.object read-history":
 			ok = !unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
-		case "document.text_unit read":
+		case "document.text_unit read", "text.entry read":
 			ok = unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
 		case "document.version read-units":
 			ok = unit && c.ResourceID == e.DocumentVersion.String() && holder
