@@ -441,3 +441,10 @@ func (c *Client) Export(ctx context.Context, bucket, key, version string, units 
 		map[string]string{"Content-Type": "application/json"}, &out)
 	return out.Units, err
 }
+
+// DeleteDocument deletes a document key (version "") or withdraws one
+// document version, with the units no live version references any more.
+func (c *Client) DeleteDocument(ctx context.Context, bucket, key, version string) error {
+	_, err := c.do(ctx, http.MethodDelete, documentURL(c.StorageURL, bucket, "", key, version, nil), c.StorageToken, nil, -1, nil, &map[string]any{})
+	return err
+}

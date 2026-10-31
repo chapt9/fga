@@ -100,6 +100,11 @@ const (
 	OpDerivedRelabel = "derived.relabel"
 	OpApproveUnit    = "document.unit.approve"
 	OpApproveDerived = "derived.approve"
+	// Withdrawal of documents (PUB-005, DOC-002): deleting the key clears
+	// its head; withdrawing a version also withdraws units no live version
+	// references any more.
+	OpDocDelete        = "document.delete"
+	OpDocDeleteVersion = "document.delete-version"
 )
 
 // Check roles shared by several operations.
@@ -289,6 +294,8 @@ func baseOperations() []Operation {
 		one(OpDerivedRelabel, RoleOutput, "document.derived", "relabel"),
 		one(OpApproveUnit, RoleUnit, "document.text_unit", "approve"),
 		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
+		one(OpDocDelete, RoleDocument, "storage.object", "delete"),
+		one(OpDocDeleteVersion, RoleDocument, "storage.object", "delete-version"),
 		{Name: OpDerivedDeclassify, Checks: []CheckSpec{
 			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
 			{Role: RoleRecipientDeclass, ResourceType: "document.derived", Action: "declassify", Kind: KindRecipientEligibility},

@@ -688,6 +688,25 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		httpapi.WriteJSON(w, http.StatusOK, out)
 	}))
+	mux.HandleFunc("DELETE /v1/buckets/{bucket}/document", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		var out content.DeleteOutcome
+		var err error
+		if v == "" {
+			out, err = svc.DeleteDocument(r.Context(), c, b, k)
+		} else {
+			out, err = svc.WithdrawDocumentVersion(r.Context(), c, b, k, v)
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
 	return mux
 }
 

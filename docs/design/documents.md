@@ -103,7 +103,6 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 
 **Not yet.**
 - Approvals for document publication: no plan is sent, so `NEEDS_APPROVAL` there is a denial.
-- Withdrawing documents or units. Reclamation already refuses to remove a unit version that a LIVE document version references (V-064).
 
 **Client.** `crypto.SplitText` normalizes to NFC and splits at blank lines (`fga.text/nfc-paragraphs-v1`, at most 64 MiB and 1,000 units). Each unit is encrypted with its own keyset (`crypto.EncryptUnit`). `crypto.SealDocument` signs the manifest, the descriptors and the envelopes. `crypto.DecryptUnit` verifies one unit from its descriptor without the manifest. `client.PutDocument` and `fga put-document` run the whole flow.
 
@@ -153,3 +152,16 @@ The keys role delivers it only if the envelope is that version's original, and n
 ## Implementation (step 6: text entries, DOC-005)
 
 A text collection or conversation is a document key begun with `"collection": true`. A key keeps its kind: a collection takes no ordinary version, and a document becomes no collection. Its units are `text.entry` resources (actions `read`, `use-in-model`, `update`) instead of `document.text_unit`. The entry operations (`collection.reuse-entries`, `collection.share-entries`, `collection.select-entries`, `collection.entry.read`, `collection.manifest`, `collection.entry.get-envelope`) are derived in the registry from the unit operations: the same checks on `text.entry`, with `update`, the entry's write action, in place of the writer's `share`. Appending or replacing entries is a new document version that reuses the entries it keeps (with `read` on each) and adds new ones, so there is no separate transcript store. Entries take the collection's label. A collection has no original file, and entries cannot be exported (text.entry has no `export-key`). An entry cannot be reused in an ordinary document, nor a unit in a collection. Disclosure, packages and ciphertext use the same routes as units.
+
+## Implementation (withdrawal, PUB-005 and DOC-002)
+
+`DELETE /v1/buckets/{b}/document?key=` (`document.delete`, `delete` on the document) clears the key's head. Its versions stay as they are and remain readable by version ID with `read-units`. A new version may be published later.
+
+`DELETE …/document?key=&version=` (`document.delete-version`, `delete-version` on the document) withdraws one version:
+- the version becomes WITHDRAWN, its resource generation advances, and its envelopes are retired;
+- the version's unit versions are locked first, so a concurrent publication that reuses one is either seen or fails on the withdrawn state;
+- each unit version, and the original, that no other LIVE version references is withdrawn too: its envelopes are retired and its blob is scheduled for reclamation (`retirements`);
+- units still referenced stay LIVE (V-064), and reclamation keeps refusing referenced unit versions;
+- withdrawing the current version clears the head; it never restores an older version.
+
+Units are withdrawn only this way, never alone while a version needs them. Both operations take a plan, so a policy can require an approval. `fga rm -document` uses them.

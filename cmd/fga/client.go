@@ -50,7 +50,7 @@ import (
 //	fga get            -bucket B -key K -out FILE [-version V]
 //	fga get-document   -bucket B -key K -out FILE [-version V]   the units the caller may read
 //	fga ls             -bucket B [-prefix P]
-//	fga rm             -bucket B -key K [-version V] [-approval A]
+//	fga rm             -bucket B -key K [-version V] [-document] [-approval A]
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
 //	fga label          -bucket B -key K -label L [-unit U | -derived] [-approval A]
 //	fga propose-label  -bucket B -key K -label L -classifier C
@@ -236,6 +236,7 @@ func clientCommand(cmd string, args []string) error {
 	project := fs.String("project", "", "search: project")
 	unit := fs.String("unit", "", "label: a unit of the document at -key")
 	derivedOut := fs.Bool("derived", false, "label: the derived output at -key")
+	documentKey := fs.Bool("document", false, "rm: the document at -key (with -version, withdraw that document version)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -533,6 +534,9 @@ func clientCommand(cmd string, args []string) error {
 			cont = next
 		}
 	case "rm":
+		if *documentKey {
+			return approvalHint(c.DeleteDocument(ctx, *bucket, *key, *version))
+		}
 		return approvalHint(c.Delete(ctx, *bucket, *key, *version))
 	case "share":
 		d, err := cryptowire.ParseDigest(*to)
