@@ -19,7 +19,7 @@ Migration 0015 puts all existing buckets, intents and versions in client mode, b
 
 1. **Decision.** It needs `manage` on the bucket. The check resolves the proposed change `change.encryption` (`<bucket>|<mode>`): the bucket as it is, plus `new_encryption`. The operation carries a plan, so a policy can require an approval.
 2. **Fence.** The change locks the bucket row (`FOR UPDATE`) and commits only if the mode is still the one the request was decided against.
-3. **Effects.** It updates the bucket and the attribute of every resource in the bucket, advancing their metadata revisions, so decisions bound to the old mode fail (DEC-006). It also updates the planned attributes of open intents.
+3. **Effects.** It updates the bucket and the attribute of every resource in the bucket, advancing their metadata revisions, so decisions bound to the old mode fail (DEC-006). It also updates the planned attributes of open intents. It locks the bucket's object and document-version resources, in id order, before the bucket row, which is the order a begin or publication takes its own object and then the bucket row, so the two cannot deadlock (review v3 F13).
 
 An upload's begin runs its fence with the bucket row locked `FOR SHARE` and checks that the mode is the one it was decided under. So an upload either begins before a change commits, keeping the old mode (V-159), or after it, with the new one.
 

@@ -38,6 +38,20 @@ func (v resourceView) changedEncryption(ctx context.Context, tenant string, alia
 	return r, nil
 }
 
+// LockBucketResources locks, in id order, the resources of every object
+// and document version in a bucket, before a change that updates them
+// all takes the bucket row: the order of a begin or publication, which
+// holds its object's resource before the bucket row (review v3 F13).
+func LockBucketResources(ctx context.Context, tx pgx.Tx, tenant, bucket string) error {
+	_, err := tx.Exec(ctx, `
+		SELECT 1 FROM resources r
+		 WHERE r.tenant = $1 AND (r.id IN (SELECT id::text FROM objects WHERE tenant = $1 AND bucket = $2::uuid)
+		    OR r.id IN (SELECT d.id::text FROM document_versions d JOIN objects o ON o.tenant = d.tenant AND o.id = d.document
+		                 WHERE d.tenant = $1 AND o.bucket = $2::uuid))
+		 ORDER BY r.id FOR UPDATE`, tenant, bucket)
+	return err
+}
+
 // BucketEncryption returns a bucket's mode inside tx and locks the bucket
 // row: for update when the mode is about to change, otherwise for share,
 // so an upload begun under one mode cannot commit after a change to

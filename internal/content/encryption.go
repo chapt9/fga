@@ -56,6 +56,12 @@ func (s *Service) SetBucketEncryption(ctx context.Context, c Caller, bucketName,
 	}
 	out := EncryptionOutcome{Bucket: id, Encryption: mode, Previous: b.Encryption, MetadataRevision: r.MetadataRevision}
 	err = s.fenced(ctx, rec, []string{id}, func(ctx context.Context, tx pgx.Tx) error {
+		// The resources of the bucket's objects and document versions are
+		// locked before the bucket row, in one order, as a begin locks its
+		// object before the bucket row (review v3 F13).
+		if err := catalog.LockBucketResources(ctx, tx, c.Tenant, id); err != nil {
+			return err
+		}
 		current, err := catalog.BucketEncryption(ctx, tx, c.Tenant, id, true)
 		if err != nil {
 			return err

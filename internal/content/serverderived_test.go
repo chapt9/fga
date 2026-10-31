@@ -3,9 +3,11 @@ package content_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"strings"
+	"sync"
 	"testing"
 
 	"fga/internal/content"
@@ -240,6 +242,47 @@ func TestDerivedVersionKeepsRaisedLabel(t *testing.T) {
 		}
 		if got := label(c.key); got != c.want {
 			t.Fatalf("%s: after the retry the output's label is %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// TestConcurrentDerivedVersions covers review v3 F13 case A: two
+// publications of new versions of one derived output both held the output
+// for share and then both updated it, so they could deadlock. The fence
+// now locks the output for update from the start: one waits, and each
+// either publishes or meets a conflict.
+func TestConcurrentDerivedVersions(t *testing.T) {
+	st := r1test.New(t)
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	src, err := putPlain(st, alice.Caller, "vault", "src.txt", "", []byte("source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := []cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}
+	put := func(idem string) error {
+		_, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "out.txt", IdempotencyKey: idem},
+			sources, -1, strings.NewReader(idem))
+		return err
+	}
+	if err := put("v0"); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 5 {
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for w := range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[w] = put(fmt.Sprintf("r%d-w%d", round, w))
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil && !errors.Is(err, content.ErrConflict) {
+				t.Fatalf("round %d: %v", round, err)
+			}
 		}
 	}
 }

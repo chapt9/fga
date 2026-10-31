@@ -5,6 +5,7 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"fga/internal/content"
 	"fga/internal/cryptowire"
@@ -302,4 +303,48 @@ func TestEncryptionAttributeOnEveryResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("reports", "server")
+}
+
+// TestModeChangeLockOrder is the regression test of review v3 F13 case B:
+// a begin on an existing object holds the object's resource row and then
+// takes the bucket row, while a mode change took the bucket row and then
+// every object's row, so the two could deadlock. The mode change now
+// takes the objects' rows before the bucket row, as a begin does.
+func TestModeChangeLockOrder(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	lead := st.Client("lena", []string{"member", "lead"}, "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	p, err := alice.Put("reports", "doc", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// As a begin's fence: the object's resource row, for share.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM resources WHERE id = $1 FOR SHARE`, p.Object); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.Content.SetBucketEncryption(ctx, lead.Caller, "reports", "server")
+		done <- err
+	}()
+	time.Sleep(500 * time.Millisecond)
+	// As the begin's next step: the bucket row, for share.
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM buckets WHERE name = 'reports' FOR SHARE`); err != nil {
+		t.Fatalf("the begin's bucket lock while a mode change waits: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the mode change: %v", err)
+	}
 }
