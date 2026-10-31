@@ -107,7 +107,7 @@ func TestCanonicalAction(t *testing.T) {
 // needs separate checks for invoking the tool, reading its source and
 // sending to its destination.
 func TestPlanCompoundOperation(t *testing.T) {
-	types := ExecutorTypes()
+	types := CoreTypes()
 	ops, err := NewOperations(types, []Operation{{Name: "expense.submit", Checks: []CheckSpec{
 		{Role: "source", ResourceType: "document.text_unit", Action: "read"},
 		{Role: "tool", ResourceType: "agent.tool", Action: "invoke"},
@@ -147,9 +147,9 @@ func TestPlanCompoundOperation(t *testing.T) {
 
 // TestR1TypesExcludeLaterPhases covers the phase split of the resource
 // table: R1 registers the crypto types and the storage history actions, and
-// not the R2 executor types.
+// not the R2 types, which the core types add.
 func TestR1TypesExcludeLaterPhases(t *testing.T) {
-	r1, all := R1Types(), ExecutorTypes()
+	r1, all := R1Types(), CoreTypes()
 	for _, typ := range []string{"agent.tool", "network.destination", "business.record", "ai.model"} {
 		if r1.HasResourceType(typ) || !all.HasResourceType(typ) {
 			t.Errorf("%s: in R1 = %v, with executor = %v", typ, r1.HasResourceType(typ), all.HasResourceType(typ))

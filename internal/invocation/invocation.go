@@ -110,8 +110,10 @@ func scan(row pgx.Row) (Invocation, error) {
 }
 
 // Create records a PREPARED invocation. Creating again with the same
-// idempotency key returns the existing invocation if the operation is the
-// same; a different operation under the same key is refused (INV-004).
+// idempotency key returns the existing invocation if the operation and the
+// actor are the same; a different operation, or another actor, under the
+// same key is refused (INV-004), so a key never shows one actor's
+// invocation to another.
 func (s *Store) Create(ctx context.Context, inv Invocation) (Invocation, error) {
 	inv.ID, inv.State = newID(), StatePrepared
 	tag, err := s.pool.Exec(ctx, `
@@ -131,7 +133,7 @@ func (s *Store) Create(ctx context.Context, inv Invocation) (Invocation, error) 
 	if err != nil {
 		return Invocation{}, err
 	}
-	if existing.OperationDigest != inv.OperationDigest {
+	if existing.OperationDigest != inv.OperationDigest || existing.Actor != inv.Actor || existing.Subject != inv.Subject {
 		return Invocation{}, ErrIdempotencyConflict
 	}
 	return existing, nil
@@ -222,6 +224,23 @@ func (s *Store) BeginDispatch(ctx context.Context, tenant, id string, token int6
 	})
 }
 
+// DispatchTx moves a leased invocation to DISPATCHING inside tx, the
+// authority fence of its decision, which consumes the decision and the
+// approval it binds in the same transaction (INV-002). It returns the
+// invocation as it was.
+func (s *Store) DispatchTx(ctx context.Context, tx pgx.Tx, tenant, id string, token int64) (Invocation, error) {
+	inv, err := s.locked(ctx, tx, tenant, id, token)
+	if err != nil {
+		return Invocation{}, err
+	}
+	if inv.State != StatePrepared && inv.State != StateReserved {
+		return Invocation{}, ErrState
+	}
+	_, err = tx.Exec(ctx, `UPDATE invocations SET state = 'DISPATCHING', dispatched_at = $3, updated_at = $3
+		WHERE tenant = $1 AND id = $2`, tenant, id, s.now())
+	return inv, err
+}
+
 // Complete records the dispatch outcome. SUCCEEDED commits the reservation,
 // FAILED (the effect is known not to have happened) releases it, and
 // UNKNOWN keeps it until resolution (INV-007).
@@ -263,60 +282,68 @@ func settle(ctx context.Context, tx pgx.Tx, tenant, id string, outcome State) er
 // acting agent (INV-006). ABANDONED keeps the reservation charged and
 // prohibits redispatch (INV-009).
 func (s *Store) Resolve(ctx context.Context, tenant, id, resolver string, outcome State, evidence string) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error { return s.ResolveTx(ctx, tx, tenant, id, resolver, outcome, evidence) })
+}
+
+// ResolveTx is Resolve inside tx, such as the authority fence of the
+// resolver's decision.
+func (s *Store) ResolveTx(ctx context.Context, tx pgx.Tx, tenant, id, resolver string, outcome State, evidence string) error {
 	if outcome != StateSucceeded && outcome != StateFailed && outcome != StateAbandoned {
 		return fmt.Errorf("invocation: %s is not a resolution", outcome)
 	}
 	if evidence == "" {
 		return ErrEvidence
 	}
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		inv, err := scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id))
-		if err != nil {
-			return err
-		}
-		if inv.State != StateUnknown {
-			return ErrState
-		}
-		if resolver == inv.Actor || resolver == inv.Subject {
-			return ErrSelfResolution
-		}
-		if err := settle(ctx, tx, tenant, id, outcome); err != nil {
-			return err
-		}
-		res, _ := json.Marshal(Resolution{By: resolver, Outcome: outcome, Evidence: evidence, At: s.now()})
-		_, err = tx.Exec(ctx, `UPDATE invocations SET state = $3, resolution = $4, updated_at = $5 WHERE tenant = $1 AND id = $2`,
-			tenant, id, string(outcome), res, s.now())
+	inv, err := scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id))
+	if err != nil {
 		return err
-	})
+	}
+	if inv.State != StateUnknown {
+		return ErrState
+	}
+	if resolver == inv.Actor || resolver == inv.Subject {
+		return ErrSelfResolution
+	}
+	if err := settle(ctx, tx, tenant, id, outcome); err != nil {
+		return err
+	}
+	res, _ := json.Marshal(Resolution{By: resolver, Outcome: outcome, Evidence: evidence, At: s.now()})
+	_, err = tx.Exec(ctx, `UPDATE invocations SET state = $3, resolution = $4, updated_at = $5 WHERE tenant = $1 AND id = $2`,
+		tenant, id, string(outcome), res, s.now())
+	return err
 }
 
 // WriteOff releases the charge of an ABANDONED invocation as an accepted
 // risk, recorded with the principal and note (INV-009). It does not make
 // the invocation dispatchable.
 func (s *Store) WriteOff(ctx context.Context, tenant, id, principal, note string) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error { return s.WriteOffTx(ctx, tx, tenant, id, principal, note) })
+}
+
+// WriteOffTx is WriteOff inside tx, such as the authority fence of the
+// principal's decision.
+func (s *Store) WriteOffTx(ctx context.Context, tx pgx.Tx, tenant, id, principal, note string) error {
 	if note == "" {
 		return ErrEvidence
 	}
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		inv, err := scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id))
-		if err != nil {
-			return err
-		}
-		if inv.State != StateAbandoned {
-			return ErrState
-		}
-		if principal == inv.Actor || principal == inv.Subject {
-			return ErrSelfResolution
-		}
-		if err := reservation.WriteOffTx(ctx, tx, tenant, id, note); err != nil {
-			return err
-		}
-		inv.Resolution.WriteOff = principal + ": " + note
-		res, _ := json.Marshal(inv.Resolution)
-		_, err = tx.Exec(ctx, `UPDATE invocations SET resolution = $3, updated_at = $4 WHERE tenant = $1 AND id = $2`,
-			tenant, id, res, s.now())
+	inv, err := scan(tx.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id))
+	if err != nil {
 		return err
-	})
+	}
+	if inv.State != StateAbandoned {
+		return ErrState
+	}
+	if principal == inv.Actor || principal == inv.Subject {
+		return ErrSelfResolution
+	}
+	if err := reservation.WriteOffTx(ctx, tx, tenant, id, note); err != nil {
+		return err
+	}
+	inv.Resolution.WriteOff = principal + ": " + note
+	res, _ := json.Marshal(inv.Resolution)
+	_, err = tx.Exec(ctx, `UPDATE invocations SET resolution = $3, updated_at = $4 WHERE tenant = $1 AND id = $2`,
+		tenant, id, res, s.now())
+	return err
 }
 
 // Stalled returns DISPATCHING invocations whose lease has expired: a worker

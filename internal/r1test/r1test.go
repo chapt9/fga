@@ -48,6 +48,10 @@ const StorageAdapter = "storage-1"
 const (
 	MCPAdapter  = "mcp-1"
 	MCPAudience = "fga-mcp"
+	// ToolsAdapter is the tools role's workload, and ToolsAudience its
+	// users' token audience and decision audience (executor.Audience).
+	ToolsAdapter  = "tools-1"
+	ToolsAudience = "fga-tools"
 )
 
 // LabelOrder is the fixture release's label order (D-06), generation 1.
@@ -158,14 +162,16 @@ var UserActions = map[string][]string{
 	"storage.bucket": {"create-object", "list", "manage", "approve", "share"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
 		"label", "relabel", "propose-label", "export", "approve"},
-	"crypto.envelope":    {"create", "release", "retire"},
-	"document.version":   {"read-units", "raw-read", "discover", "share", "export", "approve"},
-	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},
-	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"},
-	"text.entry":         {"read", "use-in-model", "update", "share", "approve"},
-	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
-	"crypto.signing-key": {"discover"},
-	"agent.tool":         {"discover", "invoke"},
+	"crypto.envelope":     {"create", "release", "retire"},
+	"document.version":    {"read-units", "raw-read", "discover", "share", "export", "approve"},
+	"document.text_unit":  {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},
+	"document.derived":    {"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"},
+	"text.entry":          {"read", "use-in-model", "update", "share", "approve"},
+	"crypto.recipient":    {"enroll", "activate", "receive-key", "revoke", "discover"},
+	"crypto.signing-key":  {"discover"},
+	"agent.tool":          {"discover", "invoke", "approve", "resolve", "write-off"},
+	"network.destination": {"send"},
+	"business.record":     {"read", "update", "approve"},
 }
 
 // Stack is a running fixture.
@@ -331,9 +337,9 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	st.Decisions, err = decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Operations: registry.CoreOperations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
 		Approvals: approval.New(pool, now),
-		Audiences: []string{content.Audience, content.KeysAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
+		Audiences: []string{content.Audience, content.KeysAudience, ToolsAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
 		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience},
-			MCPAdapter: {MCPAudience}},
+			MCPAdapter: {MCPAudience}, ToolsAdapter: {ToolsAudience}}, ToolOperations: st.Catalog,
 		Gateways: map[string][]string{MCPAdapter: {content.Audience}}, SelfVerifier: st.Verifier(content.Audience)})
 	if err != nil {
 		t.Fatal(err)

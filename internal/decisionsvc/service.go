@@ -13,10 +13,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"fga/internal/admission"
@@ -152,6 +154,11 @@ type Approvals interface {
 	Get(ctx context.Context, tenant, id string) (approval.Approval, error)
 }
 
+// ToolOperations returns a tenant's registered tool operation, if any.
+type ToolOperations interface {
+	ToolOperation(ctx context.Context, tenant, name string) (registry.Operation, bool, error)
+}
+
 // TokenVerifier verifies a bearer access token for an audience.
 // authn.Verifier implements it.
 type TokenVerifier interface {
@@ -211,8 +218,11 @@ type Deps struct {
 	// the same tenant and user, while it is valid and from the current
 	// recovery incarnation (TB3). SelfVerifier checks this role's own
 	// signature on it.
-	Gateways       map[string][]string
-	SelfVerifier   *signing.Verifier
+	Gateways     map[string][]string
+	SelfVerifier *signing.Verifier
+	// ToolOperations, if set, holds the tenants' registered tool
+	// operations (the executor, AGT-001); the catalog implements it.
+	ToolOperations ToolOperations
 	PublicAudience string
 	Signer         *signing.Signer
 	Outbox         audit.Outbox
@@ -300,6 +310,19 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return deny(ReasonAuthentication)
 	}
 	op, ok := s.d.Operations.Lookup(req.Operation)
+	if !ok && strings.HasPrefix(req.Operation, registry.ToolOperationPrefix) && s.d.ToolOperations != nil {
+		// A tenant's registered tool is an operation too (AGT-001); its
+		// registration recorded exactly its checks.
+		var err error
+		if op, ok, err = s.d.ToolOperations.ToolOperation(ctx, req.Tenant, req.Operation); err != nil {
+			return fail(ReasonCatalogUnavailable)
+		}
+		if ok {
+			if _, err := registry.NewOperations(s.d.Types, []registry.Operation{op}); err != nil {
+				return deny(ReasonUnknownOperation)
+			}
+		}
+	}
 	if !ok {
 		return deny(ReasonUnknownOperation)
 	}
@@ -371,7 +394,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return deny(ReasonInvalidRequest)
 	}
 	d := s.d.Decider.DecideBatch(ctx, decision.Batch{Envelope: env, SnapshotDigest: snap.Digest, Checks: checks,
-		LabelOrder: snap.Info.LabelOrder})
+		LabelOrder: snap.Info.LabelOrder, Operation: operationFacts(req.Plan)})
 	for _, r := range d.Results {
 		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, PrincipalID: r.Principal.ID, Business: r.Business.String(),
 			Ceiling: ceilingName(r.Ceiling), Effect: effectName(r.Effect), Reason: string(r.Reason)})
@@ -659,7 +682,25 @@ func newID() string {
 // approvable are the resource types an approval can target in R1-C
 // (ruling 6; storage-role operations only).
 var approvable = map[string]bool{"storage.object": true, "storage.bucket": true, "document.text_unit": true, "document.derived": true,
-	"document.version": true, "text.entry": true}
+	"document.version": true, "text.entry": true, "agent.tool": true}
+
+// operationFacts are a verified plan's arguments and amount, which policy
+// conditions see as request.operation (AGT-003 step 3): the plan's digest
+// is the operation digest the decision binds, so the facts are those of
+// exactly this operation.
+func operationFacts(p *opplan.Summary) map[string]any {
+	if p == nil || len(p.Details) == 0 {
+		return nil
+	}
+	var facts map[string]any
+	if json.Unmarshal(p.Details, &facts) != nil {
+		return nil
+	}
+	if p.Currency != "" {
+		facts["amount_minor"], facts["currency"] = p.AmountMinor, p.Currency
+	}
+	return facts
+}
 
 // settleApproval handles a NEEDS_APPROVAL outcome (APR-001 to APR-003).
 // Without an approval in the request it opens a pending approval for the

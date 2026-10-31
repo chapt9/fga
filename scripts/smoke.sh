@@ -30,8 +30,8 @@ PUB=$(cat publisher.pub); DEC=$(cat decision.pub); ISS=$(cat issuer.pub)
 cat > decision.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:17443","dev_adapter_id":"local-dev","database_url":"$URL",
  "bundle_dir":"bundle","publisher_keys":{"publisher-1":"$PUB"},"signing_key_file":"decision.key","signing_key_id":"decision-1",
- "audiences":["fga-storage","fga-keys"],"decision_max_age":"30s","outbox_capacity":100000,
- "token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"adapter_audiences":{"local-dev":["fga-storage","fga-keys","fga-mcp"]},
+ "audiences":["fga-storage","fga-keys","fga-tools"],"decision_max_age":"30s","outbox_capacity":100000,
+ "token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"adapter_audiences":{"local-dev":["fga-storage","fga-keys","fga-mcp","fga-tools"]},
  "gateways":{"local-dev":["fga-storage"]}}
 J
 COMMON="\"database_url\":\"$URL\",\"dev_adapter_id\":\"local-dev\",\"token_issuer\":{\"issuer\":\"fga-dev\",\"keys\":{\"tok-1\":\"$ISS\"}},\"decision\":{\"url\":\"http://127.0.0.1:17443\"},\"decision_keys\":{\"decision-1\":\"$DEC\"}"
@@ -332,6 +332,49 @@ p.stdin.close()
 p.wait(timeout=10)
 P
 as bob; check env FGA_MCP_URL=http://127.0.0.1:18446/mcp FGA_MCP_TOKEN="$(tok bob fga-mcp)" python3 -I mcp_bridge.py $B/fga
+# The tools role (R2 executor): a registered tool is called on an external
+# destination only once reviewed, for a member whom policy allows, exactly
+# once per idempotency key, with the destination's own credential.
+cat > destination.py <<'P'
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        with open("destination.calls", "a") as f:
+            f.write(json.dumps({"key": self.headers.get("Idempotency-Key"), "auth": self.headers.get("Authorization"),
+                                "body": body.decode()}) + "\n")
+        self.send_response(201); self.end_headers(); self.wfile.write(b'{"ok":true}')
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 18447), H).serve_forever()
+P
+python3 -I destination.py & echo $! >> pids
+echo "hooks-secret" > hooks.token
+cat > tools.json <<J
+{"version":1,"profile":"development","listen":"127.0.0.1:18448",$COMMON,"outbox_capacity":100000}
+J
+cat > notify.json <<'J'
+{"id":"notify","version":1,"description":"post a notification","destination":"hooks","endpoint":{"method":"POST","path":"/notify"},
+ "arguments":[{"name":"message","type":"string","required":true,"max_length":200}],"max_hold_age":"1h"}
+J
+TOOLS="$B/fga-tools -config tools.json"
+check $TOOLS tool add -tenant t-acme -file notify.json
+check $TOOLS destination add -tenant t-acme -id hooks -url http://127.0.0.1:18447 -cidrs 127.0.0.0/8 -credential-file hooks.token -approved
+$TOOLS > tools.log 2>&1 & echo $! >> pids
+sleep 1
+$ADMIN grant -tenant t-acme -actor bob -type network.destination -actions send
+invoke() { curl -s -o invoke.out -w '%{http_code}' -H "Authorization: Bearer $(tok $1 fga-tools)" -H 'Content-Type: application/json' \
+             -d "{\"tool\":\"notify\",\"version\":1,\"idempotency_key\":\"$2\",\"arguments\":{\"message\":\"$3\"}}" \
+             http://127.0.0.1:18448/v1/invocations; }
+code=$(invoke bob n-1 "before review"); [ "$code" = 404 ] || { echo "SMOKE FAILED: an unreviewed tool answered $code"; exit 1; }
+check $TOOLS tool review -tenant t-acme -id notify
+code=$(invoke bob n-1 "build finished"); [ "$code" = 200 ] && grep -q '"state":"SUCCEEDED"' invoke.out || { echo "SMOKE FAILED: invoke $code $(cat invoke.out)"; exit 1; }
+first=$(python3 -I -c 'import json;print(json.load(open("invoke.out"))["invocation_id"])')
+code=$(invoke bob n-1 "build finished"); [ "$code" = 200 ] && grep -q "$first" invoke.out || { echo "SMOKE FAILED: retry $code $(cat invoke.out)"; exit 1; }
+[ "$(wc -l < destination.calls | tr -d ' ')" = 1 ] && grep -q "\"key\": \"$first\"" destination.calls && grep -q "Bearer hooks-secret" destination.calls \
+  || { echo "SMOKE FAILED: the destination got $(cat destination.calls)"; exit 1; }
+$ADMIN identity put -tenant t-acme -id gus -roles guest -attrs '{"projects":["p1"]}'
+code=$(invoke gus g-1 "hello"); [ "$code" = 404 ] || { echo "SMOKE FAILED: a guest's call answered $code"; exit 1; }
+echo "tools role: a reviewed tool called once for bob ($first), its retry answered without a second call, a guest refused"
 # Final removal of a server-mode version destroys its data key (S6,
 # SSE-006): reclaim retires the withdrawn version and reports that backups
 # taken before still hold the key.

@@ -1,0 +1,2 @@
+{"format":"fga.policy/v1","set":"business","resource":"network.destination","scope":"","rules":[
+  {"id":"members-send-approved","effect":"allow","actions":["send"],"roles":["member"],"when":"resource.attributes.approved == true"}]}

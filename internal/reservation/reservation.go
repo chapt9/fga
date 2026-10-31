@@ -65,6 +65,28 @@ func (s *Store) Reserve(ctx context.Context, tenant, budget, invocation string, 
 		return Reservation{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	r, err := s.ReserveTx(ctx, tx, tenant, budget, invocation, amount)
+	if err != nil {
+		return Reservation{}, err
+	}
+	return r, tx.Commit(ctx)
+}
+
+// ReserveTx is Reserve inside tx, so the hold commits with the operation
+// that needs it (INV-002). A tx that already holds the invocation's
+// reservation gets it back.
+func (s *Store) ReserveTx(ctx context.Context, tx pgx.Tx, tenant, budget, invocation string, amount tools.Money) (Reservation, error) {
+	existing := Reservation{Invocation: invocation}
+	var state string
+	err := tx.QueryRow(ctx, `SELECT id, budget, amount_minor, state FROM reservations WHERE tenant = $1 AND invocation = $2`,
+		tenant, invocation).Scan(&existing.ID, &existing.Budget, &existing.AmountMinor, &state)
+	if err == nil {
+		existing.State = State(state)
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Reservation{}, err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE budgets SET reserved_minor = reserved_minor + $4
 		 WHERE tenant = $1 AND id = $2 AND currency = $3 AND reserved_minor + spent_minor + $4 <= limit_minor`,
@@ -81,7 +103,7 @@ func (s *Store) Reserve(ctx context.Context, tenant, budget, invocation string, 
 		tenant, r.ID, budget, invocation, amount.Minor, string(r.State)); err != nil {
 		return Reservation{}, err
 	}
-	return r, tx.Commit(ctx)
+	return r, nil
 }
 
 func (s *Store) whyNot(ctx context.Context, tenant, budget string, amount tools.Money) error {

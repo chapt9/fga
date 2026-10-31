@@ -212,6 +212,24 @@ const (
 	MCPToolNamespace = "mcp.tool"
 )
 
+// Executor operations (R2, AGT-001, INV-006, INV-009). A registered tool is
+// an agent.tool resource "tool:<id>" (alias ToolNamespace) sending to a
+// network.destination "destination:<id>" (alias DestinationNamespace); its
+// invocation is the operation ToolOperationPrefix+id, whose checks the
+// tool's registration records in the catalog (catalog.RegisterTool), since
+// the decision role links no tool code. Resolving an UNKNOWN invocation and
+// writing off an abandoned one are actions on the tool.
+const (
+	ToolOperationPrefix  = "tool:"
+	ToolNamespace        = "tool"
+	DestinationNamespace = "destination"
+	OpToolResolve        = "agent.tool.resolve"
+	OpToolWriteOff       = "agent.tool.write-off"
+	// OpToolApprove decides an approval whose target is a tool: a call
+	// that policy lets through only with an approval (APR-001).
+	OpToolApprove = "agent.tool.approve"
+)
+
 // MCPTools are the operations the MCP service offers, each an agent.tool
 // resource of every tenant that enables MCP.
 var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export"}
@@ -221,7 +239,10 @@ var MCPTools = []string{"resources.list", "resources.read", "documents.search", 
 func CoreOperations(types *Types) *Operations {
 	o, err := NewOperations(types, append(r1Operations(), Operation{Name: OpMCPInvoke,
 		Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "invoke"}}},
-		Operation{Name: OpMCPDiscover, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "discover", Repeated: true}}}))
+		Operation{Name: OpMCPDiscover, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "discover", Repeated: true}}},
+		Operation{Name: OpToolResolve, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "resolve"}}},
+		Operation{Name: OpToolWriteOff, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "write-off"}}},
+		Operation{Name: OpToolApprove, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "approve"}}}))
 	if err != nil {
 		panic(err) // the table is static; a failure is a programming error
 	}

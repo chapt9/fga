@@ -49,6 +49,8 @@ func approveCheck(a approval.Approval) (string, check, bool) {
 		return registry.OpApproveVersion, check{id: "version", role: registry.RoleVersion, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	case "text.entry":
 		return registry.OpApproveEntry, check{id: "unit", role: registry.RoleUnit, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
+	case "agent.tool":
+		return registry.OpToolApprove, check{id: "tool", role: registry.RoleTool, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	}
 	return "", check{}, false
 }

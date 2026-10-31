@@ -107,7 +107,9 @@ var mcpTypeDefs = []TypeDef{
 }
 
 // executorTypeDefs are the further R2 types of the optional executor
-// (feature executor).
+// (feature executor). They are core vocabulary, so a release signed for
+// the core schema can govern the executor; the executor itself stays an
+// optional role.
 var executorTypeDefs = []TypeDef{
 	{Name: "network.destination", Actions: []string{"connect", "send"}},
 	{Name: "business.record", Actions: []string{"read", "update", "approve", "export"}},
@@ -118,14 +120,8 @@ var executorTypeDefs = []TypeDef{
 func R1Types() *Types { return mustTypes(r1TypeDefs) }
 
 // CoreTypes returns the resource types the platform's roles serve: those
-// of release R1 and the MCP service's agent.tool (R2).
-func CoreTypes() *Types { return mustTypes(slices.Concat(r1TypeDefs, mcpTypeDefs)) }
-
-// ExecutorTypes returns the core types plus the types of the optional R2
-// executor. Only roles that enable the executor use it.
-func ExecutorTypes() *Types {
-	return mustTypes(slices.Concat(r1TypeDefs, mcpTypeDefs, executorTypeDefs))
-}
+// of release R1, the MCP service's agent.tool, and the executor's (R2).
+func CoreTypes() *Types { return mustTypes(slices.Concat(r1TypeDefs, mcpTypeDefs, executorTypeDefs)) }
 
 func mustTypes(defs []TypeDef) *Types {
 	t, err := NewTypes(defs)

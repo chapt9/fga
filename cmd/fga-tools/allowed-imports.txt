@@ -1,0 +1,56 @@
+# Packages the tools role may link (MOD-004). One import-path prefix per
+# line. Adding a line needs review: it widens the role's attack surface. No
+# payload cipher, key-encryption, client decryption, storage content or MCP
+# package belongs here.
+fga/cmd/fga-tools
+# Reviewed 2026-10-31 (R2 executor): the tools role, the tool registry and
+# its store, the outbound connector, invocations and reservations.
+fga/internal/executor
+fga/internal/tools
+fga/internal/toolstore
+fga/internal/invocation
+fga/internal/reservation
+# Shared authority and enforcement, as for the storage and keys roles.
+fga/internal/admission
+fga/internal/approval
+fga/internal/audit
+fga/internal/authn
+fga/internal/catalog
+fga/internal/cryptowire
+fga/internal/decision
+fga/internal/decisionsvc
+fga/internal/delegation
+fga/internal/enforce
+fga/internal/fence
+fga/internal/gate
+fga/internal/guard
+fga/internal/httpapi
+fga/internal/identity
+fga/internal/labels
+fga/internal/opplan
+fga/internal/policy
+fga/internal/registry
+fga/internal/release
+fga/internal/roleconfig
+fga/internal/rpc
+fga/internal/signing
+fga/internal/strictjson
+# Linked through rpc, the shared decision client: the keys role's opaque
+# envelope and delivery types and decision checks; nothing here opens an
+# envelope or holds key material.
+fga/internal/envelope
+fga/internal/keycheck
+fga/internal/keysapi
+# Linked through the registry and release packages (cel-go policy engine)
+# and the PostgreSQL driver.
+cel.dev/
+github.com/antlr4-go/antlr/
+github.com/go-jose/go-jose/
+github.com/jackc/
+golang.org/x/exp/
+golang.org/x/sync/
+golang.org/x/text/
+google.golang.org/genproto/googleapis/api/
+google.golang.org/genproto/googleapis/rpc/status
+go.yaml.in/yaml/v3
+google.golang.org/protobuf/
