@@ -1,0 +1,14 @@
+% Historical supporting provenance ledger; not part of the normative implementation contract.
+\subsubsection{Focused source check for this revision}
+At the pinned revisions above, six short local source excerpts (158 lines in total) were inspected again to check the mapped control paths. The existing graphs located symbols; the source excerpts supplied the evidence. This targeted check neither rereads the entire projects nor establishes runtime durability, performance or security qualification. No upstream code or comments are reproduced in this specification.
+
+\begin{longtable}{@{}P{0.45\textwidth}P{0.45\textwidth}@{}}
+\toprule Source excerpt & Consequence for our independent design\\\midrule\endhead
+Cerbos \path{internal/ruletable/check.go}, lines 429--449 & Distinct role results and definitive principal results need explicit semantics; keep platform ceilings outside that business combination.\\
+Cerbos \path{internal/ruletable/manager.go}, lines 105--129 & Candidate construction precedes replacement. Our epoch-bound activation additionally rejects stale authorization state.\\
+MinIO \path{cmd/erasure-object.go}, lines 1437--1455 and 1556--1582 & Writer/quorum errors and incomplete bodies prevent success before finalization. Our publication combines durable immutable bytes with an authoritative catalog commit, rather than adopting its disk format or rename protocol.\\
+MinIO \path{cmd/bucket-replication.go}, lines 3493--3526 & Recovery entries are accumulated and persisted. Our later repair service records bounded jobs durably in PostgreSQL; the excerpt is not evidence that every upstream queued item survives every crash.\\
+MinIO \path{cmd/encryption-v1.go}, lines 527--558 & The inspected read path constructs a server decryptor. Our design explicitly rejects that placement: only the authorized client unwraps its envelope and decrypts content.\\
+\bottomrule
+\end{longtable}
+

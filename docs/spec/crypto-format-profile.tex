@@ -1,0 +1,66 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=23mm]{geometry}
+\usepackage{booktabs,longtable,array,xurl}
+\usepackage[colorlinks=true,urlcolor=blue]{hyperref}
+\newcommand{\code}[1]{{\small\nolinkurl{#1}}}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\begin{document}
+\begin{center}
+{\Large\bfseries Client encryption format details}\par
+Companion to Specification 2.5, 31 October 2026
+\end{center}
+
+This companion preserves the byte-level requirements previously embedded in
+Part 4 of Specification 2.2. The main paper retains the security bindings,
+validation rules, custody boundary and failure behavior. This file is not
+included in the paper. These layouts are part of the versioned format contract,
+not evidence of library interoperability or production qualification: RCP-007
+still requires the full signed-wire profile, pinned implementations and exact
+positive and negative examples before enablement.
+
+\section*{Payload binding (CRY-003)}
+The payload AAD is exactly 60 bytes. Its domain identifier, tenant, object,
+crypto version, suite and format also bind the key package. Mutable names,
+classifications and envelope generation are excluded. AAD is authenticated,
+not confidential.
+
+\begin{longtable}{@{}P{0.15\textwidth}P{0.20\textwidth}P{0.55\textwidth}@{}}
+\caption{Payload AAD layout}\label{tab:aad}\\
+\toprule Bytes & Size & Content\\\midrule\endfirsthead
+\toprule Bytes & Size & Content\\\midrule\endhead
+0--7 & 8 & ASCII \code{FGAAD001}\\
+8--23 & 16 & Tenant UUID\\
+24--39 & 16 & Object UUID\\
+40--55 & 16 & Crypto-version UUID\\
+56--57 & 2 & Suite identifier, unsigned big-endian, from a versioned registry\\
+58--59 & 2 & Format version, unsigned big-endian\\
+\bottomrule
+\end{longtable}
+
+\section*{Key package inside HPKE (KEY-006)}
+The version-1 key package is encoded in this order:
+\begin{enumerate}
+\item Unsigned big-endian 16-bit format value 1.
+\item Unsigned big-endian 16-bit binding length 60.
+\item Exactly 60 payload-binding bytes from the preceding layout.
+\item Unsigned big-endian 32-bit keyset length.
+\item Exactly that many bytes of the library-serialized binary keyset.
+\end{enumerate}
+
+The receiving client rejects inconsistent lengths, trailing bytes, unknown
+versions and keysets above 64 KiB. It validates the suite, embedded payload
+binding and single-key streaming-AEAD template before use. Extra keysets or key
+entries reject. The library owns its keyset serialization and cryptographic
+operations; this layout does not authorize reimplementing them.
+
+The server sees only the outer HPKE envelope. It cannot validate the inner
+keyset or prove that a malicious sender encrypted only the declared material.
+The main paper's independently authorized publication and delivery checks
+remain mandatory.
+
+\end{document}

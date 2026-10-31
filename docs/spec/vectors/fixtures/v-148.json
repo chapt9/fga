@@ -1,0 +1,147 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-148",
+  "kind": "lineage_floor",
+  "initial_state": {
+    "label_order": [
+      "public",
+      "internal",
+      "restricted"
+    ],
+    "collection_default": "public",
+    "sources": {
+      "u1": {
+        "label": "internal",
+        "tenant": "acme",
+        "version": "v1",
+        "state": "LIVE",
+        "access_revision": 1
+      },
+      "u2": {
+        "label": "restricted",
+        "tenant": "acme",
+        "version": "v1",
+        "state": "LIVE",
+        "access_revision": 1
+      }
+    },
+    "relabel_allow": false,
+    "boundary": "derived-label calculation and catalog persistence after authorized publication preparation",
+    "tenant": "acme",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "now": "2026-10-31T12:00:00Z",
+    "policy_epoch": 8,
+    "recovery_incarnation": 3,
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "collection1",
+        "actions": [
+          "create-object"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "u1",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "u2",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "prepared_publication": {
+      "object": "d1",
+      "version": "v1",
+      "collection": "collection1",
+      "intent": "intent-d1-v1",
+      "expected_generation": 0,
+      "state": "STAGED",
+      "ciphertext_receipt_verified": true,
+      "descriptor_signature_verified": true,
+      "lineage_signer": "alice-content-key",
+      "signer_status": "ACTIVE",
+      "signer_authorized_for_lineage": true,
+      "signed_lineage": [
+        "u1",
+        "u2"
+      ],
+      "initial_envelopes": [],
+      "audit_capacity_available": true,
+      "mandatory_approvals": []
+    },
+    "ceiling_denies": []
+  },
+  "inputs": [
+    {
+      "id": "prepare",
+      "operation": "prepare_derived_publication",
+      "intent": "intent-d1-v1",
+      "object": "d1",
+      "version": "v1"
+    },
+    {
+      "id": "publish",
+      "operation": "publish_derived",
+      "object": "d1",
+      "lineage": [
+        "u1",
+        "u2"
+      ],
+      "proposed_label": "public",
+      "prepared_request": "prepare"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "publication_prepared",
+      "request": "prepare"
+    },
+    {
+      "step": "published",
+      "request": "publish"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "prepare.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "publish.outcome",
+      "equals": "COMMITTED"
+    },
+    {
+      "path": "d1.effective_label",
+      "equals": "restricted"
+    },
+    {
+      "path": "d1.lineage",
+      "equals": [
+        "u1",
+        "u2"
+      ]
+    }
+  ]
+}

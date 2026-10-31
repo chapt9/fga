@@ -1,0 +1,104 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-143",
+  "kind": "temporal_validity",
+  "initial_state": {
+    "policy_condition": "request.now < timestamp(\"2026-10-31T17:00:00Z\")",
+    "identity_expiry": "2026-10-31T18:00:00Z",
+    "identity_revision": 4,
+    "policy_epoch": 8,
+    "boundary": "read admission",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "resource": {
+      "id": "o1",
+      "version": "v1",
+      "state": "LIVE",
+      "generation": 1,
+      "access_revision": 1
+    },
+    "recovery_incarnation": 3,
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "o1",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW",
+        "condition": "request.now < timestamp(\"2026-10-31T17:00:00Z\")"
+      }
+    ],
+    "ceiling_denies": [],
+    "other_validity_bounds": "2026-10-31T18:00:00Z"
+  },
+  "inputs": [
+    {
+      "id": "decide",
+      "operation": "decide_read",
+      "now": "2026-10-31T16:59:59Z",
+      "requested_valid_until": "2026-10-31T17:00:20Z",
+      "object": "o1",
+      "version": "v1"
+    },
+    {
+      "id": "admit_before",
+      "operation": "admit_read",
+      "decision_from": "decide",
+      "now": "2026-10-31T16:59:59Z",
+      "emit": false
+    },
+    {
+      "id": "admit",
+      "operation": "admit_read",
+      "now": "2026-10-31T17:00:00Z",
+      "decision_from": "decide"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "decision",
+      "request": "decide"
+    },
+    {
+      "step": "admission_before_cutoff",
+      "request": "admit_before"
+    },
+    {
+      "step": "admission",
+      "request": "admit"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "decide.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "admit_before.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "decide.valid_until",
+      "at_most": "2026-10-31T17:00:00Z"
+    },
+    {
+      "path": "admit.outcome",
+      "equals": "DENY"
+    },
+    {
+      "path": "emitted_bytes",
+      "equals": 0
+    }
+  ]
+}

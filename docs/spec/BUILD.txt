@@ -1,22 +1,43 @@
-Fine-Grained Access Platform - Specification 2.2 (draft)
+Object Storage and Fine-Grained Access Control - Specification 2.5
+31 October 2026
 
-Files:
-  main.tex, p00..p06-*.tex, appendix-*.tex   LaTeX source (Parts 0-6, appendices A-F)
-  vectors/decisions.json                    Machine-readable test vectors
-  mapping.csv                               Version 1.3 -> 2.x requirement mapping
-  tools/check_spec.py                       Consistency check and table generator
-  generated/*.tex                           Output of check_spec.py (traceability, mapping, vectors)
-  references-body.tex                       Reference list carried over from 1.3 (unverified)
-  fine-grained-access-spec-v2.2.pdf         Compiled PDF
+Revised design specification. Version 2.5 is 2.4 reconciled with the project owner's
+decisions D-01 to D-03 (own policy format fga.policy/v1 and evaluator; own single-node
+storage; upstream projects studied for ideas only) and with the consistency and clarity
+gaps found when 2.4 was read against the existing implementation. See ERRATA-2.4-to-2.5.md.
+Security boundaries and acceptance invariants remain at the paper's existing level;
+fixture mechanics and evidence formats remain in the companion files.
 
-Build (tested with Tectonic 0.17.0, Python 3.13):
-  python3 -I tools/check_spec.py     # validates and regenerates generated/*.tex
-  tectonic main.tex                  # writes main.pdf; copy it to the versioned name
+Main deliverables:
+  fine-grained-access-spec-v2.5.tex - standalone expanded LaTeX
+  fine-grained-access-spec-v2.5.pdf - compiled document
 
-check_spec.py also rejects a requirement whose test is first verified in a later phase.
-It reads the 1.3 source for the mapping check; pass --v13 PATH if it is not at
-/Users/jb-sec/Documents/fine-grained-access-spec/fine-grained-access-spec.tex
-(without it, the check only verifies that mapping.csv has 85 rows).
+Compile the standalone source with Tectonic 0.17.0 or a compatible LaTeX engine:
+  tectonic --keep-logs fine-grained-access-spec-v2.5.tex
 
-Compilation and the check validate the document, not the unbuilt platform. The test
-vectors have not been run against any implementation.
+Modular source:
+  main.tex, p00..p06-*.tex, appendix-*.tex, references-body.tex
+  mapping.csv, vectors/ (including test-families.json), tools/, generated/
+  crypto-format-profile.tex - supplementary byte layout, not part of main paper
+  engineering-notes.tex - supplementary research/code organization notes
+  ERRATA-2.4-to-2.5.md - what changed from 2.4 and what was left for the owner
+  HANDOFF.md - brief for the session that implements against this specification
+
+For structural validation and table generation:
+  python3 -I tools/check_spec.py
+  tectonic --keep-logs main.tex
+Use --check-only to validate without rewriting generated/.
+
+See the checker help and vector notes for per-release qualification. Structural
+validation and document compilation do not qualify an implementation. Legacy
+scenario-only cases need concrete fixtures and actual run evidence.
+
+The optional historical mapping check accepts --v13 PATH. Without the original
+v1.3 source, it checks the historical mapping row count only.
+
+Two deployment profiles are distinguished from 2.5: local (single node, the R1 target) and
+ha (the multi-node topology, qualified only when deployed). The checker feature ha gates the
+multi-node cases (family T-16, vectors V-123 and V-124).
+
+Production conformance, concurrency/recovery runs, cryptographic-library interoperability
+and performance remain separate implementation qualification work.

@@ -1,0 +1,224 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-145",
+  "kind": "lineage_freshness",
+  "initial_state": {
+    "label_order": [
+      "public",
+      "internal",
+      "restricted"
+    ],
+    "sources": {
+      "s": {
+        "label": "internal",
+        "access_revision": 1,
+        "tenant": "acme",
+        "version": "v1",
+        "state": "LIVE",
+        "generation": 1,
+        "collection_default": "public"
+      },
+      "d1": {
+        "lineage": [
+          "s"
+        ],
+        "tenant": "acme",
+        "version": "v1",
+        "state": "LIVE",
+        "generation": 1,
+        "access_revision": 1,
+        "label": "internal",
+        "collection_default": "public"
+      },
+      "d2": {
+        "lineage": [
+          "d1"
+        ],
+        "tenant": "acme",
+        "version": "v1",
+        "state": "LIVE",
+        "generation": 1,
+        "access_revision": 1,
+        "label": "internal",
+        "collection_default": "public"
+      }
+    },
+    "boundary": "derived stream authority and lease",
+    "now": "2026-10-31T12:00:00Z",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ],
+      "clearance": "internal"
+    },
+    "policy_epoch": 8,
+    "recovery_incarnation": 3,
+    "valid_until": "2026-10-31T12:00:30Z",
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "s",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW",
+        "condition": "effective_label <= authenticated principal clearance under label_order"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "d1",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW",
+        "condition": "effective_label <= authenticated principal clearance under label_order"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "d2",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW",
+        "condition": "effective_label <= authenticated principal clearance under label_order"
+      },
+      {
+        "tenant": "acme",
+        "principal": "label-admin",
+        "resource": "s",
+        "actions": [
+          "label"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "e-d2",
+        "actions": [
+          "release"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "alice-k1",
+        "actions": [
+          "receive-key"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "label_operator": {
+      "principal": "label-admin",
+      "tenant": "acme",
+      "status": "ACTIVE"
+    },
+    "recipient": {
+      "principal": "alice",
+      "key": "alice-k1",
+      "status": "ACTIVE",
+      "revision": 1
+    },
+    "envelope": {
+      "id": "e-d2",
+      "object": "d2",
+      "version": "v1",
+      "recipient": "alice",
+      "state": "ACTIVE",
+      "origin_verified": true
+    },
+    "audit_capacity_available": true
+  },
+  "inputs": [
+    {
+      "id": "read",
+      "operation": "admit_derived_stream",
+      "object": "d2",
+      "actor": "alice",
+      "subject": "alice",
+      "version": "v1"
+    },
+    {
+      "id": "lease_before",
+      "operation": "check_stream_lease",
+      "object": "d2",
+      "stream_from": "read",
+      "now": "2026-10-31T12:00:00Z"
+    },
+    {
+      "id": "raise",
+      "operation": "raise_label",
+      "object": "s",
+      "label": "restricted",
+      "new_access_revision": 2,
+      "actor": "label-admin",
+      "now": "2026-10-31T12:00:01Z"
+    },
+    {
+      "id": "lease",
+      "operation": "check_stream_lease",
+      "object": "d2",
+      "stream_from": "read",
+      "now": "2026-10-31T12:00:02Z"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "admitted",
+      "request": "read"
+    },
+    {
+      "step": "initial_lease_passes",
+      "request": "lease_before"
+    },
+    {
+      "step": "source_raised",
+      "request": "raise"
+    },
+    {
+      "step": "lease_checked",
+      "request": "lease"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "read.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "read.stream_admitted",
+      "equals": true
+    },
+    {
+      "path": "lease_before.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "raise.committed",
+      "equals": true
+    },
+    {
+      "path": "lease.reason",
+      "equals": "LINEAGE_AUTHORITY_CHANGED"
+    },
+    {
+      "path": "lease.outcome",
+      "equals": "ABORT_STREAM"
+    },
+    {
+      "path": "normal_stream_completion",
+      "equals": false
+    }
+  ]
+}

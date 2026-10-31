@@ -1,23 +1,37 @@
-\section{Review response (2.0 to 2.1)}\label{app:review}
-An external review of version 2.0 raised seven prioritized findings, decisions on the author's choices and several contract clarifications. This table records how each was handled. Two sourced claims were checked before acting: Cerbos evaluates principal policies first and treats their explicit result as final for that action, and a cancelled synchronous wait leaves a transaction visible but not yet replicated. The reviewer received the PDF only, so \texttt{vectors/} and \texttt{tools/check\_spec.py} were not examined; the checker is extended in this revision (\rr{GATE-003}).
-\begin{longtable}{@{}P{0.12\textwidth}P{0.40\textwidth}P{0.38\textwidth}@{}}
-\toprule Item & Disposition & Where\\\midrule\endhead
-F-01 & Accepted. Root-scope rules are not a ceiling because a principal-policy result is final. Ceilings are now a separate deny-only set evaluated for every check by the same evaluator contract; the mandatory parental-consent rule is dropped and scope inheritance is declared business behavior. & \rr{POL-003}, \rr{POL-007}, \rr{POL-014}, \rr{REL-001}; vectors V-006, V-013, V-017, V-018\\
-F-02 & Accepted. Lookup by operation ID is replaced by a durability barrier proven before success, dispatch or key release. & \rr{AVL-004}, \rr{INV-002}; vectors V-123, V-124\\
-F-03 & Accepted. Atomic durable mark raise before disclosure, mark revision and label-order generation bound into the decision, recheck at egress dispatch. & \rr{FLW-007}, \rr{DEC-006}, \rr{DEC-008}; vectors V-117, V-118\\
-F-04 & Accepted. A derived output's effective label is at least its lineage maximum; declassify and relabel are separate. & \rr{DRV-002}, \rr{DRV-007}, \rr{DRV-008}, \rr{LAB-004}; vectors V-119, V-128\\
-F-05 & Accepted, by binding every authority-bearing revision directly. & \rr{CNT-008}, \rr{LAB-005}, \rr{DEC-006}; vectors V-129, V-130\\
-F-06 & Accepted. One compound-operation table for remote export and one for ordinary-read key access; the broker verifies the complete signed result. & \rr{KEY-012}, \rr{RCP-005}, \rr{TRU-005}; vectors V-132 to V-136\\
-F-07 & Accepted. R1-A, R1-B and R1-C are one release; shared tests carry per-phase cases; the checker rejects a requirement whose test first applies in a later phase. Tests T-06, T-13, T-15 and T-22 gained earlier cases, and \rr{INV-008} no longer cites T-16. & \rr{GATE-003}; Table~\ref{tab:tests}\\
-Decision 1 & Supported. The provider's durability and precondition behavior is qualified, and backend encryption is not presented as R2 separation. & \rr{BKD-002}\\
-Decision 2 & Strict-only production profile kept and documented as a deliberate narrowing of the compatible tuning options. & \rr{POL-005}\\
-Decision 3 & Supported. Signed bytes and audience defined; single-use consumption atomic and durable across replicas; signing-key lifecycle separate. & \rr{DEC-008}, \rr{DEC-011}, \rr{DEC-012}\\
-Decision 4a & Kept with a state contract. The mark is keyed by a trusted context lifetime, defaulting to the delegation, and survives reconnects; label order is immutable per generation with conservative handling of older marks. This revision chose the delegation default over limiting the claim to cooperating clients. & \rr{FLW-004}, \rr{FLW-008}; vectors V-114, V-116, V-127\\
-Decision 4b, 4c & Mandatory lineage-derived classification; collection default is a floor only; recipient-specific declassification separated from global relabeling. & \rr{DRV-007}, \rr{DRV-008}, \rr{LAB-004}\\
-Decision 4d & ABANDONED defined: charge kept, approval consumed, no redispatch, release only by verified failure or an explicit write-off. Hold age escalates and never infers failure. & \rr{INV-006}, \rr{INV-009}; vectors V-044, V-046\\
-Decision 4e & Stream lease checks all revisions in the disclosure plan; fails closed under overload. & \rr{CNT-008}\\
-Decision 4f & The KEK hierarchy is conditional on D-09 and flat wrapping is the baseline. Formats are separate and the unit-wrap AAD now carries the unit's own binding. Convergent encryption is removed. & \rr{KEY-001}, \rr{KEY-005}\\
-Decision 5 & D-01 rewritten: evaluate the upstream engine first, native by deliberate choice; same corpus and epoch binding either way. & Section~\ref{sec:decisions}\\
-Clarifications & Session reset and label order: \rr{FLW-004}, \rr{FLW-008}. Search privacy claim narrowed to returned values: \rr{SRH-004}. Module tree aligned with the build boundary: \rr{MOD-001}, \rr{MOD-004}, vector V-137. Reading hostile text is no longer a denial: vectors V-029 and V-120. & as listed\\
+\section{Revision decisions and review response}\label{app:review}
+\subsection{Version 2.5: reconciliation with project decisions}
+Version 2.5 restores decisions D-01 to D-03, which version 2.4 had reverted to the pre-2.2 positions, and closes the consistency and clarity gaps found when 2.4 was read against the existing implementation. No requirement identifier is added or removed.
+
+\begin{longtable}{@{}P{0.23\textwidth}P{0.48\textwidth}P{0.19\textwidth}@{}}
+\toprule Topic & Revised contract & Requirements\\\midrule\endhead
+Policy format and evaluator & D-01 restored: our own \code{fga.policy/v1} with deny-overrides across roles and scopes, and no upstream format, reference or oracle. The upstream-format listing, the role-path hazard and the oracle marks are removed, and vector V-005 expects DENY again. & \rr{POL-001}, \rr{POL-002}, \rr{POL-003}, \rr{POL-005}, \rr{POL-012}, \rr{POL-014}, \rr{TEST-004}\\
+Blob store and profiles & D-02 restored: our own single-node store in R1. A \code{local} profile (R1) and an \code{ha} profile (multi-node, when deployed) are distinguished, and non-guarantee N-08 states the local limits. & \rr{BKD-001}, \rr{BKD-002}, \rr{AVL-001}, \rr{AVL-005}\\
+Ceiling declaration and time bound & A manifest declares its ceiling set explicitly, so a missing set is not an empty one. Time conditions are accepted only against timestamp literals, which gives a sound \code{valid_until} bound. & \rr{POL-007}, \rr{POL-008}, \rr{DEC-005}\\
+Per-check principal & Check kinds \code{OPERATION} and \code{RECIPIENT_ELIGIBILITY}, and the meaning of \code{principal_binding}, are defined. & \rr{RES-009}, \rr{KEY-012}\\
+Test applicability & The R1-B exit tests now include T-01, T-03 and T-19, where requirements already cited them; ENF-006 is a review item. & \rr{ENF-003}, \rr{ENF-006}, \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-003}, \rr{RES-009}, \rr{DAT-006}, \rr{KEY-007}\\
+Clean-room posture & Inspiration, not transcription: the mechanism matrix is the SRC-002 record, and the first mechanism-table row records the rejected upstream precedence. & \rr{SRC-001}, \rr{SRC-002}\\
 \bottomrule
 \end{longtable}
+
+
+\subsection{Version 2.4: review corrections}
+Version 2.4 closes the review gaps in authentication propagation, public decision disclosure, document-unit reuse and qualification evidence. Existing requirement identifiers and the storage-first design are retained. The changes state required behavior and leave internal mechanisms to the implementation; test mechanics remain in the companion sources.
+
+\begin{longtable}{@{}P{0.23\textwidth}P{0.48\textwidth}P{0.19\textwidth}@{}}
+\toprule Review topic & Revised contract & Requirements\\\midrule\endhead
+First-hop identity & The authority verifies user authentication before issuing the first decision; adapter identity alone is insufficient. & \rr{TRU-003}, \rr{DEC-007}\\
+Public responses & Public decision metadata is an authorized projection; internal enforcers retain the complete signed obligations. & \rr{DEC-003}, \rr{DEC-010}\\
+Reused units & Each document context has client-created bound envelopes and descriptors; historical contexts coexist while retained. & \rr{DOC-002}, \rr{RCP-005}, \rr{KEY-016}\\
+Release evidence & Case and family records bind one release manifest and configuration, with feature-aware applicability. MCP session security does not depend on the optional managed-client profile. & \rr{TEST-003}, \rr{GATE-001}, \rr{MCP-007}\\
+Fixture readiness & Fault cases establish their successful prerequisites before checking rejection or interruption. & \rr{TEST-003}\\
+\bottomrule
+\end{longtable}
+
+The security protections added in Version 2.3 remain in force. The source bundle validates document consistency and checker behavior; it does not supply production conformance or cryptographic interoperability evidence. Open Phase 0 decisions and implementation qualification remain release gates.
+
+\subsection{Design decisions retained from earlier revisions}
+R1 delivers encrypted object storage and shared fine-grained authorization; document units are storage resources. R2 adds MCP as a separate client of those services, with model or external-tool execution separately enabled. S3 and custom replication remain R3 extensions. Clients alone hold payload keys and decrypt; the server stores ciphertext, opaque recipient envelopes and declared routing/policy metadata.
+
+The independently authored Go evaluator uses qualified general-purpose expression and cryptographic libraries. Upstream MinIO and Cerbos implementations are research references, not production dependencies. A matching deny overrides an allow, and always-run platform ceilings stay distinct from business policy. Our own single-node blob store is the R1 backend (D-02); publication requires durable bytes and an authorized catalog transition. External effects retain explicit UNKNOWN and ABANDONED outcomes. Client retention, malicious-client lineage and unmediated egress keep their stated limits.
+
+The detailed historical review responses remain in the preceding editions. Current requirement text governs; obsolete server-custody and upstream-runtime alternatives are not revived by historical mapping notes.

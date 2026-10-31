@@ -1,0 +1,128 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-146",
+  "kind": "version_lifecycle",
+  "initial_state": {
+    "object": "o1",
+    "generation": 2,
+    "current_version": "v2",
+    "versions": {
+      "v1": "LIVE",
+      "v2": "LIVE"
+    },
+    "retention_holds": [],
+    "references": [],
+    "boundary": "catalog version lifecycle and ciphertext-read admission",
+    "tenant": "acme",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "now": "2026-10-31T12:00:00Z",
+    "policy_epoch": 8,
+    "recovery_incarnation": 3,
+    "metadata_revision": 1,
+    "access_revision": 1,
+    "authority_available": true,
+    "audit_capacity_available": true,
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "o1",
+        "actions": [
+          "delete",
+          "read",
+          "read-history",
+          "delete-version"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "ciphertext_versions": {
+      "v1": {
+        "blob": "blob-o1-v1",
+        "durable": true
+      },
+      "v2": {
+        "blob": "blob-o1-v2",
+        "durable": true
+      }
+    },
+    "mandatory_approvals": [],
+    "ceiling_denies": []
+  },
+  "inputs": [
+    {
+      "id": "delete_key",
+      "operation": "delete_key",
+      "object": "o1",
+      "expected_generation": 2
+    },
+    {
+      "id": "read_history",
+      "operation": "read_version",
+      "object": "o1",
+      "version": "v2"
+    },
+    {
+      "id": "delete_version",
+      "operation": "delete_version",
+      "object": "o1",
+      "version": "v2"
+    },
+    {
+      "id": "read_withdrawn",
+      "operation": "read_version",
+      "object": "o1",
+      "version": "v2"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "key_deleted",
+      "request": "delete_key"
+    },
+    {
+      "step": "history_read",
+      "request": "read_history"
+    },
+    {
+      "step": "version_withdrawn",
+      "request": "delete_version"
+    },
+    {
+      "step": "withdrawn_read",
+      "request": "read_withdrawn"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "delete_key.outcome",
+      "equals": "COMMITTED"
+    },
+    {
+      "path": "delete_version.outcome",
+      "equals": "COMMITTED"
+    },
+    {
+      "path": "read_history.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "read_withdrawn.outcome",
+      "equals": "DENY"
+    },
+    {
+      "path": "object.current_is_delete_marker",
+      "equals": true
+    }
+  ]
+}

@@ -13,5 +13,7 @@ check:
 check-pg: check
 	FGA_TEST_DATABASE_URL='$(FGA_TEST_DATABASE_URL)' go test -race -count=1 ./...
 
+# Structural check of specification 2.5; --check-only leaves generated/ as is.
 spec:
-	python3 -I docs/spec/tools/check_spec.py
+	python3 -I docs/spec/tools/check_spec.py --check-only
+	python3 -I docs/spec/tools/test_check_spec.py

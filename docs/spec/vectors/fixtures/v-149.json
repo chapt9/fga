@@ -1,0 +1,62 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-149",
+  "kind": "signer_lifecycle",
+  "initial_state": {
+    "descriptor": "descriptor-o1-v1",
+    "signer": "signer-k1",
+    "trusted_at_publication": true,
+    "publication_record_retained": true,
+    "historical_trust_evidence": false
+  },
+  "inputs": [
+    {
+      "id": "retire",
+      "operation": "retire_content_signing_key",
+      "key": "signer-k1"
+    },
+    {
+      "id": "verify_retired",
+      "operation": "verify_historical_content",
+      "descriptor": "descriptor-o1-v1"
+    },
+    {
+      "id": "compromise",
+      "operation": "mark_content_signer_compromised",
+      "key": "signer-k1"
+    },
+    {
+      "id": "verify_compromised",
+      "operation": "verify_historical_content",
+      "descriptor": "descriptor-o1-v1"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "retired",
+      "request": "retire"
+    },
+    {
+      "step": "historic_verify",
+      "request": "verify_retired"
+    },
+    {
+      "step": "compromised",
+      "request": "compromise"
+    },
+    {
+      "step": "compromised_verify",
+      "request": "verify_compromised"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "verify_retired.accepted",
+      "equals": true
+    },
+    {
+      "path": "verify_compromised.accepted",
+      "equals": false
+    }
+  ]
+}

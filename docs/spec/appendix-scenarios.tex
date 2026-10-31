@@ -1,47 +1,42 @@
 \section{Representative end-to-end scenarios}\label{app:scenarios}
-Each scenario names the requirements it exercises. They are illustrations; the vectors of Appendix~\ref{app:vectors} are the testable form.
+These scenarios illustrate the storage foundation first. They identify shared requirements and extend existing acceptance cases; they do not require a new suite per example. Payload plaintext and data keys remain in clients throughout.
 
-\subsection{An agent reads a document and submits an expense (R1-B, R1-C)}
-An authenticated agent acts for a user under a project-scoped delegation. The tool gateway prepares three checks in one batch: read the selected text unit, invoke the expense tool, and send to the registered expense service (\rr{RES-006}). The document manifest and unit bindings are fixed before authorization (\rr{DOC-001}).
-\begin{lstlisting}
-{ "request_id": "r-81", "tenant_id": "t-acme", "adapter_id": "tools-gw-1",
-  "operation_id": "op-9f3",
-  "actor":      {"id": "agent-7", "type": "agent", "identity_revision": 12},
-  "subject":    {"id": "user-42", "type": "user",  "identity_revision": 88},
-  "delegation": {"id": "dlg-5", "revision": 3},
-  "session":    {"id": "s-310", "binding_revision": 1, "context_key": "dlg-5",
-                 "mark_revision": 4, "label_order_generation": 2},
-  "checks": [
-    {"check_id": "c1", "action": "read",
-     "resource": {"type": "document.text_unit", "id": "u-1", "version": 4,
-                  "generation": 17, "metadata_revision": 2}},
-    {"check_id": "c2", "action": "invoke",
-     "resource": {"type": "agent.tool", "id": "expense.submit", "version": 3,
-                  "generation": 1, "metadata_revision": 1}},
-    {"check_id": "c3", "action": "send",
-     "resource": {"type": "network.destination", "id": "expenses.example",
-                  "version": 1, "generation": 1, "metadata_revision": 1}}],
-  "operation_digest": "sha256:...", "required_policy_epoch": 412 }
-\end{lstlisting}
-The amount is over the policy threshold, so the response is \code{NEEDS_APPROVAL}, with the approval summary rendered from the canonical plan (\rr{APR-005}). After approval and a reservation, a new \code{ALLOW} whose context revisions include both is required (\rr{DEC-002}). The executor dispatches with an idempotency key and a state precondition (\rr{AGT-006}); a timeout becomes UNKNOWN and is reconciled (\rr{INV-003}). Reading the document never grants submission authority.
+\subsection{A client stores and reads an object (R1-B)}
+A project member requests a new object in an authorized bucket. The server checks the bucket's create-object action, tenant and protected metadata, then allocates an upload intent with stable object, logical-version and crypto-version identities (\rr{PUB-002}, \rr{KEY-003}). The client verifies the intended recipient public keys against its trusted bindings, generates a fresh data key, encrypts with the exact AAD, creates recipient envelopes and signs the ciphertext descriptor (\rr{RCP-002}, \rr{RCP-008}).
 
-\subsection{Revocation during an upload (R1-C)}
-The uploader has a valid create decision and the blob is finalized. Before publication, project membership is revoked and its revision advances. The commit transaction compares the fresh decision's identity and delegation revisions and the object generation, rejects the old authority, and the catalog never publishes LIVE (\rr{PUB-003}). The blob stays staged for reconciliation and later collection (\rr{PUB-006}). A successful physical upload is not a successful authorized publication (vector V-061).
+The server receives ciphertext even after TLS terminates. It verifies outer format, origin signature, ciphertext length and digest and obtains a durable backend receipt. It cannot verify the plaintext type, classification or inner authentication tag. A fresh commit decision and catalog compare-and-swap publish the immutable version, envelope references and audit record together (\rr{PUB-003}). An unsuccessful commit leaves inaccessible staging material for reconciliation.
 
-\subsection{A remote AI reads only approved sections (R1-C; export in R2)}
-A remote analyst requests a report through MCP. Its actor and represented user may read the public overview and the financial appendix but not the personnel section. The proxy resolves the immutable manifest, checks parent and unit permissions and the requested model destination, and receives only approved plaintext units (\rr{DSC-001}). Search snippets and citations follow the same projection (\rr{DOC-007}). A direct original-file request is denied without full-document authority (\rr{CNT-003}). In R2, a compatible encrypted export gives the analyst's registered recipient key an HPKE package containing only those units' keysets (\rr{RCP-005}); revocation later blocks new releases but cannot recall keys or context already received (\rr{KEY-010}).
+On download, the storage service authorizes the exact version and metadata projection. The envelope service separately verifies the complete recipient-bound checks of Table~\ref{tab:keyops}. The client verifies origin, bindings and encrypted package integrity, unwraps its data key locally and decrypts authenticated segments. An omitted allow, missing envelope, wrong fingerprint, stale decision or corrupt stream yields no successful read. There is no server decryption fallback (\rr{KEY-015}).
 
-\subsection{A retrieved document tries to give instructions (R1-C)}
-A unit returned by search contains text telling the agent to register a new tool and widen its delegation. The text is data, not authority (\rr{MCP-004}). The registry and delegation do not change, and any call the agent then makes is checked as an ordinary request (vector V-029). If the agent attempts to send content from that session to an external address, the context mark decides (next scenario).
+\subsection{A client may read two sections but not a third (R1-C)}
+An authorized publishing client splits a report into independently protected units and encrypts each with its own key. Its signed manifest fixes the version, membership and ciphertext bindings (\rr{DOC-001}, \rr{KEY-001}). A recipient may read the overview and financial appendix but not the personnel section.
 
-\subsection{The context high-water mark (R1-C)}
-During a session the agent reads a unit labeled \emph{restricted}. The mark of its execution context becomes \emph{restricted}; it is raised durably before the first byte is emitted and stays there (\rr{FLW-003}, \rr{FLW-007}). A later call to an email tool whose destination clearance is \emph{internal} is denied, or goes to approval if a policy output asks for that (vectors V-110, V-111). If the agent reconnects with a new MCP session under the same delegation, the mark is inherited (\rr{FLW-008}, vector V-114). A summary the agent derived from the unit keeps the restricted effective label even when it is saved in a public-default collection (\rr{DRV-007}, vector V-119). A different delegation or context key starts at the lowest level, so content that reaches an agent by a route the platform does not mediate is not covered (\rr{FLW-005}, N-02).
+The native content API checks the parent and every selected unit. An explicit request containing a denied unit fails; the explicit subset operation returns only allowed encrypted units, permitted metadata and their recipient envelopes. It does not return hidden titles, placeholders or unit counts (\rr{DOC-007}). The client's local SDK decrypts just those units. A whole-original request requires complete-content authority and the distinct original object's envelope; permission to read one section cannot obtain that envelope (\rr{CNT-003}). Server search discovers authorized metadata only; searching decrypted text happens locally over content already available to that recipient (\rr{SRH-001}).
 
-\subsection{An external outcome is unknown (R1-B)}
-A payment call times out and the downstream service has no idempotency key support. The invocation becomes UNKNOWN and its reservation stays (\rr{INV-007}). After the tool's maximum hold age, an operator other than the requester resolves it as failed, with evidence, and the reservation is released (\rr{INV-006}, vector V-044); the requester's own attempt is denied (V-045).
+\subsection{Revocation during an upload or download (R1-B)}
+Project membership is revoked after the client's ciphertext is finalized but before publication. If revocation wins the common ordering point of \rr{DAT-007}, publication detects the new revision and cannot publish LIVE. Tests pause between the prepared decision and commit to exercise both possible orderings. A physically uploaded blob is not an authorized committed object (\rr{PUB-003}; V-061).
 
-\subsection{Storage-node compromise (R2, R3)}
-An attacker reads disks on one blob node. It obtains ciphertext and non-secret storage metadata but no broker or KMS credentials, which protects payload confidentiality under the cryptographic assumptions (\rr{CRY-003}). File sizes and placement metadata may still leak. If the attacker instead compromises the server-managed encryption process, that process handles plaintext and data keys and the guarantee does not apply (N-03). The client-envelope profile narrows that boundary at the cost of a dedicated SDK and client-held keys. A compromised gateway still cannot obtain keys that no signed decision covers (\rr{TRU-005}).
+If revocation occurs during a ciphertext download, the stream lease detects the changed authority and aborts the transport (\rr{CNT-008}; V-085). New envelope requests are denied. A policy allowing access only before 17:00 likewise cannot admit a mutation or emit new stream bytes at 17:00; the policy bound limits decision validity (\rr{DEC-005}). The server cannot erase ciphertext, data keys or plaintext already held by the client, and a signed receipt's expiry cannot disable a retained key (\rr{KEY-010}).
 
-\subsection{One failure domain is lost (R1-C; blobs in R3)}
-Requests are routed away from failed gateways and decision nodes. A safely fenced database standby becomes primary when necessary (\rr{AVL-003}). With the custom backend, each acknowledged blob has a surviving durable copy under the two-receipt rule and healthy nodes serve verified bytes and repair toward three copies (\rr{REP-002}); with an external backend the backend's own guarantee applies (\rr{BKD-002}). Tool invocations with uncertain external outcomes are reconciled rather than duplicated (\rr{INV-008}), and backup recovery remains separate from this availability path (\rr{AVL-005}).
+\subsection{Adding a recipient and recovering after key loss (R1-B)}
+A newly approved user has a registered, independently verified public key. An owner or organization custodian client with an existing usable envelope obtains share authority, decrypts that envelope locally and creates a new HPKE envelope for the approved fingerprint. The server verifies its client-origin signature, resource bindings and current share decision, then publishes it atomically (\rr{KEY-004}, \rr{KEY-016}). Changing the policy alone cannot create a missing envelope, and the platform cannot rewrap keys on the owner's behalf.
+
+Server recovery restores ciphertext, catalog, signed descriptors and opaque envelopes to a consistent point, then reconciles current authority before reopening (\rr{AVL-008}). A backup taken before a recipient revocation must not restore new delivery to that recipient; old decisions are rejected by the new recovery incarnation. A separately controlled client demonstrates that the recovered version can still be decrypted without exposing its private key to the restore service (\rr{KEY-017}). If every usable client key and provisioned recovery recipient is lost, the plaintext is unrecoverable. The platform never creates a hidden escrow recipient.
+
+\subsection{MCP connects to the accepted storage service (R2)}
+An MCP client requests the same two permitted report sections. The MCP service preserves the caller and delegation, maps the request to the same canonical resources and calls the storage API. It returns the encrypted package; it has neither a duplicate permission store nor a decryptor (\rr{MCP-002}, \rr{MCP-008}). A compatible client SDK or local bridge decrypts within the client's trust boundary. An ordinary MCP client that lacks this capability cannot obtain plaintext through a server fallback (\rr{MCP-005}).
+
+If an authorized client later assembles model context, that client explicitly controls the destination and disclosure; the storage server does not inspect or assemble a plaintext prompt. A separately managed client runtime may enforce mediated egress and report conservative lineage. This is a conditional client guarantee, not proof that an arbitrary recipient used or described its plaintext honestly (\rr{DRV-006}, \rr{FLW-005}).
+
+\subsection{Storage-node compromise and domain loss (R1-B; custom replicas in R3)}
+A disk reader obtains ciphertext and encrypted backup records, not client private keys or raw data keys. Minimal routing metadata, sizes and timing have their stated visibility limits. Compromising a server process can bypass that server's access checks or deny availability, but supplies no payload decryption key by itself; authentic client software and independently trusted recipient bindings remain necessary (\rr{RCP-002}, \rr{RCP-008}).
+
+In the \code{ha} profile, after a failure-domain loss, healthy service replicas continue under current authority; the database coordinator promotes only a safe candidate and fences the old primary. No acknowledged result is inferred from a merely visible, unreplicated transaction (\rr{AVL-004}). Under the \code{local} profile (D-02) recovery is from backup and no zero-loss claim is made (\rr{AVL-005}). In R3, two durable domain receipts and recorded placement allow repair toward three replicas; workers copy identical ciphertext and never decrypt it (\rr{REP-002}). Backup recovery is tested separately from failover.
+
+\subsection{Optional external effect with an unknown result (R2)}
+A separately enabled connector performs a non-content operation using a prepared, authorized plan. A timeout after dispatch leaves the result UNKNOWN and retains the reservation; a replacement worker reconciles instead of blindly retrying. ABANDONED closure preserves the charge and redispatch prohibition unless an independently authorized risk disposition applies (\rr{INV-006}, \rr{INV-009}). This optional executor is not needed to store an object or retrieve encrypted content through MCP.
+
+\subsection{Historical versions and derived dependencies (R1)}
+Deleting an object key installs a head marker while an authorized historical read of its old LIVE version still succeeds. Only a separately authorized version deletion withdraws that version; reclamation follows its retention and reference guards (\rr{PUB-005}).
+
+For a declared chain $S \rightarrow D_1 \rightarrow D_2$, raising the source label or withdrawing its relevant access invalidates dependent plans even if $D_2$'s ciphertext is unchanged. A new read re-evaluates the lineage, and an existing stream observes the change within its lease bound (\rr{DRV-009}). These are separate acceptance cases from a direct label change on the delivered object.

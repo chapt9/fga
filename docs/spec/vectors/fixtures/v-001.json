@@ -1,0 +1,104 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-001",
+  "kind": "policy",
+  "initial_state": {
+    "profile": "fga.policy/v1-strict-ceiling",
+    "policies": [
+      {
+        "policy_set": "BUSINESS",
+        "policy": {
+          "format": "fga.policy/v1",
+          "set": "business",
+          "resource": "document.text_unit",
+          "scope": "acme",
+          "rules": [
+            {
+              "id": "reviewers-read-own-projects",
+              "effect": "allow",
+              "actions": [
+                "read"
+              ],
+              "roles": [
+                "reviewer"
+              ],
+              "when": "resource.attributes.project_id in principal.attributes.project_ids"
+            }
+          ]
+        }
+      },
+      {
+        "policy_set": "CEILING",
+        "policy": {
+          "format": "fga.policy/v1",
+          "set": "ceiling",
+          "resource": "document.text_unit",
+          "scope": "",
+          "rules": [
+            {
+              "id": "only-live-units",
+              "effect": "deny",
+              "actions": [
+                "read"
+              ],
+              "roles": [
+                "*"
+              ],
+              "when": "resource.attributes.state != \"LIVE\""
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "id": "read",
+      "operation": "evaluate",
+      "principal": {
+        "id": "alice",
+        "roles": [
+          "reviewer"
+        ],
+        "attributes": {
+          "project_ids": [
+            "p1"
+          ]
+        }
+      },
+      "resource": {
+        "kind": "document.text_unit",
+        "id": "u1",
+        "scope": "acme",
+        "attributes": {
+          "project_id": "p1",
+          "state": "LIVE"
+        }
+      },
+      "actions": [
+        "read"
+      ],
+      "now": "2026-10-31T12:00:00Z"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "evaluate",
+      "request": "read"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "read.business_effect",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "read.ceiling_effect",
+      "equals": "PASS"
+    },
+    {
+      "path": "read.outcome",
+      "equals": "ALLOW"
+    }
+  ]
+}
