@@ -124,20 +124,6 @@ func nativeUnit(t *testing.T, d *mcptest.Deployment, c *r1test.Client, bucket, k
 	return string(b)
 }
 
-// unitIDs lists the units a caller sees in a document.
-func unitIDs(t *testing.T, st *r1test.Stack, c *r1test.Client, bucket, key string) []string {
-	t.Helper()
-	page, err := st.Content.ListUnits(ctx, c.Caller, bucket, key, "", 100, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []string
-	for _, u := range page.Units {
-		out = append(out, u.Unit)
-	}
-	return out
-}
-
 const notes = "First paragraph.\n\nSecond paragraph, restricted later.\n\nThird paragraph.\n"
 
 // TestMCPReads covers MCP-003 and MCP-005 for a generic MCP client:
@@ -164,7 +150,7 @@ func TestMCPReads(t *testing.T) {
 		Collection: true}, []byte("entry one\n\nentry two")); err != nil {
 		t.Fatal(err)
 	}
-	units := unitIDs(t, st, alice, "vault", "q3/notes.md")
+	units := st.UnitIDs(alice.Caller, "vault", "q3/notes.md", "")
 	s := connect(t, d, "bob", "")
 
 	// Before the tenant enables MCP there are no tools and no reads.

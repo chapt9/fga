@@ -34,17 +34,9 @@ func TestMCPUntrustedContent(t *testing.T) {
 	if err := st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
-	count := func(sql string) int {
-		t.Helper()
-		var n int
-		if err := st.Pool.QueryRow(ctx, sql).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
 	authority := func() [3]int {
-		return [3]int{count(`SELECT count(*) FROM resources WHERE type = 'agent.tool'`), count(`SELECT count(*) FROM delegations`),
-			count(`SELECT coalesce(sum(revision), 0) FROM identities`)}
+		return [3]int{st.Count(`SELECT count(*) FROM resources WHERE type = 'agent.tool'`), st.Count(`SELECT count(*) FROM delegations`),
+			st.Count(`SELECT coalesce(sum(revision), 0) FROM identities`)}
 	}
 	before := authority()
 	s := connect(t, d, "bob", "")

@@ -68,7 +68,7 @@ The storage role links `internal/payload` and Tink's `streamingaead`, and no KEK
 | `internal/payload` | Exact ciphertext size across segment boundaries; key and identity binding; corruption and truncation |
 | `internal/content` `TestServerObjects` | Round trip, a read by policy alone, a retry, overwrite, history, stat, export, delete, conditions, and each route refusing the other mode (V-155, V-156) |
 | `TestServerObjectRetry` | A short body; an unfinished attempt is not retried under the same key |
-| `TestServerObjectApproval` | A publication held for an approval, then finalized |
+| `TestServerApprovals` | A publication held for an approval, publishing nothing, then finalized (with derived outputs, server-documents.md) |
 | `TestServerPayloadAtRest` | No plaintext in blobs or the catalog and no data key in audit records (V-168); a corrupted blob (V-164) and another version's ciphertext (V-165) do not read |
 | `internal/nativeapi` `TestServerModeHTTP` | The routes and SDK over HTTP, with data keys over the keys role's internal route; the stream is aborted on corruption |
 | `scripts/smoke.sh` | Server-mode upload and a read by another member; a bucket switched to client mode reading both versions; no plaintext in blobs |

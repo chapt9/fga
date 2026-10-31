@@ -101,12 +101,13 @@ func TestServerDerived(t *testing.T) {
 	}
 }
 
-// TestServerDerivedApproval covers APR-001 and APR-002 for a server-mode
-// derived output: a publication that needs an approval keeps the staged
-// upload and names its intent; once a lead approves, finalizing it with the
-// declared lineage publishes it, and another lineage is another plan the
-// approval does not cover.
-func TestServerDerivedApproval(t *testing.T) {
+// TestServerApprovals covers APR-001 and APR-002 for server-mode
+// publications, objects and derived outputs: a publication that needs an
+// approval keeps the staged upload, publishes nothing and names its intent;
+// once a lead approves, finalizing the intent publishes it. A derived
+// output's declared lineage is part of the plan: another lineage is another
+// plan the approval does not cover.
+func TestServerApprovals(t *testing.T) {
 	policies := maps.Clone(r1test.Policies)
 	policies["buckets.json"] = `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
 	  {"id":"members-use-bucket","effect":"allow","actions":["list"],"roles":["member"],
@@ -137,10 +138,16 @@ func TestServerDerivedApproval(t *testing.T) {
 	source := func(key string) cryptowire.LineageSource {
 		t.Helper()
 		_, err := putPlain(st, alice.Caller, "vault", key, key, []byte(key))
+		if n := st.Count(`SELECT count(*) FROM object_versions o JOIN objects b ON b.id = o.object WHERE b.key = $1`, key); n != 0 {
+			t.Fatalf("%s published before the approval", key)
+		}
 		staged, intent := approve(err)
 		p, err := st.Content.Finalize(ctx, withApproval(alice.Caller, staged.ID), intent, content.FinalizeRequest{})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if got, _, err := readPlain(st, alice.Caller, "vault", key, p.Version); err != nil || string(got) != key {
+			t.Fatalf("the approved object %s: %q %v", key, got, err)
 		}
 		return cryptowire.LineageSource{Type: cryptowire.SourceObject, ID: p.Object, Version: p.Version}
 	}
@@ -148,7 +155,7 @@ func TestServerDerivedApproval(t *testing.T) {
 	_, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "out.txt", IdempotencyKey: "o1"},
 		[]cryptowire.LineageSource{a}, -1, strings.NewReader("derived"))
 	staged, intent := approve(err)
-	if n := count(t, st, `SELECT count(*) FROM derived_versions`); n != 0 {
+	if n := st.Count(`SELECT count(*) FROM derived_versions`); n != 0 {
 		t.Fatal("published before the approval")
 	}
 	approved := withApproval(alice.Caller, staged.ID)

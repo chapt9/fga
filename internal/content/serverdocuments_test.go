@@ -23,20 +23,6 @@ func readUnitPlain(st *r1test.Stack, c content.Caller, bucket, key, version, uni
 	return string(b), err
 }
 
-// unitIDs lists the units a caller may see in a document version.
-func unitIDs(t *testing.T, st *r1test.Stack, c content.Caller, bucket, key, version string) []string {
-	t.Helper()
-	page, err := st.Content.ListUnits(ctx, c, bucket, key, version, 100, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []string
-	for _, u := range page.Units {
-		out = append(out, u.Unit)
-	}
-	return out
-}
-
 // TestServerDocument covers DOC-001 to DOC-007 in server mode (S4a): the
 // storage role splits uploaded text into units, each sealed and encrypted
 // under its own data key, and publishes the version without signatures or
@@ -67,11 +53,11 @@ func TestServerDocument(t *testing.T) {
 	if mode != "server" || signer != nil || sig != nil {
 		t.Fatalf("document version: mode %s, signer %v, signature %v", mode, signer, sig)
 	}
-	if n := count(t, st, `SELECT count(*) FROM document_units u JOIN object_versions v ON v.id = u.unit_version
+	if n := st.Count(`SELECT count(*) FROM document_units u JOIN object_versions v ON v.id = u.unit_version
 	                      WHERE u.descriptor IS NULL AND v.encryption = 'server' AND v.sealed_key IS NOT NULL`); n != 3 {
 		t.Fatalf("%d server-mode units without descriptors", n)
 	}
-	units := unitIDs(t, st, bob.Caller, "vault", "q3/notes.md", "")
+	units := st.UnitIDs(bob.Caller, "vault", "q3/notes.md", "")
 	want := []string{"First paragraph.", "Second paragraph, with a line\nbreak.", "Third paragraph."}
 	if len(units) != 3 {
 		t.Fatalf("bob sees %d units", len(units))
@@ -89,7 +75,7 @@ func TestServerDocument(t *testing.T) {
 	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "vault", "q3/notes.md", "", units[1], "restricted"); err != nil {
 		t.Fatal(err)
 	}
-	if got := unitIDs(t, st, bob.Caller, "vault", "q3/notes.md", ""); len(got) != 2 || got[0] != units[0] || got[1] != units[2] {
+	if got := st.UnitIDs(bob.Caller, "vault", "q3/notes.md", ""); len(got) != 2 || got[0] != units[0] || got[1] != units[2] {
 		t.Fatalf("bob's view after the label change: %v", got)
 	}
 	if _, err := readUnitPlain(st, bob.Caller, "vault", "q3/notes.md", "", units[1]); !errors.Is(err, content.ErrNotFound) {
@@ -114,7 +100,7 @@ func TestServerDocument(t *testing.T) {
 		text); !errors.Is(err, content.ErrEncryptionMode) {
 		t.Fatalf("server text to a client-mode bucket: %v", err)
 	}
-	if _, err := st.Content.ReadUnitCiphertext(ctx, bob.Caller, "vault", "q3/notes.md", "", unitIDs(t, st, bob.Caller, "vault", "q3/notes.md", "")[0]); !errors.Is(err, content.ErrEncryptionMode) {
+	if _, err := st.Content.ReadUnitCiphertext(ctx, bob.Caller, "vault", "q3/notes.md", "", st.UnitIDs(bob.Caller, "vault", "q3/notes.md", "")[0]); !errors.Is(err, content.ErrEncryptionMode) {
 		t.Fatalf("a server-mode unit through the ciphertext route: %v", err)
 	}
 	up, err := alice.PrepareDocument("reports", "client.md", []string{"client unit"}, nil, alice)
@@ -124,7 +110,7 @@ func TestServerDocument(t *testing.T) {
 	if _, err := alice.FinalizeDocument(up); err != nil {
 		t.Fatal(err)
 	}
-	clientUnit := unitIDs(t, st, alice.Caller, "reports", "client.md", "")[0]
+	clientUnit := st.UnitIDs(alice.Caller, "reports", "client.md", "")[0]
 	if _, err := readUnitPlain(st, alice.Caller, "reports", "client.md", "", clientUnit); !errors.Is(err, content.ErrEncryptionMode) {
 		t.Fatalf("a client-mode unit through the server route: %v", err)
 	}
@@ -145,13 +131,13 @@ func TestServerCollection(t *testing.T) {
 	if err != nil || v1.Units != 2 {
 		t.Fatalf("create: %+v %v", v1, err)
 	}
-	first := unitIDs(t, st, bob.Caller, "vault", "chat", "")
+	first := st.UnitIDs(bob.Caller, "vault", "chat", "")
 	appendReq := content.TextRequest{Bucket: "vault", Key: "chat", IdempotencyKey: "c2", Append: true}
 	v2, err := st.Content.PutDocumentText(ctx, alice.Caller, appendReq, []byte("fine, thanks"))
 	if err != nil || v2.Units != 3 || v2.Generation != 2 {
 		t.Fatalf("append: %+v %v", v2, err)
 	}
-	second := unitIDs(t, st, bob.Caller, "vault", "chat", "")
+	second := st.UnitIDs(bob.Caller, "vault", "chat", "")
 	if len(second) != 3 || second[0] != first[0] || second[1] != first[1] {
 		t.Fatalf("the append did not keep the entries: %v then %v", first, second)
 	}
@@ -225,7 +211,7 @@ func TestServerOriginal(t *testing.T) {
 
 	// V-163: a unit changes after the storage role's checks and before the
 	// keys role releases the original's key.
-	units := unitIDs(t, st, alice.Caller, "vault", "report.md", "")
+	units := st.UnitIDs(alice.Caller, "vault", "report.md", "")
 	st.BeforeDecide = func(req decisionsvc.Request) {
 		if req.Operation == registry.OpKeyReleaseOriginal {
 			if _, err := st.Pool.Exec(ctx, `UPDATE resources SET metadata_revision = metadata_revision + 1 WHERE id = $1`, units[1]); err != nil {
@@ -270,7 +256,7 @@ func TestServerExportRefusesClientMode(t *testing.T) {
 	if _, err := alice.FinalizeDocument(up); err != nil {
 		t.Fatal(err)
 	}
-	units := unitIDs(t, st, alice.Caller, "reports", "client.md", "")
+	units := st.UnitIDs(alice.Caller, "reports", "client.md", "")
 	if _, err := st.Content.ExportUnitsPlain(ctx, alice.Caller, "reports", "client.md", "", units); !errors.Is(err, content.ErrEncryptionMode) {
 		t.Fatalf("a server-mode export of a client-mode document: %v", err)
 	}

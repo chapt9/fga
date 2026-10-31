@@ -31,7 +31,7 @@ func TestTextCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, st, `SELECT count(*) FROM resources WHERE type = 'text.entry'`); n != 2 {
+	if n := st.Count(`SELECT count(*) FROM resources WHERE type = 'text.entry'`); n != 2 {
 		t.Fatalf("text entries = %d", n)
 	}
 	// Append: the next version keeps both entries and adds one.

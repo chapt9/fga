@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,45 +155,8 @@ func TestServerObjectRetry(t *testing.T) {
 	if _, err := putPlain(st, alice.Caller, "vault", "a.txt", "fresh", []byte("hello")); err != nil {
 		t.Fatalf("a new attempt: %v", err)
 	}
-	if n := count(t, st, `SELECT count(*) FROM object_versions WHERE encryption = 'server'`); n != 1 {
+	if n := st.Count(`SELECT count(*) FROM object_versions WHERE encryption = 'server'`); n != 1 {
 		t.Fatalf("%d server-mode versions", n)
-	}
-}
-
-// TestServerObjectApproval covers APR-001 in server mode: a publication
-// that needs an approval keeps the staged upload and names its intent; once
-// a lead approves, finalizing the intent publishes it.
-func TestServerObjectApproval(t *testing.T) {
-	policies := maps.Clone(r1test.Policies)
-	policies["buckets.json"] = `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
-	  {"id":"members-use-bucket","effect":"allow","actions":["list"],"roles":["member"],
-	   "when":"resource.attributes.project in principal.attributes.projects"},
-	  {"id":"members-create-with-approval","effect":"allow","actions":["create-object"],"roles":["member"],"requires":["approval"],
-	   "when":"resource.attributes.project in principal.attributes.projects"},
-	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
-	   "when":"resource.attributes.project in principal.attributes.projects"}]}`
-	st := r1test.NewWith(t, r1test.Options{Policies: policies})
-	st.ModeBucket("vault", "p1", "internal", "server")
-	alice := st.Client("alice", []string{"member"}, "p1")
-	lena := st.User("lena", []string{"lead"}, "p1")
-	_, err := putPlain(st, alice.Caller, "vault", "a.txt", "approve-1", []byte("needs a yes"))
-	var staged *content.StagedApproval
-	if !errors.As(err, &staged) || staged.Intent == "" {
-		t.Fatalf("publication without approval: %v", err)
-	}
-	if n := count(t, st, `SELECT count(*) FROM object_versions`); n != 0 {
-		t.Fatal("published before the approval")
-	}
-	if _, err := st.Content.DecideApproval(ctx, lena, staged.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	intent, _ := cryptowire.ParseUUID(staged.Intent)
-	p, err := st.Content.Finalize(ctx, withApproval(alice.Caller, staged.ID), intent, content.FinalizeRequest{})
-	if err != nil {
-		t.Fatalf("finalize with the approval: %v", err)
-	}
-	if got, _, err := readPlain(st, alice.Caller, "vault", "a.txt", p.Version); err != nil || string(got) != "needs a yes" {
-		t.Fatalf("the approved version: %q %v", got, err)
 	}
 }
 

@@ -22,15 +22,6 @@ func paragraphs(n int) []string {
 	return out
 }
 
-func count(t *testing.T, st *r1test.Stack, sql string, args ...any) int {
-	t.Helper()
-	var n int
-	if err := st.Pool.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // readUnit decrypts one published unit for c from catalog rows, as the
 // disclosure API will deliver them (step 4).
 func readUnit(t *testing.T, st *r1test.Stack, c *r1test.Client, documentVersion string, position int) (string, error) {
@@ -88,10 +79,10 @@ func TestDocumentPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, st, `SELECT count(*) FROM objects WHERE kind = 'unit'`); n != 0 {
+	if n := st.Count(`SELECT count(*) FROM objects WHERE kind = 'unit'`); n != 0 {
 		t.Fatalf("units visible before finalize: %d", n)
 	}
-	before := count(t, st, `SELECT count(*) FROM audit_outbox WHERE event->>'kind' = 'decision'`)
+	before := st.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'kind' = 'decision'`)
 	p, err := alice.FinalizeDocument(up)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +91,7 @@ func TestDocumentPublication(t *testing.T) {
 		t.Fatalf("published = %+v", p)
 	}
 	// One document decision, one version-share batch, three unit batches.
-	if n := count(t, st, `SELECT count(*) FROM audit_outbox WHERE event->>'kind' = 'decision'`) - before; n != 5 {
+	if n := st.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'kind' = 'decision'`) - before; n != 5 {
 		t.Fatalf("decisions = %d, want 5", n)
 	}
 	for q, want := range map[string]int{
@@ -113,7 +104,7 @@ func TestDocumentPublication(t *testing.T) {
 		`SELECT count(*) FROM resources WHERE type = 'document.text_unit'`:                              13,
 		`SELECT count(*) FROM resources WHERE type = 'document.version'`:                                1,
 	} {
-		if got := count(t, st, q); got != want {
+		if got := st.Count(q); got != want {
 			t.Errorf("%s = %d, want %d", q, got, want)
 		}
 	}
@@ -155,11 +146,11 @@ func TestDocumentIsAtomic(t *testing.T) {
 	}
 	for _, q := range []string{`SELECT count(*) FROM document_versions`, `SELECT count(*) FROM objects WHERE kind <> 'object'`,
 		`SELECT count(*) FROM envelopes`, `SELECT count(*) FROM document_units`, `SELECT count(*) FROM resources WHERE type LIKE 'document.%'`} {
-		if n := count(t, st, q); n != 0 {
+		if n := st.Count(q); n != 0 {
 			t.Errorf("%s = %d after a denied publication", q, n)
 		}
 	}
-	if n := count(t, st, `SELECT count(*) FROM upload_intents WHERE kind = 'unit' AND state = 'STAGED'`); n != 3 {
+	if n := st.Count(`SELECT count(*) FROM upload_intents WHERE kind = 'unit' AND state = 'STAGED'`); n != 3 {
 		t.Errorf("staged units = %d, want 3", n)
 	}
 	// The same document without bob publishes, with the unit's label.
@@ -170,7 +161,7 @@ func TestDocumentIsAtomic(t *testing.T) {
 	if _, err := alice.FinalizeDocument(up); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, st, `SELECT count(*) FROM resources WHERE type = 'document.text_unit' AND attributes->>'label' = 'restricted'`); n != 1 {
+	if n := st.Count(`SELECT count(*) FROM resources WHERE type = 'document.text_unit' AND attributes->>'label' = 'restricted'`); n != 1 {
 		t.Fatalf("restricted units = %d", n)
 	}
 }

@@ -66,7 +66,7 @@ func TestPublicationApprovals(t *testing.T) {
 	if err := commit(id, func() error { _, err := alice.FinalizeDocument(up); return err }); err != nil {
 		t.Fatalf("approved document publication: %v", err)
 	}
-	if n := count(t, st, `SELECT count(*) FROM approvals WHERE state = 'CONSUMED'`); n != 2 {
+	if n := st.Count(`SELECT count(*) FROM approvals WHERE state = 'CONSUMED'`); n != 2 {
 		t.Fatalf("consumed approvals = %d", n)
 	}
 

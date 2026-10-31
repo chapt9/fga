@@ -151,7 +151,8 @@ func TestDerivedDelivery(t *testing.T) {
 
 // TestDerivedLeaseFollowsLineage covers DRV-009: a change to a source of
 // the transitive lineage ends an admitted derived stream with
-// LINEAGE_AUTHORITY_CHANGED, while the output itself is unchanged.
+// LINEAGE_AUTHORITY_CHANGED, while the output itself is unchanged; a
+// change to the output itself ends its stream as any lease does.
 func TestDerivedLeaseFollowsLineage(t *testing.T) {
 	st := r1test.New(t)
 	st.LabeledBucket("reports", "p1", "public")
@@ -183,6 +184,21 @@ func TestDerivedLeaseFollowsLineage(t *testing.T) {
 	time.Sleep(3 * r1test.LeaseCheckEvery)
 	if _, err := io.ReadAll(s); !errors.Is(err, content.ErrLineageChanged) {
 		t.Fatalf("stream after a source label change: %v, want %v", err, content.ErrLineageChanged)
+	}
+
+	// The output's own label rises during a stream of it (its lineage is
+	// unchanged): a lease error, not a lineage change.
+	own, err := st.Content.ReadDerivedCiphertext(ctx, alice.Caller, "reports", "d1", "", alice.Recipient.Fingerprint().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	if _, err := st.Content.SetDerivedLabel(ctx, alice.Caller, "reports", "d1", "confidential"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * r1test.LeaseCheckEvery)
+	if _, err := io.ReadAll(own); !errors.Is(err, content.ErrLease) || errors.Is(err, content.ErrLineageChanged) {
+		t.Fatalf("stream after the output's own label change: %v, want %v", err, content.ErrLease)
 	}
 }
 
@@ -221,7 +237,7 @@ func TestDerivedVersions(t *testing.T) {
 	if err != nil || label(v1.Object) != "restricted" {
 		t.Fatalf("v3 lowered the label implicitly: %+v, %v, label %s", v3, err, label(v1.Object))
 	}
-	if n := count(t, st, `SELECT count(*) FROM derived_versions WHERE derived::text = $1`, v1.Object); n != 3 {
+	if n := st.Count(`SELECT count(*) FROM derived_versions WHERE derived::text = $1`, v1.Object); n != 3 {
 		t.Fatalf("derived versions = %d", n)
 	}
 	for _, v := range []content.Published{v1, v3} {

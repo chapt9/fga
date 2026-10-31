@@ -63,7 +63,7 @@ func TestEncryptionModeRefusals(t *testing.T) {
 	if !errors.Is(err, content.ErrEncryptionMode) {
 		t.Fatalf("client derived output to a server-mode bucket: %v", err)
 	}
-	if n := count(t, st, `SELECT (SELECT count(*) FROM upload_intents) + (SELECT count(*) FROM document_intents)`); n != 0 {
+	if n := st.Count(`SELECT (SELECT count(*) FROM upload_intents) + (SELECT count(*) FROM document_intents)`); n != 0 {
 		t.Fatalf("intents reserved in a server-mode bucket: %d", n)
 	}
 }

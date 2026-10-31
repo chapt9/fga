@@ -52,7 +52,7 @@ func TestDocumentWithdrawal(t *testing.T) {
 	if state(shared) != "LIVE" || state(only) != "WITHDRAWN" || state(up1.Intent.Original.UnitVersion) != "WITHDRAWN" {
 		t.Fatalf("after withdrawing v1: shared %s, only-v1 %s, original %s", state(shared), state(only), state(up1.Intent.Original.UnitVersion))
 	}
-	if n := count(t, st, `SELECT count(*) FROM envelopes WHERE document_version::text = $1 AND status = 'ACTIVE'`, v1.DocumentVersion); n != 0 {
+	if n := st.Count(`SELECT count(*) FROM envelopes WHERE document_version::text = $1 AND status = 'ACTIVE'`, v1.DocumentVersion); n != 0 {
 		t.Fatalf("active envelopes of the withdrawn version = %d", n)
 	}
 	if _, err := st.Content.ListUnits(ctx, alice.Caller, "reports", "q3.md", v1.DocumentVersion, 10, ""); !errors.Is(err, content.ErrNotFound) {

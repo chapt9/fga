@@ -492,6 +492,31 @@ func (st *Stack) User(id string, roles []string, projects ...string) content.Cal
 	return st.Caller(id)
 }
 
+// Count runs a SELECT count(*) query against the catalog.
+func (st *Stack) Count(sql string, args ...any) int {
+	st.T.Helper()
+	var n int
+	if err := st.Pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		st.T.Fatal(err)
+	}
+	return n
+}
+
+// UnitIDs lists the units or entries of a document version (the current
+// one when version is "") that c may see, in document order.
+func (st *Stack) UnitIDs(c content.Caller, bucket, key, version string) []string {
+	st.T.Helper()
+	page, err := st.Content.ListUnits(context.Background(), c, bucket, key, version, 100, "")
+	if err != nil {
+		st.T.Fatal(err)
+	}
+	var out []string
+	for _, u := range page.Units {
+		out = append(out, u.Unit)
+	}
+	return out
+}
+
 // Caller returns a caller for an existing identity with a fresh token for
 // the storage role.
 func (st *Stack) Caller(id string) content.Caller { return st.CallerFor(id, content.Audience) }
