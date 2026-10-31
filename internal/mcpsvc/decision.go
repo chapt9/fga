@@ -61,10 +61,15 @@ type decisionResponse struct {
 // maxDecision bounds a decision response.
 const maxDecision = 1 << 20
 
-// decide asks the decision role for action on each tool, as one batch of
-// operation op addressed to the storage role.
+// decide asks the decision role for action on each MCP tool, as one batch
+// of operation op addressed to the storage role.
 func (s *Service) decide(ctx context.Context, c caller, op, action string, tools []string) (decisionResponse, error) {
-	req := decisionRequest{RequestID: newID(), Tenant: c.tenant, Operation: op, OperationID: newID(), Audience: s.d.StorageAudience,
+	return s.decideFor(ctx, c, op, action, s.d.StorageAudience, tools)
+}
+
+// decideFor is decide addressed to audience.
+func (s *Service) decideFor(ctx context.Context, c caller, op, action, audience string, tools []string) (decisionResponse, error) {
+	req := decisionRequest{RequestID: newID(), Tenant: c.tenant, Operation: op, OperationID: newID(), Audience: audience,
 		Actor: actorRef{ID: c.principal}, Evidence: c.token}
 	for i, t := range tools {
 		req.Checks = append(req.Checks, toolCheck{ID: fmt.Sprintf("tool-%d", i), Role: roleTool, Action: action,
@@ -94,7 +99,14 @@ func (s *Service) decide(ctx context.Context, c caller, op, action string, tools
 // authorize returns the decision that the caller may invoke tool, in the
 // form the storage role accepts in the Fga-Decision header.
 func (s *Service) authorize(ctx context.Context, c caller, tool string) (string, error) {
-	resp, err := s.decide(ctx, c, opInvoke, "invoke", []string{tool})
+	return s.authorizeFor(ctx, c, tool, s.d.StorageAudience)
+}
+
+// authorizeFor is authorize presented to the role of audience: the MCP
+// tools to the storage role, tools.list and tools.call to the tools role
+// (TB3).
+func (s *Service) authorizeFor(ctx context.Context, c caller, tool, audience string) (string, error) {
+	resp, err := s.decideFor(ctx, c, opInvoke, "invoke", audience, []string{tool})
 	if err != nil {
 		return "", err
 	}

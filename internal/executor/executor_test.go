@@ -4,151 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"maps"
 	"net/http"
-	"net/http/httptest"
-	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"fga/internal/decisionsvc"
 	"fga/internal/enforce"
 	"fga/internal/executor"
-	"fga/internal/fence"
+	"fga/internal/executortest"
 	"fga/internal/invocation"
 	"fga/internal/r1test"
 	"fga/internal/release"
-	"fga/internal/reservation"
 	"fga/internal/signing"
-	"fga/internal/tools"
-	"fga/internal/tools/connector"
 	"fga/internal/toolstore"
 )
 
 var ctx = context.Background()
 
-// destination is a fake external service: it records calls and answers
-// with status.
-type destination struct {
-	mu     sync.Mutex
-	calls  []call
-	status int
-}
+type fixture = executortest.Fixture
 
-type call struct {
-	key, auth string
-	body      []byte
-}
+const plainInvoke = executortest.PlainInvoke
 
-func (d *destination) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	b, _ := io.ReadAll(r.Body)
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.calls = append(d.calls, call{key: r.Header.Get("Idempotency-Key"), auth: r.Header.Get("Authorization"), body: b})
-	w.WriteHeader(d.status)
-	_, _ = io.WriteString(w, `{"payment":"p-1"}`)
-}
+var pay = executortest.Pay
 
-func (d *destination) count() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.calls)
-}
-
-// pay is the test tool: a payment of amount to a business record account,
-// charged to the budget ops.
-var pay = tools.Tool{ID: "pay", Version: 1, Description: "pay an invoice", Destination: "bank",
-	Endpoint: tools.Endpoint{Method: "POST", Path: "/payments"}, MaxHoldAge: "1h", Budget: "ops", AmountArgument: "amount",
-	Arguments: []tools.ArgSpec{
-		{Name: "amount", Type: tools.ArgMoney, Required: true},
-		{Name: "account", Type: tools.ArgResource, Required: true, Namespace: "account", ResourceType: "business.record", Action: "update"},
-	}}
-
-// Policies of the fixture: members invoke executor tools and send to
-// approved destinations; leads approve, resolve and write off; members
-// update the business records of their projects.
-func policies(invokeRule string) map[string]string {
-	p := maps.Clone(r1test.Policies)
-	p["tools.json"] = `{"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
-	  {"id":"members-use-mcp","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"mcp\""},
-	  ` + invokeRule + `,
-	  {"id":"leads-settle","effect":"allow","actions":["approve","resolve","write-off"],"roles":["lead"],"when":"resource.attributes.kind == \"executor\""}]}`
-	p["destinations.json"] = `{"format":"fga.policy/v1","set":"business","resource":"network.destination","scope":"","rules":[
-	  {"id":"members-send-approved","effect":"allow","actions":["send"],"roles":["member"],"when":"resource.attributes.approved == true"}]}`
-	p["records.json"] = `{"format":"fga.policy/v1","set":"business","resource":"business.record","scope":"","rules":[
-	  {"id":"members-update-records","effect":"allow","actions":["update"],"roles":["member"],
-	   "when":"resource.attributes.project in principal.attributes.projects"}]}`
-	return p
-}
-
-const plainInvoke = `{"id":"members-invoke","effect":"allow","actions":["invoke"],"roles":["member"],"when":"resource.attributes.kind == \"executor\""}`
-
-type fixture struct {
-	st   *r1test.Stack
-	svc  *executor.Service
-	dest *destination
-	inv  *invocation.Store
-}
-
-// deploy registers pay, its destination bank (answering status), a budget
-// ops of limit cents, and account acct-1 of project p1, and returns the
-// tools role over the stack.
+// deploy installs the tools role's fixture: pay to bank answering status,
+// a budget of limit cents, members invoking by invokeRule.
 func deploy(t *testing.T, invokeRule string, mapping *release.ObligationMapping, status int, limit int64) *fixture {
 	t.Helper()
-	st := r1test.NewWith(t, r1test.Options{Policies: policies(invokeRule), ObligationMapping: mapping})
-	if err := toolstore.Migrate(ctx, st.Pool); err != nil {
-		t.Fatal(err)
-	}
-	dest := &destination{status: status}
-	srv := httptest.NewServer(dest)
-	t.Cleanup(srv.Close)
-	cred := filepath.Join(t.TempDir(), "bank.token")
-	if err := os.WriteFile(cred, []byte("bank-secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ts := toolstore.New(st.Pool)
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	must(ts.PutTool(ctx, r1test.Tenant, pay, true))
-	must(ts.PutDestination(ctx, r1test.Tenant, tools.Destination{ID: "bank", BaseURL: srv.URL,
-		AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}, CredentialFile: cred}))
-	must(ts.PutBudget(ctx, r1test.Tenant, "ops", tools.Money{Currency: "EUR", Minor: limit}))
-	must(st.Catalog.RegisterTool(ctx, r1test.Tenant, "pay", pay.Operation(), map[string]any{"name": "pay", "kind": "executor", "destination": "bank"}))
-	must(st.Catalog.RegisterDestination(ctx, r1test.Tenant, "bank", map[string]any{"approved": true}))
-	_, err := st.Pool.Exec(ctx, `INSERT INTO resources VALUES ($1, 'record:acct-1', 'business.record', '', 1, 1, 1, '{"project":"p1"}')`, r1test.Tenant)
-	must(err)
-	_, err = st.Pool.Exec(ctx, `INSERT INTO aliases VALUES ($1, 'account', 'acct-1', 'record:acct-1')`, r1test.Tenant)
-	must(err)
-	now := func() time.Time { return *st.Clock }
-	inv := invocation.New(st.Pool, now)
-	svc, err := executor.New(executor.Deps{Catalog: st.Catalog, Tools: ts, Invocations: inv, Reservations: reservation.New(st.Pool),
-		Decider: r1test.Decider{Service: st.Decisions, Adapter: r1test.ToolsAdapter}, Verifier: st.Verifier(executor.Audience),
-		Fence: fence.New(st.Pool, time.Second, now), Connector: connector.New(5 * time.Second), Worker: "w1", Lease: time.Minute, Now: now})
-	must(err)
-	return &fixture{st: st, svc: svc, dest: dest, inv: inv}
+	return executortest.Deploy(t, executortest.Options{InvokeRule: invokeRule, Mapping: mapping, Status: status, Limit: limit})
 }
 
-func (f *fixture) caller(t *testing.T, id string, roles ...string) enforce.Caller {
-	t.Helper()
-	f.st.User(id, roles, "p1")
-	return f.st.CallerFor(id, executor.Audience)
-}
-
-func payment(key string, minor int64) executor.Request {
-	return executor.Request{Tool: "pay", Version: 1, IdempotencyKey: key,
-		Args: json.RawMessage(`{"amount":{"currency":"EUR","minor":` + itoa(minor) + `},"account":"acct-1"}`)}
-}
-
-func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+var payment = executortest.Payment
 
 // TestInvoke covers AGT-003 end to end: a member's call of a registered,
 // reviewed tool is decided for the tool's operation, dispatched once to
@@ -161,30 +48,30 @@ func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
 // V-120: nothing registers a tool here).
 func TestInvoke(t *testing.T) {
 	f := deploy(t, plainInvoke, nil, http.StatusCreated, 100_000)
-	alice := f.caller(t, "alice", "member")
-	res, err := f.svc.Invoke(ctx, alice, payment("k-1", 1200))
+	alice := f.Caller(t, "alice", "member")
+	res, err := f.Svc.Invoke(ctx, alice, payment("k-1", 1200))
 	if err != nil || res.State != string(invocation.StateSucceeded) || res.Receipt == "" {
 		t.Fatalf("invoke: %+v %v", res, err)
 	}
-	if f.dest.count() != 1 || f.dest.calls[0].key != res.Invocation || f.dest.calls[0].auth != "Bearer bank-secret" ||
-		!strings.Contains(string(f.dest.calls[0].body), `"minor":1200`) {
-		t.Fatalf("the destination got %+v", f.dest.calls)
+	if f.Dest.Count() != 1 || f.Dest.Calls[0].Key != res.Invocation || f.Dest.Calls[0].Auth != "Bearer bank-secret" ||
+		!strings.Contains(string(f.Dest.Calls[0].Body), `"minor":1200`) {
+		t.Fatalf("the destination got %+v", f.Dest.Calls)
 	}
-	again, err := f.svc.Invoke(ctx, alice, payment("k-1", 1200))
-	if err != nil || again.Invocation != res.Invocation || f.dest.count() != 1 {
-		t.Fatalf("a retry: %+v %v, %d calls", again, err, f.dest.count())
+	again, err := f.Svc.Invoke(ctx, alice, payment("k-1", 1200))
+	if err != nil || again.Invocation != res.Invocation || f.Dest.Count() != 1 {
+		t.Fatalf("a retry: %+v %v, %d calls", again, err, f.Dest.Count())
 	}
-	if _, err := f.svc.Invoke(ctx, alice, payment("k-1", 1300)); !errors.Is(err, executor.ErrConflict) {
+	if _, err := f.Svc.Invoke(ctx, alice, payment("k-1", 1300)); !errors.Is(err, executor.ErrConflict) {
 		t.Fatalf("the key with other arguments: %v", err)
 	}
-	bob := f.caller(t, "bob", "member")
-	if _, err := f.svc.Invoke(ctx, bob, payment("k-1", 1200)); !errors.Is(err, executor.ErrConflict) {
+	bob := f.Caller(t, "bob", "member")
+	if _, err := f.Svc.Invoke(ctx, bob, payment("k-1", 1200)); !errors.Is(err, executor.ErrConflict) {
 		t.Fatalf("another actor with the key: %v", err)
 	}
-	if got, err := f.svc.Get(ctx, bob, res.Invocation); !errors.Is(err, executor.ErrNotFound) {
+	if got, err := f.Svc.Get(ctx, bob, res.Invocation); !errors.Is(err, executor.ErrNotFound) {
 		t.Fatalf("another member reads the invocation: %+v %v", got, err)
 	}
-	if got, err := f.svc.Get(ctx, alice, res.Invocation); err != nil || got.State != res.State {
+	if got, err := f.Svc.Get(ctx, alice, res.Invocation); err != nil || got.State != res.State {
 		t.Fatalf("the actor reads it: %+v %v", got, err)
 	}
 
@@ -193,25 +80,25 @@ func TestInvoke(t *testing.T) {
 		"another version":   {Tool: "pay", Version: 2, IdempotencyKey: "x2", Args: payment("x2", 1).Args},
 		"an extra argument": {Tool: "pay", Version: 1, IdempotencyKey: "x3", Args: json.RawMessage(`{"amount":{"currency":"EUR","minor":1},"account":"acct-1","to":"x"}`)},
 	} {
-		if _, err := f.svc.Invoke(ctx, alice, r); err == nil {
+		if _, err := f.Svc.Invoke(ctx, alice, r); err == nil {
 			t.Errorf("%s was dispatched", name)
 		}
 	}
-	guest := f.caller(t, "guest", "guest")
-	if _, err := f.svc.Invoke(ctx, guest, payment("g-1", 100)); !errors.Is(err, executor.ErrNotFound) {
+	guest := f.Caller(t, "guest", "guest")
+	if _, err := f.Svc.Invoke(ctx, guest, payment("g-1", 100)); !errors.Is(err, executor.ErrNotFound) {
 		t.Fatalf("a user without the rights: %v", err)
 	}
 	// A record changed after review is not usable (AGT-001).
 	changed := pay
 	changed.Description = "pay anything"
-	if err := toolstore.New(f.st.Pool).PutTool(ctx, r1test.Tenant, changed, false); err != nil {
+	if err := toolstore.New(f.St.Pool).PutTool(ctx, r1test.Tenant, changed, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Invoke(ctx, alice, payment("k-2", 100)); !errors.Is(err, executor.ErrNotFound) {
+	if _, err := f.Svc.Invoke(ctx, alice, payment("k-2", 100)); !errors.Is(err, executor.ErrNotFound) {
 		t.Fatalf("an unreviewed record: %v", err)
 	}
-	if f.dest.count() != 1 {
-		t.Fatalf("%d dispatches", f.dest.count())
+	if f.Dest.Count() != 1 {
+		t.Fatalf("%d dispatches", f.Dest.Count())
 	}
 }
 
@@ -226,30 +113,30 @@ func TestInvokeApproval(t *testing.T) {
 	  {"id":"members-invoke-large","effect":"allow","actions":["invoke"],"roles":["member"],"requires":["approval"],
 	  "when":"resource.attributes.kind == \"executor\" && request.operation.amount_minor > 5000"}`
 	f := deploy(t, rule, nil, http.StatusOK, 100_000)
-	alice := f.caller(t, "alice", "member")
-	f.caller(t, "lena", "lead")
-	if res, err := f.svc.Invoke(ctx, alice, payment("small", 4000)); err != nil || res.State != string(invocation.StateSucceeded) {
+	alice := f.Caller(t, "alice", "member")
+	f.Caller(t, "lena", "lead")
+	if res, err := f.Svc.Invoke(ctx, alice, payment("small", 4000)); err != nil || res.State != string(invocation.StateSucceeded) {
 		t.Fatalf("a small payment: %+v %v", res, err)
 	}
-	_, err := f.svc.Invoke(ctx, alice, payment("large", 9000))
+	_, err := f.Svc.Invoke(ctx, alice, payment("large", 9000))
 	var need *enforce.ApprovalRequired
-	if !errors.As(err, &need) || f.dest.count() != 1 {
+	if !errors.As(err, &need) || f.Dest.Count() != 1 {
 		t.Fatalf("a large payment: %v", err)
 	}
 	// The lead decides in the approval inbox, which the storage role serves.
-	if _, err := f.st.Content.DecideApproval(ctx, f.st.Caller("lena"), need.ID, true); err != nil {
+	if _, err := f.St.Content.DecideApproval(ctx, f.St.Caller("lena"), need.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	approved := alice
 	approved.Approval = need.ID
-	if _, err := f.svc.Invoke(ctx, approved, payment("large-other", 9500)); !errors.Is(err, enforce.ErrApprovalNotUsable) {
+	if _, err := f.Svc.Invoke(ctx, approved, payment("large-other", 9500)); !errors.Is(err, enforce.ErrApprovalNotUsable) {
 		t.Fatalf("other arguments under the approval: %v", err)
 	}
-	res, err := f.svc.Invoke(ctx, approved, payment("large", 9000))
-	if err != nil || res.State != string(invocation.StateSucceeded) || f.dest.count() != 2 {
+	res, err := f.Svc.Invoke(ctx, approved, payment("large", 9000))
+	if err != nil || res.State != string(invocation.StateSucceeded) || f.Dest.Count() != 2 {
 		t.Fatalf("with the approval: %+v %v", res, err)
 	}
-	if n := f.st.Count(`SELECT count(*) FROM approvals WHERE id = $1 AND state = 'CONSUMED'`, need.ID); n != 1 {
+	if n := f.St.Count(`SELECT count(*) FROM approvals WHERE id = $1 AND state = 'CONSUMED'`, need.ID); n != 1 {
 		t.Fatal("the approval was not consumed with the dispatch")
 	}
 }
@@ -265,26 +152,26 @@ func TestInvokeReservation(t *testing.T) {
 	  "when":"resource.attributes.kind == \"executor\""}`
 	mapping := &release.ObligationMapping{Version: signing.ObligationsV1, Prerequisites: map[string]string{"reservation": signing.Reservation}}
 	budget := func(f *fixture) (reserved, spent int64) {
-		_ = f.st.Pool.QueryRow(ctx, `SELECT reserved_minor, spent_minor FROM budgets WHERE id = 'ops'`).Scan(&reserved, &spent)
+		_ = f.St.Pool.QueryRow(ctx, `SELECT reserved_minor, spent_minor FROM budgets WHERE id = 'ops'`).Scan(&reserved, &spent)
 		return
 	}
 	t.Run("charged on success, refused beyond the budget", func(t *testing.T) {
 		f := deploy(t, rule, mapping, http.StatusOK, 10_000)
-		alice := f.caller(t, "alice", "member")
-		if res, err := f.svc.Invoke(ctx, alice, payment("r-1", 6000)); err != nil || res.State != string(invocation.StateSucceeded) {
+		alice := f.Caller(t, "alice", "member")
+		if res, err := f.Svc.Invoke(ctx, alice, payment("r-1", 6000)); err != nil || res.State != string(invocation.StateSucceeded) {
 			t.Fatalf("a reserved payment: %+v %v", res, err)
 		}
 		if r, s := budget(f); r != 0 || s != 6000 {
 			t.Fatalf("budget reserved %d spent %d", r, s)
 		}
-		if _, err := f.svc.Invoke(ctx, alice, payment("r-2", 5000)); !errors.Is(err, executor.ErrBudget) || f.dest.count() != 1 {
-			t.Fatalf("beyond the budget: %v, %d calls", err, f.dest.count())
+		if _, err := f.Svc.Invoke(ctx, alice, payment("r-2", 5000)); !errors.Is(err, executor.ErrBudget) || f.Dest.Count() != 1 {
+			t.Fatalf("beyond the budget: %v, %d calls", err, f.Dest.Count())
 		}
 	})
 	t.Run("released on refusal", func(t *testing.T) {
 		f := deploy(t, rule, mapping, http.StatusUnprocessableEntity, 10_000)
-		alice := f.caller(t, "alice", "member")
-		if res, err := f.svc.Invoke(ctx, alice, payment("r-3", 6000)); err != nil || res.State != string(invocation.StateFailed) {
+		alice := f.Caller(t, "alice", "member")
+		if res, err := f.Svc.Invoke(ctx, alice, payment("r-3", 6000)); err != nil || res.State != string(invocation.StateFailed) {
 			t.Fatalf("a refused payment: %+v %v", res, err)
 		}
 		if r, s := budget(f); r != 0 || s != 0 {
@@ -293,8 +180,8 @@ func TestInvokeReservation(t *testing.T) {
 	})
 	t.Run("held while unknown", func(t *testing.T) {
 		f := deploy(t, rule, mapping, http.StatusBadGateway, 10_000)
-		alice := f.caller(t, "alice", "member")
-		if res, err := f.svc.Invoke(ctx, alice, payment("r-4", 6000)); err != nil || res.State != string(invocation.StateUnknown) {
+		alice := f.Caller(t, "alice", "member")
+		if res, err := f.Svc.Invoke(ctx, alice, payment("r-4", 6000)); err != nil || res.State != string(invocation.StateUnknown) {
 			t.Fatalf("an unanswered payment: %+v %v", res, err)
 		}
 		if r, s := budget(f); r != 6000 || s != 0 {
@@ -303,8 +190,8 @@ func TestInvokeReservation(t *testing.T) {
 	})
 	t.Run("not applied without the mapping", func(t *testing.T) {
 		f := deploy(t, rule, nil, http.StatusOK, 10_000)
-		alice := f.caller(t, "alice", "member")
-		if _, err := f.svc.Invoke(ctx, alice, payment("r-5", 100)); err == nil || f.dest.count() != 0 {
+		alice := f.Caller(t, "alice", "member")
+		if _, err := f.Svc.Invoke(ctx, alice, payment("r-5", 100)); err == nil || f.Dest.Count() != 0 {
 			t.Fatalf("a reservation nobody can make: %v", err)
 		}
 	})
@@ -319,36 +206,123 @@ func TestResolution(t *testing.T) {
 	  "when":"resource.attributes.kind == \"executor\""}`
 	mapping := &release.ObligationMapping{Version: signing.ObligationsV1, Prerequisites: map[string]string{"reservation": signing.Reservation}}
 	f := deploy(t, rule, mapping, http.StatusBadGateway, 10_000)
-	alice, lena, mark := f.caller(t, "alice", "member"), f.caller(t, "lena", "lead"), f.caller(t, "mark", "lead")
-	res, err := f.svc.Invoke(ctx, alice, payment("u-1", 2000))
+	alice, lena, mark := f.Caller(t, "alice", "member"), f.Caller(t, "lena", "lead"), f.Caller(t, "mark", "lead")
+	res, err := f.Svc.Invoke(ctx, alice, payment("u-1", 2000))
 	if err != nil || res.State != string(invocation.StateUnknown) {
 		t.Fatalf("invoke: %+v %v", res, err)
 	}
-	if _, err := f.svc.Resolve(ctx, alice, res.Invocation, invocation.StateFailed, "the bank says no"); err == nil {
+	if _, err := f.Svc.Resolve(ctx, alice, res.Invocation, invocation.StateFailed, "the bank says no"); err == nil {
 		t.Fatal("the actor resolved its own call")
 	}
-	if _, err := f.svc.Resolve(ctx, lena, res.Invocation, invocation.StateFailed, ""); !errors.Is(err, executor.ErrInvalid) {
+	if _, err := f.Svc.Resolve(ctx, lena, res.Invocation, invocation.StateFailed, ""); !errors.Is(err, executor.ErrInvalid) {
 		t.Fatalf("a resolution without evidence: %v", err)
 	}
-	if got, err := f.svc.Get(ctx, lena, res.Invocation); err != nil || got.State != string(invocation.StateUnknown) {
+	if got, err := f.Svc.Get(ctx, lena, res.Invocation); err != nil || got.State != string(invocation.StateUnknown) {
 		t.Fatalf("a resolver reads it: %+v %v", got, err)
 	}
-	got, err := f.svc.Resolve(ctx, lena, res.Invocation, invocation.StateAbandoned, "the bank cannot tell; ticket 42")
+	got, err := f.Svc.Resolve(ctx, lena, res.Invocation, invocation.StateAbandoned, "the bank cannot tell; ticket 42")
 	if err != nil || got.State != string(invocation.StateAbandoned) {
 		t.Fatalf("abandon: %+v %v", got, err)
 	}
-	if n := f.st.Count(`SELECT count(*) FROM reservations WHERE state = 'COMMITTED'`); n != 1 {
+	if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'COMMITTED'`); n != 1 {
 		t.Fatal("an abandoned call's charge was not kept")
 	}
-	if _, err := f.svc.Invoke(ctx, alice, payment("u-1", 2000)); err != nil || f.dest.count() != 1 {
-		t.Fatalf("an abandoned call was dispatched again: %v, %d calls", err, f.dest.count())
+	if _, err := f.Svc.Invoke(ctx, alice, payment("u-1", 2000)); err != nil || f.Dest.Count() != 1 {
+		t.Fatalf("an abandoned call was dispatched again: %v, %d calls", err, f.Dest.Count())
 	}
-	if _, err := f.svc.WriteOff(ctx, mark, res.Invocation, "accepted risk, ticket 42"); err != nil {
+	if _, err := f.Svc.WriteOff(ctx, mark, res.Invocation, "accepted risk, ticket 42"); err != nil {
 		t.Fatalf("write-off: %v", err)
 	}
-	if n := f.st.Count(`SELECT count(*) FROM reservations WHERE state = 'WRITTEN_OFF'`); n != 1 {
+	if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'WRITTEN_OFF'`); n != 1 {
 		t.Fatal("the write-off released nothing")
 	}
+}
+
+// TestReconcile covers INV-003, INV-006 and INV-008: a pass asks the
+// destination, by the idempotency key, for the outcome of a dispatch whose
+// worker stopped and of an UNKNOWN call, records what it reports (a key it
+// never received failed), and never sends again; without a way to ask, the
+// call stays UNKNOWN, with its charge held, and is escalated once when
+// held beyond its tool's maximum hold age.
+func TestReconcile(t *testing.T) {
+	o := executortest.Options{InvokeRule: `{"id":"members-invoke-reserved","effect":"allow","actions":["invoke"],"roles":["member"],
+	  "requires":["reservation"],"when":"resource.attributes.kind == \"executor\""}`,
+		Mapping: &release.ObligationMapping{Version: signing.ObligationsV1, Prerequisites: map[string]string{"reservation": signing.Reservation}},
+		Status:  http.StatusBadGateway, Limit: 10_000}
+	unknown := func(t *testing.T, f *fixture, key string) string {
+		t.Helper()
+		res, err := f.Svc.Invoke(ctx, f.Caller(t, "alice", "member"), payment(key, 2000))
+		if err != nil || res.State != string(invocation.StateUnknown) {
+			t.Fatalf("invoke: %+v %v", res, err)
+		}
+		return res.Invocation
+	}
+	// stall makes id a dispatch whose worker stopped before recording it.
+	stall := func(t *testing.T, f *fixture, id string) {
+		t.Helper()
+		if _, err := f.St.Pool.Exec(ctx, `UPDATE invocations SET state = 'DISPATCHING', lease_owner = 'w0', lease_expires_at = $2
+			WHERE id = $1`, id, f.St.Clock.Add(-time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile := func(t *testing.T, f *fixture, want int) {
+		t.Helper()
+		if n, err := f.Svc.Reconcile(ctx, 10); err != nil || n != want {
+			t.Fatalf("reconcile: %d %v, want %d", n, err, want)
+		}
+	}
+	state := func(t *testing.T, f *fixture, id string) invocation.Invocation {
+		t.Helper()
+		inv, err := f.Inv.Get(ctx, r1test.Tenant, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inv
+	}
+
+	t.Run("asked of the destination", func(t *testing.T) {
+		o := o
+		o.Reconcilable = true
+		f := executortest.Deploy(t, o)
+		reported, stalled := unknown(t, f, "c-1"), unknown(t, f, "c-2")
+		f.Dest.Report(reported, "succeeded")
+		stall(t, f, stalled)
+		reconcile(t, f, 2)
+		if inv := state(t, f, reported); inv.State != invocation.StateSucceeded || inv.Resolution == nil || inv.Resolution.By != executor.Reconciler {
+			t.Fatalf("a reported success: %+v", inv)
+		}
+		if inv := state(t, f, stalled); inv.State != invocation.StateFailed {
+			t.Fatalf("a stalled dispatch the destination never received: %+v", inv)
+		}
+		if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'COMMITTED'`); n != 1 ||
+			f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'RELEASED'`) != 1 {
+			t.Fatal("the reservations were not settled by the reported outcomes")
+		}
+		reconcile(t, f, 0)
+		if f.Dest.Count() != 2 {
+			t.Fatalf("%d dispatches", f.Dest.Count())
+		}
+	})
+	t.Run("not askable: held, escalated once", func(t *testing.T) {
+		f := executortest.Deploy(t, o)
+		id := unknown(t, f, "c-3")
+		stall(t, f, id)
+		reconcile(t, f, 1)
+		if inv := state(t, f, id); inv.State != invocation.StateUnknown {
+			t.Fatalf("a stalled dispatch nobody can ask about: %+v", inv)
+		}
+		reconcile(t, f, 0)
+		*f.St.Clock = f.St.Clock.Add(2 * time.Hour)
+		reconcile(t, f, 1)
+		reconcile(t, f, 0)
+		if f.St.Count(`SELECT count(*) FROM invocations WHERE escalated_at IS NOT NULL`) != 1 ||
+			f.St.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'outcome' = 'ESCALATED'`) != 1 {
+			t.Fatal("the held call was not escalated once")
+		}
+		if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'HELD'`); n != 1 || f.Dest.Count() != 1 {
+			t.Fatalf("the charge was not held, or the call was sent again (%d)", f.Dest.Count())
+		}
+	})
 }
 
 // TestDispatchFence covers DAT-007 and INV-002 for tools: a revocation
@@ -356,34 +330,19 @@ func TestResolution(t *testing.T) {
 // undispatched, its invocation PREPARED.
 func TestDispatchFence(t *testing.T) {
 	f := deploy(t, plainInvoke, nil, http.StatusOK, 10_000)
-	alice := f.caller(t, "alice", "member")
+	alice := f.Caller(t, "alice", "member")
 	revoked := false
-	f.svc = mustSvcWithHook(t, f, func() {
+	f.Svc = f.Service(t, afterDecider{r1test.Decider{Service: f.St.Decisions, Adapter: r1test.ToolsAdapter}, func() {
 		if !revoked {
 			revoked = true
-			if err := f.st.Catalog.DisableIdentity(ctx, r1test.Tenant, "alice"); err != nil {
+			if err := f.St.Catalog.DisableIdentity(ctx, r1test.Tenant, "alice"); err != nil {
 				t.Error(err)
 			}
 		}
-	})
-	if _, err := f.svc.Invoke(ctx, alice, payment("f-1", 100)); err == nil || f.dest.count() != 0 {
-		t.Fatalf("a call after its actor was disabled: %v, %d calls", err, f.dest.count())
+	}})
+	if _, err := f.Svc.Invoke(ctx, alice, payment("f-1", 100)); err == nil || f.Dest.Count() != 0 {
+		t.Fatalf("a call after its actor was disabled: %v, %d calls", err, f.Dest.Count())
 	}
-}
-
-// mustSvcWithHook rebuilds f's service with a decider that runs after
-// before returning each decision.
-func mustSvcWithHook(t *testing.T, f *fixture, after func()) *executor.Service {
-	t.Helper()
-	now := func() time.Time { return *f.st.Clock }
-	svc, err := executor.New(executor.Deps{Catalog: f.st.Catalog, Tools: toolstore.New(f.st.Pool), Invocations: f.inv,
-		Reservations: reservation.New(f.st.Pool), Decider: afterDecider{r1test.Decider{Service: f.st.Decisions, Adapter: r1test.ToolsAdapter}, after},
-		Verifier: f.st.Verifier(executor.Audience), Fence: fence.New(f.st.Pool, time.Second, now), Connector: connector.New(5 * time.Second),
-		Worker: "w1", Lease: time.Minute, Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return svc
 }
 
 // afterDecider runs after once a decision is made, before the caller

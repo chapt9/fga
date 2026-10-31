@@ -50,6 +50,11 @@ type Config struct {
 	// certificate that is this role's workload identity (TB2, TB3).
 	Decision Peer `json:"decision"`
 	Storage  Peer `json:"storage"`
+	// Tools, if set, is the tools role, whose registered tools this role
+	// lists and calls for the user as "tool.<id>"; ToolsAudience is its
+	// decision audience (fga-tools).
+	Tools         *Peer  `json:"tools,omitempty"`
+	ToolsAudience string `json:"tools_audience,omitempty"`
 	// Buckets are the buckets resources/list goes through.
 	Buckets []string `json:"buckets,omitempty"`
 	// Limits replaces mcpsvc.DefaultLimits field by field; zero keeps the
@@ -100,7 +105,11 @@ func (c Config) Validate() error {
 		if c.TokenIssuer.Issuer == "fga-dev" {
 			fail("the development token issuer is not allowed in production")
 		}
-		for name, p := range map[string]Peer{"decision": c.Decision, "storage": c.Storage} {
+		peers := map[string]Peer{"decision": c.Decision, "storage": c.Storage}
+		if c.Tools != nil {
+			peers["tools"] = *c.Tools
+		}
+		for name, p := range peers {
 			if !strings.HasPrefix(p.URL, "https://") || p.CertFile == "" || p.KeyFile == "" {
 				fail("production calls the %s role over mutual TLS", name)
 			}
@@ -117,6 +126,9 @@ func (c Config) Validate() error {
 	}
 	if c.Listen == "" || c.Audience == "" || c.StorageAudience == "" || c.Decision.URL == "" || c.Storage.URL == "" {
 		fail("listen, audience, storage_audience, decision.url and storage.url are required")
+	}
+	if c.Tools != nil && (c.Tools.URL == "" || c.ToolsAudience == "") {
+		fail("tools needs a url and tools_audience")
 	}
 	if c.TokenIssuer.Issuer == "" || len(c.TokenIssuer.Keys) == 0 {
 		fail("token_issuer is required")
@@ -234,13 +246,22 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
+	var tools mcpsvc.Peer
+	if cfg.Tools != nil {
+		toolsHTTP, err := cfg.Tools.client()
+		if err != nil {
+			return err
+		}
+		tools = mcpsvc.Peer{URL: cfg.Tools.URL, HTTP: toolsHTTP}
+	}
 	var timeout time.Duration
 	if cfg.SessionTimeout != "" {
 		timeout, _ = time.ParseDuration(cfg.SessionTimeout)
 	}
 	svc, err := mcpsvc.New(mcpsvc.Deps{Tokens: tokens, Audience: cfg.Audience, StorageAudience: cfg.StorageAudience,
 		Decision: mcpsvc.Peer{URL: cfg.Decision.URL, HTTP: decisionHTTP}, Storage: mcpsvc.Peer{URL: cfg.Storage.URL, HTTP: storageHTTP},
-		Buckets: cfg.Buckets, Limits: cfg.limits(), SessionTimeout: timeout, Logger: slog.Default()})
+		Tools: tools, ToolsAudience: cfg.ToolsAudience, Buckets: cfg.Buckets, Limits: cfg.limits(), SessionTimeout: timeout,
+		Logger: slog.Default()})
 	if err != nil {
 		return err
 	}

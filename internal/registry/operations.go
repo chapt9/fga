@@ -228,11 +228,13 @@ const (
 	// OpToolApprove decides an approval whose target is a tool: a call
 	// that policy lets through only with an approval (APR-001).
 	OpToolApprove = "agent.tool.approve"
+	// OpToolDiscover lists registered tools: discover on each.
+	OpToolDiscover = "agent.tool.discover"
 )
 
 // MCPTools are the operations the MCP service offers, each an agent.tool
 // resource of every tenant that enables MCP.
-var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export"}
+var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export", "tools.list", "tools.call"}
 
 // CoreOperations returns the registered operations of the core types: R1's
 // and the MCP service's.
@@ -242,7 +244,8 @@ func CoreOperations(types *Types) *Operations {
 		Operation{Name: OpMCPDiscover, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "discover", Repeated: true}}},
 		Operation{Name: OpToolResolve, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "resolve"}}},
 		Operation{Name: OpToolWriteOff, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "write-off"}}},
-		Operation{Name: OpToolApprove, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "approve"}}}))
+		Operation{Name: OpToolApprove, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "approve"}}},
+		Operation{Name: OpToolDiscover, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "discover", Repeated: true}}}))
 	if err != nil {
 		panic(err) // the table is static; a failure is a programming error
 	}

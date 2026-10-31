@@ -49,10 +49,15 @@ const (
 	ToolReadDocument  = "documents.read"
 	ToolReadText      = "text.read"
 	ToolExport        = "documents.export"
+	// ToolToolsList and ToolToolsCall let the MCP role list and call the
+	// tools role's registered tools for the user; the tools role decides
+	// discover and invoke on each (R2 executor).
+	ToolToolsList = "tools.list"
+	ToolToolsCall = "tools.call"
 )
 
 // Tools lists every MCP tool, in the registry's order.
-var Tools = []string{ToolResourcesList, ToolResourcesRead, ToolSearch, ToolReadDocument, ToolReadText, ToolExport}
+var Tools = []string{ToolResourcesList, ToolResourcesRead, ToolSearch, ToolReadDocument, ToolReadText, ToolExport, ToolToolsList, ToolToolsCall}
 
 // TokenVerifier verifies a user's access token for an audience.
 // authn.Verifier implements it.
@@ -105,6 +110,11 @@ type Deps struct {
 	StorageAudience string
 	Decision        Peer
 	Storage         Peer
+	// Tools, if set, is the tools role, whose registered tools the MCP role
+	// lists and calls as "tool.<id>"; ToolsAudience is its audience
+	// (fga-tools). Both are optional (R2 executor).
+	Tools         Peer
+	ToolsAudience string
 	// Buckets are the buckets resources/list goes through. They choose
 	// what is listed, never what may be read: the storage role decides
 	// that for every bucket.
@@ -131,6 +141,9 @@ func New(d Deps) (*Service, error) {
 	if d.Tokens == nil || d.Audience == "" || d.StorageAudience == "" || d.Decision.URL == "" || d.Decision.HTTP == nil ||
 		d.Storage.URL == "" || d.Storage.HTTP == nil {
 		return nil, errors.New("mcpsvc: every dependency is required")
+	}
+	if d.Tools.URL != "" && (d.Tools.HTTP == nil || d.ToolsAudience == "") {
+		return nil, errors.New("mcpsvc: the tools role needs a client and its audience")
 	}
 	if err := d.Limits.Validate(); err != nil {
 		return nil, err

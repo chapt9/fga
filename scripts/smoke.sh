@@ -32,7 +32,7 @@ cat > decision.json <<J
  "bundle_dir":"bundle","publisher_keys":{"publisher-1":"$PUB"},"signing_key_file":"decision.key","signing_key_id":"decision-1",
  "audiences":["fga-storage","fga-keys","fga-tools"],"decision_max_age":"30s","outbox_capacity":100000,
  "token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"adapter_audiences":{"local-dev":["fga-storage","fga-keys","fga-mcp","fga-tools"]},
- "gateways":{"local-dev":["fga-storage"]}}
+ "gateways":{"local-dev":["fga-storage","fga-tools"]}}
 J
 COMMON="\"database_url\":\"$URL\",\"dev_adapter_id\":\"local-dev\",\"token_issuer\":{\"issuer\":\"fga-dev\",\"keys\":{\"tok-1\":\"$ISS\"}},\"decision\":{\"url\":\"http://127.0.0.1:17443\"},\"decision_keys\":{\"decision-1\":\"$DEC\"}"
 cat > keys.json <<J
@@ -47,7 +47,7 @@ J
 cat > mcp.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18446","token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},
  "audience":"fga-mcp","storage_audience":"fga-storage","decision":{"url":"http://127.0.0.1:17443"},
- "storage":{"url":"http://127.0.0.1:18441"},"buckets":["shared"]}
+ "storage":{"url":"http://127.0.0.1:18441"},"buckets":["shared"],"tools":{"url":"http://127.0.0.1:18448"},"tools_audience":"fga-tools"}
 J
 $B/fga-decision -config decision.json > decision.log 2>&1 & echo $! > pids
 sleep 2
@@ -247,7 +247,7 @@ echo "share grant: carl reads alice's object only while granted; afterwards: $(c
 # it presents. Server-mode content comes back as plaintext, client-mode
 # content not at all, and a session is bound to its user.
 $ADMIN mcp enable -tenant t-acme
-cat > mcp_client.py <<'P'
+cat > mcp_lib.py <<'P'
 import base64, json, sys, urllib.error, urllib.request
 URL = "http://127.0.0.1:18446/mcp"
 open_url = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
@@ -272,6 +272,9 @@ def rpc(tok, sid, method, params):
     st, _, res = post(tok, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, sid)
     assert st == 200, (method, st)
     return res
+P
+cat > mcp_client.py <<'P'
+exec(open("mcp_lib.py").read())
 def read_doc(tok, sid):
     return rpc(tok, sid, "tools/call", {"name": "documents.read", "arguments": {"bucket": "shared", "key": "q4/notes.md"}})["result"]
 bob, alice, carl, bobfp = sys.argv[1:5]
@@ -350,7 +353,7 @@ P
 python3 -I destination.py & echo $! >> pids
 echo "hooks-secret" > hooks.token
 cat > tools.json <<J
-{"version":1,"profile":"development","listen":"127.0.0.1:18448",$COMMON,"outbox_capacity":100000}
+{"version":1,"profile":"development","listen":"127.0.0.1:18448",$COMMON,"outbox_capacity":100000,"mcp_adapters":["local-dev"]}
 J
 cat > notify.json <<'J'
 {"id":"notify","version":1,"description":"post a notification","destination":"hooks","endpoint":{"method":"POST","path":"/notify"},
@@ -375,6 +378,24 @@ code=$(invoke bob n-1 "build finished"); [ "$code" = 200 ] && grep -q "$first" i
 $ADMIN identity put -tenant t-acme -id gus -roles guest -attrs '{"projects":["p1"]}'
 code=$(invoke gus g-1 "hello"); [ "$code" = 404 ] || { echo "SMOKE FAILED: a guest's call answered $code"; exit 1; }
 echo "tools role: a reviewed tool called once for bob ($first), its retry answered without a second call, a guest refused"
+# The tools role through the MCP role (E2): bob's MCP client lists the
+# registered tool and calls it; the tools role decides it for bob.
+cat > mcp_tools.py <<'P'
+exec(open("mcp_lib.py").read())
+bob, gus = sys.argv[1:3]
+b = session(bob)
+tools = {t["name"]: t for t in rpc(bob, b, "tools/list", {})["result"]["tools"]}
+assert tools["tool.notify"]["inputSchema"]["properties"]["version"]["const"] == 1, sorted(tools)
+call = {"name": "tool.notify", "arguments": {"version": 1, "idempotency_key": "m-1", "arguments": {"message": "via MCP"}}}
+r = rpc(bob, b, "tools/call", call)["result"]
+assert not r.get("isError") and r["structuredContent"]["state"] == "SUCCEEDED", r
+g = session(gus)
+assert "tool.notify" not in [t["name"] for t in rpc(gus, g, "tools/list", {})["result"]["tools"]]
+assert rpc(gus, g, "tools/call", call)["result"].get("isError")
+print("MCP: bob lists tool.notify and calls it through the MCP role:", r["content"][0]["text"], "- a guest sees and calls nothing")
+P
+check python3 -I mcp_tools.py "$(tok bob fga-mcp)" "$(tok gus fga-mcp)"
+[ "$(wc -l < destination.calls | tr -d ' ')" = 2 ] && grep -q "via MCP" destination.calls || { echo "SMOKE FAILED: MCP call $(cat destination.calls)"; exit 1; }
 # Final removal of a server-mode version destroys its data key (S6,
 # SSE-006): reclaim retires the withdrawn version and reports that backups
 # taken before still hold the key.

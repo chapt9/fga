@@ -31,15 +31,16 @@ The role keeps no identity store, so it cannot name the user's identity revision
 
 | MCP | Tool decided | Native API | Returns |
 |---|---|---|---|
-| `tools/list` | `discover` on each served tool, one batch | none | The tools the user may discover; none on any failure |
+| `tools/list` | `discover` on each served tool, one batch; with the tools role configured, also `tools.list` | `GET {tools}/v1/tools` | The tools the user may discover, then the registered tools the tools role lets the user discover, as `tool.<id>`; none of either on any failure |
 | `resources/list` | `resources.list` | `GET …/objects`, then `GET …/documents/search`, per configured bucket (`buckets`) | `fga://bucket/key` references. A bucket the user may not list is passed over; the cursor walks buckets and storage pages |
 | `resources/read` `fga://bucket/key[?version=][&unit=]` | `resources.read` | `GET …/object/content`; for a key that is not a readable object, `GET …/document/units` and `GET …/document/unit/content` per unit; with `unit`, that unit through `POST …/document/units/select` | An object as text or a blob; a document's or collection's readable units joined by blank lines |
 | `documents.search` | `documents.search` | `GET …/documents/search` | Keys, document version IDs and references: catalog metadata only (SRH-001) |
 | `documents.read` | `documents.read` | `GET …/document/units` (`kind` must be `document`), `GET …/document/unit/content`; with `units` (at most 100), the all-or-nothing selection `POST …/document/units/select` (DOC-007) | The readable units in document order, as text and as structured output. With `units`, exactly those, or "not found" |
 | `text.read` | `text.read` | The same, with `kind` `collection` | The readable entries |
+| `tool.<id>` (a registered tool) | `tools.call` | `POST {tools}/v1/invocations` with `Fga-Approval` when given | The tools role decides the call's own operation for its exact plan and carries it out ([executor.md](executor.md)). The input is the tool's arguments, its version, an idempotency key, and optionally an approval ID and a note. An approval that is needed answers with its ID, not an error |
 | `documents.export` | `documents.export` | Server mode: `GET …/object/export`, `POST …/document/export/content`. Client mode: `POST …/object/export`, `POST …/document/export` for a recipient. Each route refuses the other mode (`409 ENCRYPTION_MODE`), and the tool then takes the other | A complete export or nothing: server-mode plaintext, or ciphertext and the recipient's existing envelopes. Storage decides `export` on the version and `export-key` on every unit besides the reads; the server never rewraps or decrypts. Text collections are not exported (DOC-005) |
 
-The configured buckets choose what `resources/list` goes through, never what may be read.
+The configured buckets choose what `resources/list` goes through, never what may be read. `tools.list` and `tools.call` are gates only: the MCP role's decision sees no plan, so the tools role decides discover and invoke on each registered tool itself.
 
 - **Unit filtering (V-169).** A unit the user may not read is left out without a trace: no text, ID or count.
 - **One tool, one kind.** `documents.read` refuses a text collection and `text.read` a document. A tool permission therefore stays what it names. The unit listing's `kind` field tells them apart.
@@ -88,10 +89,11 @@ The SDK runs handlers in its own goroutines, outside the HTTP server's panic rec
 | `token_issuer`, `audience` | The users' tokens, for `fga-mcp` |
 | `storage_audience` | `fga-storage`: the decisions it asks for are addressed there |
 | `decision`, `storage` | URLs and the client certificate that is the MCP workload's identity |
+| `tools`, `tools_audience` | Optional: the tools role and `fga-tools` |
 | `buckets` | For `resources/list` |
 | `max_bytes`, `max_units`, `user_requests`, `total_requests`, `user_sessions`, `total_sessions`, `session_timeout` | Bounds; absent keeps the default |
 
-The decision role needs the MCP workload in `adapter_audiences` (for `fga-mcp`) and in `gateways` (for `fga-storage`), and the storage role needs it in `mcp_adapters` ([mcp-gateway.md](mcp-gateway.md)). `fga-admin mcp enable` registers the tools for a tenant.
+The decision role needs the MCP workload in `adapter_audiences` (for `fga-mcp`) and in `gateways` (for `fga-storage`, and `fga-tools` with the tools role), and the storage role and the tools role need it in `mcp_adapters` ([mcp-gateway.md](mcp-gateway.md)). `fga-admin mcp enable` registers the tools for a tenant.
 
 ## Tests
 
@@ -106,6 +108,7 @@ The tests deploy through `internal/mcptest`: a decision role and a storage role 
 | `TestMCPLimits` | Session and call bounds per user and in total; a closed session frees its place |
 | `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
 | `TestMCPExport` | Server-mode export of an object and a document; export needs its own permission (a reader who may not export gets "not found"); client-mode export for another recipient, which only that recipient opens; none without a recipient, or for a recipient without an envelope |
+| `TestMCPRegisteredTools` | AGT-002, AGT-003 through MCP: a member lists the registered tool with its schema and calls it; the tools role carries it out once with the member as actor; a required approval is asked for, then used; a user who may use MCP but not the tool sees and calls nothing; arguments outside the schema, another version and an unknown field are refused |
 | `TestGatewayRevision` | Revision 0 is filled in only for a gateway's own MCP operations |
 | `TestMCPUntrustedContent` | V-029: a document that tells the agent to register a tool and widen its delegation is read as data, and no tool, delegation or identity changes; V-120: the follow-up calls it asks for are refused |
 | `TestSharedNames`, `TestWireFormat`, `TestResourceURIs` | The copied names and wire format; `fga://` URIs round trip, and malformed ones are refused |

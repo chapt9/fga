@@ -31,7 +31,7 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
 
 `POST /v1/invocations {tool, version, arguments, idempotency_key, note}`, with the user's token for `fga-tools`:
 
-1. **Who:** the token's subject, acting for itself. Delegated agents are a later stretch.
+1. **Who:** the token's subject, acting for itself, or the user of an MCP call (below). Delegated agents are a later stretch.
 2. **Which tool:** the reviewed record at exactly the requested version (AGT-004), with the arguments validated against its strict schema.
 3. **What exactly:** the call becomes its checks and its canonical plan (`opplan`), whose digest is the operation digest. The invocation is created under the idempotency key. The same key with the same plan and actor returns the same invocation; another plan or another actor is a conflict (INV-004).
 4. **May it:** the decision role decides the operation for the plan. A policy may require:
@@ -60,15 +60,29 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
 
 ABANDONED keeps the charge and the consumed approval, and its idempotency key never dispatches again. `GET /v1/invocations/{id}` shows an invocation to its actor, or to a principal who may resolve it.
 
+## Through MCP (E2)
+
+`GET /v1/tools` lists the reviewed tools the caller may discover (`agent.tool.discover` on each), with the JSON Schema of their arguments. The MCP role shows them in `tools/list` as `tool.<id>` and calls them with `POST /v1/invocations` ([mcp-role.md](mcp-role.md)). It authenticates there as a gateway (TB3, [mcp-gateway.md](mcp-gateway.md)): its decision that the user may use `tools.list` or `tools.call`, addressed to `fga-tools`. The tools role takes the user from that decision and decides the call's own operation for its plan, as for a direct call. The MCP role never decides a tool itself: its decision sees no plan, so a condition on `request.operation` could not hold there.
+
+## Reconciliation (E2, INV-003, INV-006, INV-008)
+
+`fga-tools` runs a pass every `reconcile_every` (default 30s) over the oldest 100 open invocations of each kind. It never dispatches again.
+
+| Found | Done |
+|---|---|
+| DISPATCHING whose worker's lease ran out (the worker stopped mid-call) | The destination is asked by the idempotency key, at the destination's `reconcile_path`; the outcome it reports is recorded, a key it never received as FAILED, and anything else as UNKNOWN |
+| UNKNOWN | Asked likewise; a reported outcome closes it as a resolution by `system:reconciler` with the report as evidence. The reservation is charged or released with it |
+| UNKNOWN held beyond the tool's maximum hold age | Escalated once: `escalated_at` and an `ESCALATED` audit event. It stays UNKNOWN, its charge held, until a principal resolves it |
+
+A pass that panics is contained; the next pass runs.
+
 ## Example bundle
 
-`tools.json`: members invoke `kind == "executor"` tools; leads approve, resolve and write off. `destinations.json`: members send only to approved destinations.
+`tools.json`: members discover and invoke `kind == "executor"` tools; leads approve, resolve and write off. `destinations.json`: members send only to approved destinations.
 
-## Not yet (stretch E2)
+## Not yet
 
-- MCP tool calls of registered tools through the MCP role;
-- a reconciliation worker for stalled DISPATCHING and long-held UNKNOWN invocations, with escalation after the maximum hold age;
-- delegated agents.
+- Delegated agents.
 
 ## Tests
 
@@ -79,5 +93,7 @@ ABANDONED keeps the charge and the consumed approval, and its idempotency key ne
 | `TestInvokeReservation` | Reserved in the dispatch's transaction; charged on success, released on refusal, held while unknown; a payment beyond the budget sent nowhere; no reservation without the mapping |
 | `TestResolution` | The actor cannot resolve; evidence is required; ABANDONED keeps the charge and never redispatches; another lead writes it off |
 | `TestDispatchFence` | A revocation between decision and dispatch leaves the call unsent |
+| `TestReconcile` | A reported success and a stalled dispatch the destination never received are recorded, the reservations settled with them, nothing sent again; without a reconcile path, a stalled dispatch stays UNKNOWN with its charge held and is escalated once past the hold age |
+| `internal/mcpsvc` `TestMCPRegisteredTools` | Listing and calling through the MCP role, approvals included |
 | `cmd/fga-tools` `TestImportAllowlist`, `TestValidate` | MOD-004 and the configuration |
-| `scripts/smoke.sh` | A tool added and reviewed with `fga-tools`; refused before review; called once for bob with the destination's credential; a retry answered without a second call; a guest refused |
+| `scripts/smoke.sh` | A tool added and reviewed with `fga-tools`; refused before review; called once for bob with the destination's credential; a retry answered without a second call; a guest refused; listed and called through the MCP role |

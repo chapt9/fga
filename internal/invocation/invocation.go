@@ -352,6 +352,14 @@ func (s *Store) Stalled(ctx context.Context, limit int) ([]Invocation, error) {
 	return s.list(ctx, `state = 'DISPATCHING' AND lease_expires_at <= $2`, limit, s.now())
 }
 
+// Escalate marks an UNKNOWN invocation escalated (INV-006). It reports
+// whether this call did so: an invocation is escalated once.
+func (s *Store) Escalate(ctx context.Context, tenant, id string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE invocations SET escalated_at = $3, updated_at = $3
+		WHERE tenant = $1 AND id = $2 AND state = 'UNKNOWN' AND escalated_at IS NULL`, tenant, id, s.now())
+	return tag.RowsAffected() == 1, err
+}
+
 // Unknown returns UNKNOWN invocations, oldest dispatch first, for escalation
 // by hold age (INV-006).
 func (s *Store) Unknown(ctx context.Context, limit int) ([]Invocation, error) {

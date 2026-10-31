@@ -16,6 +16,7 @@ const CodeBudget = "BUDGET"
 // Handler serves the tools role's API, authenticated by users' tokens for
 // Audience, or by the MCP role's gateway decision when gw is set (TB3):
 //
+//	GET  /v1/tools                        the tools the caller may discover, with input schemas
 //	POST /v1/invocations                  {tool, version, arguments, idempotency_key, note}
 //	GET  /v1/invocations/{id}
 //	POST /v1/invocations/{id}/resolve     {outcome, evidence}
@@ -43,6 +44,14 @@ func Handler(svc *Service, tokens httpapi.TokenVerifier, ready func() bool, limi
 		}
 		res, err := svc.Invoke(r.Context(), c, req)
 		reply(w, r, res, err)
+	}))
+	mux.HandleFunc("GET /v1/tools", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
+		list, err := svc.List(r.Context(), c)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"tools": list})
 	}))
 	mux.HandleFunc("GET /v1/invocations/{id}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		res, err := svc.Get(r.Context(), c, r.PathValue("id"))

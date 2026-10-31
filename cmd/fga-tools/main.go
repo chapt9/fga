@@ -31,6 +31,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/executor"
 	"fga/internal/fence"
+	"fga/internal/guard"
 	"fga/internal/httpapi"
 	"fga/internal/invocation"
 	"fga/internal/registry"
@@ -53,6 +54,9 @@ type Config struct {
 	Worker           string `json:"worker,omitempty"`
 	Lease            string `json:"lease,omitempty"`
 	ConnectorTimeout string `json:"connector_timeout,omitempty"`
+	// ReconcileEvery is how often open outcomes are reconciled (default
+	// 30s).
+	ReconcileEvery string `json:"reconcile_every,omitempty"`
 	// MCPAdapters are the MCP role's workload identities: their calls carry
 	// the user's MCP decision instead of a token (TB3).
 	MCPAdapters []string `json:"mcp_adapters,omitempty"`
@@ -64,7 +68,7 @@ func (c Config) Validate() error {
 	if c.OutboxCapacity <= 0 {
 		errs = append(errs, errors.New("outbox_capacity is required"))
 	}
-	for name, v := range map[string]string{"lease": c.Lease, "connector_timeout": c.ConnectorTimeout} {
+	for name, v := range map[string]string{"lease": c.Lease, "connector_timeout": c.ConnectorTimeout, "reconcile_every": c.ReconcileEvery} {
 		if v != "" {
 			if d, err := time.ParseDuration(v); err != nil || d <= 0 {
 				errs = append(errs, fmt.Errorf("%s must be a positive duration", name))
@@ -159,6 +163,28 @@ func serve(ctx context.Context, cfg Config, pool *pgxpool.Pool, store *catalog.S
 		}
 	}
 	server.Handler = executor.Handler(svc, tokens, ready, cfg.Limiter(), gw)
+	// Open outcomes are reconciled in the background; a panic in a pass is
+	// contained and the next pass runs (INV-003, INV-006).
+	every := duration(cfg.ReconcileEvery, 30*time.Second)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				func() {
+					defer guard.Recover(nil, "reconcile", nil)
+					if n, err := svc.Reconcile(ctx, 100); err != nil {
+						slog.Error("fga-tools: reconcile", "error", err)
+					} else if n > 0 {
+						slog.Info("fga-tools: reconciled", "invocations", n)
+					}
+				}()
+			}
+		}
+	}()
 	slog.Info("fga-tools listening", "addr", cfg.Listen, "profile", cfg.Profile, "worker", worker)
 	return cfg.Serve(ctx, server)
 }

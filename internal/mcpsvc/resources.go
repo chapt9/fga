@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -38,8 +39,19 @@ func (s *Service) filter(next mcp.MethodHandler) mcp.MethodHandler {
 					kept = append(kept, t)
 				}
 			}
-			list.Tools = kept
+			list.Tools = append(kept, s.registeredTools(ctx, c)...)
 			return list, nil
+		case "tools/call":
+			// A registered tool is not one of the SDK's: the tools role
+			// validates and decides it.
+			if call, ok := req.(*mcp.CallToolRequest); ok && strings.HasPrefix(call.Params.Name, RegisteredPrefix) {
+				c, err := callerOf(req.GetExtra())
+				if err != nil {
+					return nil, err
+				}
+				return s.callRegistered(ctx, c, call.Params.Name, call.Params.Arguments), nil
+			}
+			return next(ctx, method, req)
 		case "resources/list":
 			lr, ok := req.(*mcp.ListResourcesRequest)
 			if !ok {

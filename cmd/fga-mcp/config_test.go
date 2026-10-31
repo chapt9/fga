@@ -14,7 +14,8 @@ func validDev() Config {
 }
 
 // TestValidate covers MOD-003 for the MCP role: production needs TLS, a
-// real token issuer and mutual TLS to the roles it calls; development
+// real token issuer and mutual TLS to the roles it calls (the tools role
+// too, when configured, with its audience); development
 // without TLS listens on loopback only; limits are positive, a total at
 // least its per-user limit, and absent ones keep their defaults.
 func TestValidate(t *testing.T) {
@@ -44,6 +45,9 @@ func TestValidate(t *testing.T) {
 		{"a negative limit", "positive", func(c *Config) { c.UserSessions = -1 }},
 		{"a total below its per-user limit", "limits", func(c *Config) { c.UserRequests, c.TotalRequests = 10, 5 }},
 		{"a bad session timeout", "session_timeout", func(c *Config) { c.SessionTimeout = "forever" }},
+		{"the tools role without its audience", "tools_audience", func(c *Config) { c.Tools = &Peer{URL: "http://127.0.0.1:17448"} }},
+		{"production calling tools over plain HTTP", "tools role over mutual TLS",
+			func(c *Config) { prod(c); c.Tools, c.ToolsAudience = &Peer{URL: "http://tools"}, "fga-tools" }},
 	} {
 		c := validDev()
 		tt.edit(&c)

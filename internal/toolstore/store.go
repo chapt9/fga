@@ -139,6 +139,29 @@ func (s *Store) Tool(ctx context.Context, tenant, id string) (tools.Tool, error)
 	return t, nil
 }
 
+// ReviewedTools returns a tenant's usable tools: those whose stored record
+// is the reviewed one (AGT-001), in ID order.
+func (s *Store) ReviewedTools(ctx context.Context, tenant string) ([]tools.Tool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT record, reviewed_digest FROM tools WHERE tenant = $1 ORDER BY id`, tenant)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []tools.Tool
+	for rows.Next() {
+		var record []byte
+		var reviewed string
+		if err := rows.Scan(&record, &reviewed); err != nil {
+			return nil, err
+		}
+		var t tools.Tool
+		if strictjson.Decode(record, &t) == nil && t.SchemaDigest() == reviewed {
+			out = append(out, t)
+		}
+	}
+	return out, rows.Err()
+}
+
 // PutDestination stores a destination.
 func (s *Store) PutDestination(ctx context.Context, tenant string, d tools.Destination) error {
 	_, err := s.pool.Exec(ctx, `

@@ -1,7 +1,8 @@
 // Package mcptest deploys the MCP role for tests, as in production: a
-// decision role and a storage role over HTTP, and the MCP role calling
-// both as its workload (mcp-1), over the r1test stack. The MCP role's own
-// tests and the bridge's use it. Test code only; no role links it.
+// decision role and a storage role over HTTP, optionally the tools role,
+// and the MCP role calling them as its workload (mcp-1), over the r1test
+// stack. The MCP role's own tests and the bridge's use it. Test code only;
+// no role links it.
 package mcptest
 
 import (
@@ -18,6 +19,7 @@ import (
 
 	"fga/internal/admission"
 	"fga/internal/content"
+	"fga/internal/executor"
 	"fga/internal/httpapi"
 	"fga/internal/mcpsvc"
 	"fga/internal/mcpwire"
@@ -34,12 +36,32 @@ type Deployment struct {
 	MCP *httptest.Server
 }
 
+// Options shape a deployment.
+type Options struct {
+	Limits mcpsvc.Limits
+	// BeforeDecision, if set, runs in the MCP role's goroutine before each
+	// of its decision requests is sent, with the request body.
+	BeforeDecision func(body string)
+	// Stack makes the r1test stack.
+	Stack r1test.Options
+	// Tools, if set, returns the tools role over the stack, which the MCP
+	// role then reaches over HTTP as its gateway.
+	Tools func(st *r1test.Stack) *executor.Service
+}
+
 // Deploy deploys with limits. beforeDecision, if set, runs in the MCP
 // role's goroutine before each of its decision requests is sent, with the
 // request body.
 func Deploy(t *testing.T, limits mcpsvc.Limits, beforeDecision func(body string)) *Deployment {
 	t.Helper()
-	st := r1test.New(t)
+	return DeployWith(t, Options{Limits: limits, BeforeDecision: beforeDecision})
+}
+
+// DeployWith deploys as o says.
+func DeployWith(t *testing.T, o Options) *Deployment {
+	t.Helper()
+	st := r1test.NewWith(t, o.Stack)
+	limits, beforeDecision := o.Limits, o.BeforeDecision
 	workloadOf := func(r *http.Request) (string, error) { return r.Header.Get("X-Test-Workload"), nil }
 	decision := httptest.NewServer(st.Decisions.Handler(workloadOf))
 	t.Cleanup(decision.Close)
@@ -53,9 +75,18 @@ func Deploy(t *testing.T, limits mcpsvc.Limits, beforeDecision func(body string)
 	if beforeDecision != nil {
 		toDecision = &http.Client{Transport: hooked{Workload(r1test.MCPAdapter), beforeDecision}}
 	}
-	svc, err := mcpsvc.New(mcpsvc.Deps{Tokens: st.Tokens, Audience: r1test.MCPAudience, StorageAudience: content.Audience,
+	deps := mcpsvc.Deps{Tokens: st.Tokens, Audience: r1test.MCPAudience, StorageAudience: content.Audience,
 		Decision: mcpsvc.Peer{URL: decision.URL, HTTP: toDecision}, Storage: mcpsvc.Peer{URL: storage.URL, HTTP: asMCP},
-		Buckets: []string{"vault", "other"}, Limits: limits, Logger: slog.New(slog.DiscardHandler)})
+		Buckets: []string{"vault", "other"}, Limits: limits, Logger: slog.New(slog.DiscardHandler)}
+	if o.Tools != nil {
+		toolsGW := &httpapi.Gateway{AdapterOf: workloadOf, Adapters: map[string]bool{r1test.MCPAdapter: true}, Operation: registry.OpMCPInvoke,
+			Verifier: st.Verifier(executor.Audience)}
+		tools := httptest.NewServer(executor.Handler(o.Tools(st), st.Tokens, func() bool { return true },
+			admission.New(admission.DefaultLimits), toolsGW))
+		t.Cleanup(tools.Close)
+		deps.Tools, deps.ToolsAudience = mcpsvc.Peer{URL: tools.URL, HTTP: asMCP}, executor.Audience
+	}
+	svc, err := mcpsvc.New(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
