@@ -7,6 +7,8 @@ package registry
 const (
 	OpBeginCreate       = "storage.object.begin-create"
 	OpBeginVersion      = "storage.object.begin-version"
+	OpStageCreate       = "storage.object.stage-create"
+	OpStageVersion      = "storage.object.stage-version"
 	OpPublishCreate     = "storage.object.publish-create"
 	OpPublishVersion    = "storage.object.publish-version"
 	OpStat              = "storage.object.stat"
@@ -26,6 +28,8 @@ const (
 	OpEnrollRecipient   = "crypto.recipient.enroll"
 	OpActivateRecipient = "crypto.recipient.activate"
 	OpRevokeRecipient   = "crypto.recipient.revoke"
+	OpLookupRecipient   = "crypto.recipient.discover"
+	OpLookupSigner      = "crypto.signing-key.discover"
 )
 
 // Check roles shared by several operations.
@@ -35,6 +39,7 @@ const (
 	RoleHistory       = "history"
 	RoleEnvelope      = "envelope"
 	RoleRecipient     = "recipient"
+	RoleSigner        = "signer"
 	RoleShare         = "share"
 	RoleRecipientRead = "recipient-read"
 	RoleRecipientKey  = "recipient-key"
@@ -70,6 +75,8 @@ func r1Operations() []Operation {
 	return []Operation{
 		one(OpBeginCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpBeginVersion, RoleObject, "storage.object", "new-version"),
+		one(OpStageCreate, RoleBucket, "storage.bucket", "create-object"),
+		one(OpStageVersion, RoleObject, "storage.object", "new-version"),
 		{Name: OpPublishCreate, Checks: append([]CheckSpec{{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"}}, envelopeChecks(true)...)},
 		{Name: OpPublishVersion, Checks: append([]CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "new-version"}}, envelopeChecks(true)...)},
 		one(OpStat, RoleObject, "storage.object", "stat"),
@@ -92,6 +99,8 @@ func r1Operations() []Operation {
 		one(OpEnrollRecipient, RoleRecipient, "crypto.recipient", "enroll"),
 		one(OpActivateRecipient, RoleRecipient, "crypto.recipient", "activate"),
 		one(OpRevokeRecipient, RoleRecipient, "crypto.recipient", "revoke"),
+		one(OpLookupRecipient, RoleRecipient, "crypto.recipient", "discover"),
+		one(OpLookupSigner, RoleSigner, "crypto.signing-key", "discover"),
 	}
 }
 

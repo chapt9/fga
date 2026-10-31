@@ -408,3 +408,84 @@ func TestRevocationBeforePublish(t *testing.T) {
 		t.Fatalf("versions = %d, want 0", versions)
 	}
 }
+
+// TestDefaultDenyUploads covers ruling 7 for the upload steps that used to
+// rely on the stored intent alone: an idempotent begin retry and staging
+// each take a fresh decision, so a caller who lost the right is refused
+// and nothing is staged.
+func TestDefaultDenyUploads(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	req := content.BeginRequest{Bucket: "reports", Key: "doc", IdempotencyKey: "upload-1"}
+	in, err := st.Content.Begin(ctx, alice.Caller, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := st.User("alice", []string{"member"}, "p2")
+	if _, err := st.Content.Begin(ctx, moved, req); err == nil {
+		t.Fatal("a begin retry was answered without the create-object right")
+	}
+	body := []byte("ciphertext")
+	if _, err := st.Content.PutCiphertext(ctx, moved, in.IntentID, int64(len(body)), cryptowire.Digest(sha(body)), bytes.NewReader(body)); err == nil {
+		t.Fatal("bytes were staged without the create-object right")
+	}
+	if state := intentState(t, st, in.IntentID); state != "RESERVED" {
+		t.Fatalf("intent state = %s, want RESERVED", state)
+	}
+}
+
+// TestUploadLease covers DAT-007 for staging: an admitted upload aborts
+// when the bound authority changes, and the intent stays RESERVED.
+func TestUploadLease(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	in, err := st.Content.Begin(ctx, alice.Caller, content.BeginRequest{Bucket: "reports", Key: "doc", IdempotencyKey: "upload-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("x"), 1<<20)
+	body := &slowBody{data: data, chunk: 64 << 10, pause: func() {
+		if err := st.Catalog.TouchIdentity(ctx, r1test.Tenant, "alice"); err != nil {
+			t.Error(err)
+		}
+		time.Sleep(3 * r1test.LeaseCheckEvery)
+	}}
+	_, err = st.Content.PutCiphertext(ctx, alice.Caller, in.IntentID, int64(len(data)), cryptowire.Digest(sha(data)), body)
+	if !errors.Is(err, content.ErrLease) {
+		t.Fatalf("upload after a revision change: %v, want %v", err, content.ErrLease)
+	}
+	if state := intentState(t, st, in.IntentID); state != "RESERVED" {
+		t.Fatalf("intent state = %s, want RESERVED", state)
+	}
+}
+
+// slowBody yields data in chunks and calls pause once, before the second.
+type slowBody struct {
+	data  []byte
+	chunk int
+	reads int
+	pause func()
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, io.EOF
+	}
+	if b.reads++; b.reads == 2 {
+		b.pause()
+	}
+	n := copy(p[:min(len(p), b.chunk)], b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func intentState(t *testing.T, st *r1test.Stack, id cryptowire.UUID) string {
+	t.Helper()
+	var state string
+	if err := st.Pool.QueryRow(ctx, `SELECT state FROM upload_intents WHERE id = $1`, id).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}

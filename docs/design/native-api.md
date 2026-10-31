@@ -17,8 +17,8 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 
 | Operation | Method and path | Checks (registered operation) |
 |---|---|---|
-| Begin upload | `POST /v1/buckets/{bucket}/uploads` | New key: bucket `create-object` (`storage.object.begin-create`). Existing key: object `new-version` (`storage.object.begin-version`) |
-| Upload ciphertext | `PUT /v1/uploads/{intent}/ciphertext` | Owner of the intent (same tenant, subject and actor); no new decision. Bytes are staged only |
+| Begin upload | `POST /v1/buckets/{bucket}/uploads` | New key: bucket `create-object` (`storage.object.begin-create`). Existing key: object `new-version` (`storage.object.begin-version`). An idempotent retry takes the same decision again; it is never answered from the stored intent alone |
+| Upload ciphertext | `PUT /v1/uploads/{intent}/ciphertext` | Owner of the intent (same tenant, subject and actor) and a fresh single-use decision: bucket `create-object` (`storage.object.stage-create`) or object `new-version` (`storage.object.stage-version`), consumed in the fence; an identical retry needs it too. Bytes are staged only. The body streams under a lease that aborts on any change to the bound authority; it is not cut at the decision's `valid_until`, because staged bytes stay invisible until a commit with its own decision |
 | Finalize | `POST /v1/uploads/{intent}/finalize` | Fresh decision: `create-object` or `new-version`, plus per initial envelope: publisher `share` on the object and `create` on the planned envelope, recipient `read` and `receive-key` (`storage.object.publish`) |
 | Stat | `GET /v1/buckets/{bucket}/object?key=&version=` | `stat`; a non-current version also `discover-history` |
 | Package | `GET /v1/buckets/{bucket}/object/package?key=&version=&recipient=` | Storage: `read` (+ `read-history`). Keys role: `GetRecipientEnvelope` checks (caller `read`, envelope `release`, recipient `read`, `receive-key`) |
@@ -29,8 +29,8 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Delete version | `DELETE /v1/buckets/{bucket}/object?key=&version=` | `delete-version`; retention and reference guards |
 | Enroll recipient | `POST /v1/recipients`, then `POST /v1/recipients/{fp}/activate` | `crypto.recipient` `enroll`, then `activate`, with possession proof |
 | Revoke recipient | `DELETE /v1/recipients/{fp}` | `crypto.recipient` `revoke` |
-| Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). The registry has no resource type for signing keys, so a self-service operation would fail closed (RES-001) |
-| Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | Authenticated caller of the same tenant; the tenant directory of public keys is not policy-protected. A directory answer is not a trust anchor (RCP-002) |
+| Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). Each key is also a `crypto.signing-key` resource whose only action is `discover`, so a self-service operation fails closed (RES-001) |
+| Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | `crypto.recipient` `discover` (`crypto.recipient.discover`; a PENDING key is decided as its planned resource) or `crypto.signing-key` `discover` (`crypto.signing-key.discover`), with a fence check. Without a rule the lookup is denied (ruling 7). A directory answer is not a trust anchor (RCP-002) |
 | Share | `POST /v1/envelopes` | `PublishRecipientEnvelope`: publisher `share`, envelope `create`, recipient `read`, `receive-key` |
 | Retire envelope | `DELETE /v1/envelopes/{id}` | envelope `retire` |
 

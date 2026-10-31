@@ -191,9 +191,23 @@ func (s *Service) ReadCiphertext(ctx context.Context, c Caller, bucketName, key,
 // overdue, or whose decision expired (CNT-008).
 var ErrLease = errors.New("content: read lease ended")
 
-// lease wraps r so that reads fail once the binding no longer holds.
+// lease wraps r so that reads fail once the binding no longer holds or the
+// decision expires (CNT-008).
 func (s *Service) lease(r io.ReadCloser, b fence.Binding) io.ReadCloser {
-	l := &leased{r: r, validUntil: b.ValidUntil, now: s.d.Now, every: s.d.Limits.LeaseCheckEvery, done: make(chan struct{})}
+	return s.leaseUntil(r, b, b.ValidUntil)
+}
+
+// upload wraps an admitted upload body: it fails once the bound authority
+// changes, but an upload admitted in time may outlast the decision. The
+// staged bytes stay invisible until a commit, which needs its own
+// decision.
+func (s *Service) upload(r io.ReadCloser, b fence.Binding) io.ReadCloser {
+	b.ValidUntil = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	return s.leaseUntil(r, b, b.ValidUntil)
+}
+
+func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time) io.ReadCloser {
+	l := &leased{r: r, validUntil: until, now: s.d.Now, every: s.d.Limits.LeaseCheckEvery, done: make(chan struct{})}
 	l.lastOK = s.d.Now()
 	go func() {
 		t := time.NewTicker(l.every)

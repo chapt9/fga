@@ -225,21 +225,59 @@ func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp stri
 	})
 }
 
-// Recipient looks up a recipient key in the caller's tenant directory.
+// lookup authorizes a directory lookup: default deny applies to reads too
+// (ruling 7).
+func (s *Service) lookup(ctx context.Context, c enforce.Caller, op string, check enforce.Check) error {
+	check.Action = "discover"
+	_, rec, err := enforce.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, enforce.KeysAudience, false, []enforce.Check{check})
+	if errors.Is(err, enforce.ErrNotFound) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	b, err := fenceBinding(rec)
+	if err != nil {
+		return err
+	}
+	if err := s.d.Fence.Check(ctx, b); err != nil {
+		return fmt.Errorf("%w: %v", ErrConflict, err)
+	}
+	return nil
+}
+
+// Recipient looks up a recipient key in the caller's tenant directory. It
+// needs discover on the key; a PENDING key is not a resource yet and is
+// decided as its planned resource, so the fence also sees an activation.
 func (s *Service) Recipient(ctx context.Context, c enforce.Caller, fp string) (KeyRecord, error) {
 	k := KeyRecord{Fingerprint: fp}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal, public_key, key_version, status, revision FROM recipient_keys
 	                                          WHERE tenant = $1 AND fingerprint = $2`, c.Tenant, fp).
 		Scan(&k.Principal, &k.PublicKey, &k.KeyVersion, &k.Status, &k.Revision)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return k, ErrNotFound
+		err = ErrNotFound
 	}
-	return k, err
+	if err != nil {
+		return KeyRecord{}, err
+	}
+	check := enforce.Check{ID: registry.RoleRecipient, Role: registry.RoleRecipient, Resource: canonical("crypto.recipient", fp)}
+	if k.Status == "PENDING" {
+		check = plannedRecipient(k.Principal, fp)
+	}
+	if err := s.lookup(ctx, c, registry.OpLookupRecipient, check); err != nil {
+		return KeyRecord{}, err
+	}
+	return k, nil
 }
 
 // SigningKey returns a content-signing key's verification record,
-// including retired and compromised ones (RCP-011).
+// including retired and compromised ones (RCP-011). It needs discover on
+// the key.
 func (s *Service) SigningKey(ctx context.Context, c enforce.Caller, fp string) (KeyRecord, error) {
+	check := enforce.Check{ID: registry.RoleSigner, Role: registry.RoleSigner, Resource: canonical("crypto.signing-key", fp)}
+	if err := s.lookup(ctx, c, registry.OpLookupSigner, check); err != nil {
+		return KeyRecord{}, err
+	}
 	k := KeyRecord{Fingerprint: fp}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal, public_key, status, revision FROM signing_keys
 	                                          WHERE tenant = $1 AND fingerprint = $2`, c.Tenant, fp).

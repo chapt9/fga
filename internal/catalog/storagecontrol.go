@@ -113,7 +113,14 @@ func (s *Store) AddSigningKey(ctx context.Context, tenant, principal string, pub
 	}
 	fp := cryptowire.SigningKeyFingerprint(public).String()
 	now := time.Now()
-	_, err := s.pool.Exec(ctx, `INSERT INTO signing_keys VALUES ($1, $2, $3, $4, 'ACTIVE', 1, $5, $5)`, tenant, fp, principal, public, now)
+	attrs, _ := json.Marshal(map[string]any{"principal": principal, "status": "ACTIVE"})
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO signing_keys VALUES ($1, $2, $3, $4, 'ACTIVE', 1, $5, $5)`, tenant, fp, principal, public, now); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.signing-key', '', 1, 1, 1, $3)`, tenant, fp, attrs)
+		return err
+	})
 	return fp, err
 }
 
@@ -123,8 +130,19 @@ func (s *Store) SetSigningKeyStatus(ctx context.Context, tenant, fingerprint, st
 	if status != "RETIRED" && status != "COMPROMISED" {
 		return fmt.Errorf("catalog: status %q", status)
 	}
-	return s.exec1(ctx, `UPDATE signing_keys SET status = $3, revision = revision + 1, changed_at = now()
-	                      WHERE tenant = $1 AND fingerprint = $2 AND status <> 'COMPROMISED' AND status <> $3`, tenant, fingerprint, status)
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE signing_keys SET status = $3, revision = revision + 1, changed_at = now()
+		                           WHERE tenant = $1 AND fingerprint = $2 AND status <> 'COMPROMISED' AND status <> $3`, tenant, fingerprint, status)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNoRow
+		}
+		_, err = tx.Exec(ctx, `UPDATE resources SET generation = generation + 1, attributes = attributes || jsonb_build_object('status', $3::text)
+		                        WHERE tenant = $1 AND type = 'crypto.signing-key' AND id = $2`, tenant, fingerprint, status)
+		return err
+	})
 }
 
 // AddRecipientKey provisions an ACTIVE recipient key for principal by

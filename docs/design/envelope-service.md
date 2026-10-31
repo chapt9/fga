@@ -36,6 +36,6 @@ The role verifies, in this order: workload identity of the storage role; the dec
 
 1. `POST /v1/recipients` with the raw public key. The role computes the fingerprint, validates that the key is a canonical X25519 point (32 bytes, accepted by `crypto/ecdh`, not all-zero output), allocates the next key version for the principal, stores PENDING, and returns a challenge ([proofs](crypto-wire-profile.md#enrollment-proofs-rcp-002)).
 2. `POST /v1/recipients/{fp}/activate` with the proof over the authenticated session of the same principal. A wrong, reused or expired proof leaves the key PENDING.
-3. Publishing clients pin recipient fingerprints out of band (owner-approved provisioning). `GET /v1/recipients/{fp}` is a directory lookup only; the SDK never trusts it alone (RCP-002).
+3. Publishing clients pin recipient fingerprints out of band (owner-approved provisioning). `GET /v1/recipients/{fp}` is a directory lookup only, allowed only by a `discover` rule; the SDK never trusts it alone (RCP-002).
 
 Content-signing keys are provisioned by the local administrator in R1 (trusted provisioning); the JWS possession proof of the wire profile is defined for a later self-service operation. A retired key keeps verifying historical content; a compromised key fails verification of every signature it made unless an object-specific reviewed disposition exists (none can be recorded in R1, so all fail closed) (RCP-011).

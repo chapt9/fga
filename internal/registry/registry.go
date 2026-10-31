@@ -79,7 +79,10 @@ var r1TypeDefs = []TypeDef{
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key"}},
 	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
 	{Name: "document.derived", Actions: []string{"deliver", "declassify", "relabel"}},
-	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke"}},
+	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke", "discover"}},
+	// Content-signing keys are looked up for verification; under default
+	// deny (ruling 7) the lookup is a registered, policy-decided action.
+	{Name: "crypto.signing-key", Actions: []string{"discover"}},
 	{Name: "crypto.envelope", Actions: []string{"create", "release", "retire"}},
 	{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
 }

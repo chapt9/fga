@@ -129,3 +129,38 @@ func TestRevokeRecipient(t *testing.T) {
 		t.Fatal("a new version was published for a revoked key")
 	}
 }
+
+// TestLookupNeedsRule covers ruling 7 for the key directory: without a
+// discover rule, recipient and signing-key lookups are refused, even for
+// the key's own principal.
+func TestLookupNeedsRule(t *testing.T) {
+	policies := map[string]string{}
+	for name, doc := range r1test.Policies {
+		if name != "recipients.json" && name != "signing-keys.json" {
+			policies[name] = doc
+		}
+	}
+	policies["recipients.json"] = `{"format":"fga.policy/v1","set":"business","resource":"crypto.recipient","scope":"","rules":[
+	  {"id":"own-key","effect":"allow","actions":["enroll","activate","receive-key","revoke"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	ctx := context.Background()
+	alice := st.Client("alice", []string{"member"}, "p1")
+	c := st.KeysCaller("alice")
+	if _, err := st.Envelopes.Recipient(ctx, c, alice.Recipient.Fingerprint().String()); !errors.Is(err, envelope.ErrNotFound) {
+		t.Fatalf("recipient lookup without a rule: %v", err)
+	}
+	if _, err := st.Envelopes.SigningKey(ctx, c, alice.Signer.Fingerprint.String()); !errors.Is(err, envelope.ErrNotFound) {
+		t.Fatalf("signing-key lookup without a rule: %v", err)
+	}
+
+	st = r1test.New(t)
+	alice = st.Client("alice", []string{"member"}, "p1")
+	st.User("bob", []string{"member"}, "p1")
+	bob := st.KeysCaller("bob")
+	if k, err := st.Envelopes.Recipient(ctx, bob, alice.Recipient.Fingerprint().String()); err != nil || k.Principal != "alice" {
+		t.Fatalf("recipient lookup with a rule = %+v, %v", k, err)
+	}
+	if k, err := st.Envelopes.SigningKey(ctx, bob, alice.Signer.Fingerprint.String()); err != nil || k.Status != "ACTIVE" {
+		t.Fatalf("signing-key lookup with a rule = %+v, %v", k, err)
+	}
+}

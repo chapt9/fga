@@ -40,19 +40,22 @@ const StorageAdapter = "storage-1"
 // Policies is the storage policy release of the fixture.
 //
 //   - Members of a bucket's project may create objects in it and list it.
-//   - An object's owner may do everything to it; project members may read,
-//     stat and discover it; auditors may see history.
+//   - An object's owner may use every listed object action on it; project
+//     members may read, stat and discover it; auditors may see history.
 //   - A recipient may receive its own active key's envelopes, and anyone
 //     with share on the object may create envelopes for eligible
 //     recipients.
 //   - Members cannot see others' objects labelled secret.
+//   - Members may look up recipient keys (to share) and signing keys (to
+//     verify); a principal may use its own keys. Every action is listed:
+//     nothing is allowed without a rule (ruling 7).
 //   - The ceiling forbids receive-key for a key that is not active.
 var Policies = map[string]string{
 	"buckets.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
 	  {"id":"members-use-bucket","effect":"allow","actions":["create-object","list"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"objects.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
-	  {"id":"owner-all","effect":"allow","actions":["*"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
 	  {"id":"members-read","effect":"allow","actions":["read","stat","discover"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"auditors-history","effect":"allow","actions":["read-history","discover-history"],"roles":["auditor"]},
@@ -65,7 +68,11 @@ var Policies = map[string]string{
 	   "when":"resource.attributes.recipient_principal == principal.id"},
 	  {"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"when":"resource.attributes.owner == principal.id"}]}`,
 	"recipients.json": `{"format":"fga.policy/v1","set":"business","resource":"crypto.recipient","scope":"","rules":[
-	  {"id":"own-key","effect":"allow","actions":["*"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}`,
+	  {"id":"own-key","effect":"allow","actions":["enroll","activate","receive-key","revoke","discover"],"roles":["*"],"when":"resource.attributes.principal == principal.id"},
+  {"id":"members-find-keys","effect":"allow","actions":["discover"],"roles":["member"]}]}`,
+	"signing-keys.json": `{"format":"fga.policy/v1","set":"business","resource":"crypto.signing-key","scope":"","rules":[
+  {"id":"members-verify-signers","effect":"allow","actions":["discover"],"roles":["member"]},
+  {"id":"own-signing-key","effect":"allow","actions":["discover"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
 	   "when":"resource.attributes.status != \"ACTIVE\""}]}`,
@@ -73,10 +80,11 @@ var Policies = map[string]string{
 
 // UserActions are the capabilities every fixture user gets (DLG-004).
 var UserActions = map[string][]string{
-	"storage.bucket":   {"create-object", "list", "manage"},
-	"storage.object":   {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share"},
-	"crypto.envelope":  {"create", "release", "retire"},
-	"crypto.recipient": {"enroll", "activate", "receive-key", "revoke"},
+	"storage.bucket":     {"create-object", "list", "manage"},
+	"storage.object":     {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share"},
+	"crypto.envelope":    {"create", "release", "retire"},
+	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
+	"crypto.signing-key": {"discover"},
 }
 
 // Stack is a running fixture.

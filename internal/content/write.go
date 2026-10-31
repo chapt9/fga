@@ -21,6 +21,7 @@ import (
 	"fga/internal/blob"
 	"fga/internal/cryptowire"
 	"fga/internal/envelope"
+	"fga/internal/fence"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -90,6 +91,16 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		if in.state == "ABORTED" || in.requestDigest != r.digest() {
 			return Intent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
 		}
+		// Default deny: a retry is answered only while the same begin
+		// would still be allowed (ruling 7).
+		op, checks := s.intentChecks(in, registry.OpBeginCreate, registry.OpBeginVersion)
+		_, rec, err := s.decide(ctx, c, op, Audience, false, checks)
+		if err != nil {
+			return Intent{}, err
+		}
+		if err := s.checked(ctx, rec); err != nil {
+			return Intent{}, err
+		}
 		return in.Intent, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return Intent{}, err
@@ -147,6 +158,15 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		return Intent{}, err
 	}
 	return in, nil
+}
+
+// intentChecks are the checks that authorize an intent's upload: create on
+// the bucket for a new key, new-version on the object otherwise.
+func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
+	if in.newObject {
+		return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
+	}
+	return version, []check{{id: "object", role: registry.RoleObject, action: "new-version", ref: canonical("storage.object", in.Object.String())}}
 }
 
 type storedIntent struct {
@@ -223,19 +243,45 @@ func (s *Service) PutCiphertext(ctx context.Context, c Caller, intentID cryptowi
 	if err != nil {
 		return Receipt{}, err
 	}
+	retry := in.state == "STAGED" && in.ciphertextLength == length && in.ciphertextSHA256 == sum.String()
 	switch {
-	case in.state == "STAGED" && in.ciphertextLength == length && in.ciphertextSHA256 == sum.String():
-		return Receipt{Blob: in.Blob, Length: length, SHA256: sum}, nil
+	case retry:
 	case in.state != "RESERVED":
 		return Receipt{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
 	case !s.d.Now().Before(in.ExpiresAt):
 		return Receipt{}, fmt.Errorf("%w: intent expired", ErrConflict)
 	}
+	// Default deny: staging bytes, or confirming an identical retry, is
+	// admitted by a fresh decision for the same create or new-version
+	// right as the begin, consumed in the fence; the upload then runs
+	// under a lease that aborts when the bound authority changes (ruling
+	// 7, DAT-007).
+	op, checks := s.intentChecks(in, registry.OpStageCreate, registry.OpStageVersion)
+	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err := s.fenced(ctx, rec, nil, func(context.Context, pgx.Tx) error { return nil }); err != nil {
+		return Receipt{}, err
+	}
+	if retry {
+		return Receipt{Blob: in.Blob, Length: length, SHA256: sum}, nil
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	leased := s.upload(io.NopCloser(body), b)
+	defer leased.Close()
 	w, err := s.d.Blobs.Begin(blob.Ref{Tenant: in.Tenant, Blob: in.Blob}, length)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if _, err := io.Copy(w, body); err != nil {
+	if _, err := io.Copy(w, leased); err != nil {
+		if errors.Is(err, ErrLease) {
+			w.Abort()
+			return Receipt{}, fmt.Errorf("%w: %w", ErrConflict, err)
+		}
 		w.Abort()
 		if errors.Is(err, blob.ErrTooLarge) {
 			return Receipt{}, ErrTooLarge

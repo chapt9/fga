@@ -1,7 +1,7 @@
 {
   "epoch": 0,
   "audience": "fga-decision",
-  "business": ["buckets.json", "envelopes.json", "objects.json", "recipients.json"],
+  "business": ["buckets.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json"],
   "ceiling": ["ceiling-recipients.json"],
   "cost_limit": 10000,
   "label_order": [],
@@ -21,6 +21,14 @@
     {"name": "the ceiling objects to a revoked recipient key", "set": "ceiling",
      "principal": {"id": "user-42", "roles": ["member"], "attributes": {}},
      "resource": {"type": "crypto.recipient", "id": "sha256:00", "scope": "", "attributes": {"principal": "user-42", "status": "REVOKED"}},
-     "action": "receive-key", "want": "deny"}
+     "action": "receive-key", "want": "deny"},
+    {"name": "a member looks up a signing key to verify content", "set": "business",
+     "principal": {"id": "user-42", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "crypto.signing-key", "id": "sha256:01", "scope": "", "attributes": {"principal": "user-9", "status": "ACTIVE"}},
+     "action": "discover", "want": "allow"},
+    {"name": "without a rule another principal's recipient key stays hidden", "set": "business",
+     "principal": {"id": "user-7", "roles": ["auditor"], "attributes": {}},
+     "resource": {"type": "crypto.recipient", "id": "sha256:02", "scope": "", "attributes": {"principal": "user-9", "status": "ACTIVE"}},
+     "action": "discover", "want": "deny"}
   ]
 }

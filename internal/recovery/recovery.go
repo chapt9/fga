@@ -405,8 +405,10 @@ func Reconcile(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *
 			       UPDATE resources SET generation = generation + 1, attributes = attributes || '{"status":"REVOKED"}'
 			        WHERE tenant = $1 AND type = 'crypto.recipient' AND id IN (SELECT fingerprint FROM k)`
 		case journal.SignerCompromised:
-			sql = `UPDATE signing_keys SET status = 'COMPROMISED', revision = revision + 1, changed_at = now()
-			        WHERE tenant = $1 AND fingerprint = $2 AND status <> 'COMPROMISED'`
+			sql = `WITH k AS (UPDATE signing_keys SET status = 'COMPROMISED', revision = revision + 1, changed_at = now()
+			                   WHERE tenant = $1 AND fingerprint = $2 AND status <> 'COMPROMISED' RETURNING fingerprint)
+			       UPDATE resources SET generation = generation + 1, attributes = attributes || '{"status":"COMPROMISED"}'
+			        WHERE tenant = $1 AND type = 'crypto.signing-key' AND id IN (SELECT fingerprint FROM k)`
 		case journal.EpochRaised:
 			sql = `INSERT INTO tenant_epochs VALUES ($1, $2::bigint) ON CONFLICT (tenant) DO UPDATE SET required_epoch = excluded.required_epoch
 			        WHERE tenant_epochs.required_epoch < excluded.required_epoch`
