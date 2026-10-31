@@ -50,9 +50,13 @@ A data key is 32 random bytes; the keys role does not know which payload cipher 
 
 Document units, originals, exports and derived outputs get their release operations with S4. The server-mode payload format is added to the crypto profile with S3.
 
-## Backups
+## Backups, reconciliation and destruction (S6, SSE-006)
 
-Backups include `kek_versions` and the sealed keys with the catalog, but never the ring. Restoring server-mode data needs the ring recovered separately. Reconciliation against the ring is part of S6 (SSE-006).
+- **Backups** include `kek_versions` and the sealed keys with the catalog, but never the ring or an unsealed key. The ring is recovered apart from backups (development custody until D-13 is decided).
+- **Reconcile** (`fga-admin reconcile -kek-file FILE`). Without the ring it refuses before changing anything, and admission stays closed. With it, reconcile checks the following before reopening admission, and opened keys are cleared at once:
+  - every KEK version that `kek_versions` records must be in the ring; a missing one is reported as `tenant/version`;
+  - the sealed key of every LIVE or WITHDRAWN server-mode version (objects, units, originals and derived outputs alike) must open under its tenant's KEK version and its binding. A version whose key does not open is quarantined.
+- **Final removal** (`fga-admin reclaim`). Retiring a withdrawn server-mode version destroys its sealed key and records when (`key_destroyed_at`, migration 0021). It also removes the upload intent's copy of the key, so the catalog no longer holds it. The command reports the destroyed keys and says that backups taken before that time still hold them: the content is unrecoverable only once every such backup is deleted. Reclaim also destroys the sealed keys of aborted uploads and drops the redundant copies held by committed ones.
 
 ## Tests
 
@@ -66,4 +70,7 @@ Backups include `kek_versions` and the sealed keys with the catalog, but never t
 | `TestRotation` | V-166: resealing versions and intents, unchanged digests, new seals under the new version |
 | `TestRoutes` | Only the storage workload may call the routes; the storage role's RPC client |
 | `cmd/fga-keys` | The allowlist; production refusing `kek_file` |
-| `scripts/smoke.sh` | A protected ring, the first rotation, and the keys role opening the ring at start |
+| `internal/recovery` `TestBackupHoldsSealedKeysOnly` | A backup holds the sealed key, never the unsealed key or a KEK |
+| `TestReconcileChecksKeys` | No ring: admission stays closed; a ring without the KEK version, or an altered sealed key, quarantines; the right ring reopens and the content reads |
+| `TestReclaimDestroysKeys` | Retirement destroys the version's and the intent's sealed keys; a backup taken before still restores them |
+| `scripts/smoke.sh` | A protected ring, the first rotation, and the keys role opening the ring at start; reclaim destroying a withdrawn version's key; reconcile refusing without the ring and reopening with it |

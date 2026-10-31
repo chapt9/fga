@@ -235,6 +235,14 @@ as carl;  check $B/fga get -bucket shared -key q4/plan.bin -out carl-shared.out;
 as alice; check $B/fga ungrant -bucket shared -key q4/plan.bin -grantee carl
 as carl;  if $B/fga get -bucket shared -key q4/plan.bin -out x.out 2>err.txt; then echo "UNEXPECTED: carl read after the grant was removed"; exit 1; fi
 echo "share grant: carl reads alice's object only while granted; afterwards: $(cat err.txt)"
+# Final removal of a server-mode version destroys its data key (S6,
+# SSE-006): reclaim retires the withdrawn version and reports that backups
+# taken before still hold the key.
+as alice; DRAFT_OUT=$($B/fga put -bucket shared -key q4/draft.txt -in summary.txt) || { echo "SMOKE FAILED: draft put"; exit 1; }
+as alice; check $B/fga put -bucket shared -key q4/draft.txt -in notes.txt
+as alice; check $B/fga rm -bucket shared -key q4/draft.txt -version "$(echo "$DRAFT_OUT" | awk '{print $6}')"
+RECLAIM_OUT=$($ADMIN reclaim) || { echo "SMOKE FAILED: reclaim"; exit 1; }; echo "$RECLAIM_OUT"
+echo "$RECLAIM_OUT" | grep -q "destroyed 1 server-mode data keys" || { echo "SMOKE FAILED: reclaim destroyed no data key"; exit 1; }
 
 
 $ADMIN audit export -dir audit
@@ -245,8 +253,14 @@ $ADMIN recipient revoke -tenant t-acme -fingerprint $BOBFP
 $ADMIN audit export -dir audit
 $ADMIN restore -backup-key backup.key -from backup1
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: read while admission closed"; exit 1; fi; echo "while closed: $(cat err.txt)"
-$ADMIN reconcile
+# The restored catalog holds server-mode data keys: reconcile checks them
+# against the KEK ring, kept apart from backups (SSE-006), and refuses to
+# reopen admission without it.
+if $ADMIN reconcile 2>err.txt; then echo "UNEXPECTED: reconcile without the KEK ring"; exit 1; fi; echo "reconcile without the KEK ring: $(cat err.txt)"
+$ADMIN reconcile -kek-file keks
 as alice; $B/fga get -bucket reports -key q3/report.bin -out alice2.out && cmp plain.bin alice2.out && echo "restored object readable by alice"
+as bob;   check $B/fga get -bucket shared -key q4/plan.bin -out bob-restored.out; check cmp shared.bin bob-restored.out
+echo "restored server-mode object readable by bob"
 as bob;   if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: revoked bob read"; exit 1; fi; echo "bob after restore (key revoked after backup): $(cat err.txt)"
 psql -h localhost -d $DB -Atc "select kind, count(*) from audit_outbox group by kind order by kind"
 $ADMIN audit export -dir audit

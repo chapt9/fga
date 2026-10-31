@@ -16,13 +16,22 @@ import (
 type Reclaimed struct {
 	Retired int
 	Aborted int
+	// KeysDestroyed counts the sealed server-mode data keys removed from
+	// the catalog at At: of retired versions, and of aborted uploads. A
+	// backup taken before At still holds them, so that content stays
+	// recoverable until every such backup is gone (SSE-006).
+	KeysDestroyed int
+	At            time.Time
 }
 
 // Reclaim removes the blobs of withdrawn versions and of expired uploads
 // (PUB-005, PUB-006). Each removal is decided from catalog identity under a
 // row lock, never from file age or a backend listing, and is idempotent.
+// Retiring a server-mode version destroys its sealed data key and records
+// when, and the sealed keys of aborted uploads are destroyed too
+// (SSE-006).
 func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now time.Time) (Reclaimed, error) {
-	var out Reclaimed
+	out := Reclaimed{At: now}
 	type item struct {
 		tenant                  string
 		tenantID, version, blob cryptowire.UUID
@@ -70,7 +79,19 @@ func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now tim
 			if err := blobs.Remove(blob.Ref{Tenant: it.tenantID, Blob: it.blob}); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE object_versions SET state = 'RETIRED' WHERE tenant = $1 AND id = $2`, it.tenant, it.version); err != nil {
+			var destroyed bool
+			if err := tx.QueryRow(ctx, `UPDATE object_versions SET state = 'RETIRED', sealed_key = NULL, kek_version = NULL,
+			                                   key_destroyed_at = CASE WHEN sealed_key IS NULL THEN NULL ELSE $3::timestamptz END
+			                             WHERE tenant = $1 AND id = $2 RETURNING key_destroyed_at IS NOT NULL`, it.tenant, it.version, now).
+				Scan(&destroyed); err != nil {
+				return err
+			}
+			if destroyed {
+				out.KeysDestroyed++
+			}
+			// The upload intent kept a copy of the sealed key.
+			if _, err := tx.Exec(ctx, `UPDATE upload_intents SET sealed_key = NULL, kek_version = NULL
+			                            WHERE tenant = $1 AND version = $2 AND sealed_key IS NOT NULL`, it.tenant, it.version); err != nil {
 				return err
 			}
 			_, err := tx.Exec(ctx, `UPDATE retirements SET done_at = $3 WHERE tenant = $1 AND version = $2`, it.tenant, it.version, now)
@@ -110,6 +131,18 @@ func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now tim
 		default:
 			out.Aborted++
 		}
+	}
+	// An aborted upload's data key protects nothing, and a committed
+	// upload's copy duplicates its version's (SSE-004).
+	tag, err := pool.Exec(ctx, `UPDATE upload_intents SET sealed_key = NULL, kek_version = NULL
+	                             WHERE state = 'ABORTED' AND sealed_key IS NOT NULL`)
+	if err != nil {
+		return out, err
+	}
+	out.KeysDestroyed += int(tag.RowsAffected())
+	if _, err := pool.Exec(ctx, `UPDATE upload_intents SET sealed_key = NULL, kek_version = NULL
+	                              WHERE state = 'COMMITTED' AND sealed_key IS NOT NULL`); err != nil {
+		return out, err
 	}
 	return out, nil
 }

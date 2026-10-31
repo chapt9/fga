@@ -1,6 +1,6 @@
 # D-12: Encryption modes (server-side by default, client-side opt-in)
 
-- **Status:** decided by the owner, 31 October 2026, including share grants (part 4). Server-side encryption is always on and client-side encryption is opt-in; the mode is set per bucket and visible to policy; a server-encrypted object is shared by policy and the server decrypts for the reader. The requirements are in specification 2.6, whose text the owner approved on 31 October 2026 (stretch S0 done).
+- **Status:** decided by the owner, 31 October 2026, including share grants (part 4). Server-side encryption is always on and client-side encryption is opt-in; the mode is set per bucket and visible to policy; a server-encrypted object is shared by policy and the server decrypts for the reader. The requirements are in specification 2.6, whose text the owner approved on 31 October 2026 (stretch S0), corrected in 2.6.1. Stretches S1 to S6 are built (31 October 2026); KEK custody (D-13) stays open.
 - **Why:** under 2.5, every reader needs client key custody (recipient keys, pinned signers, envelopes), and generic clients such as MCP cannot read anything. The owner wants other users to read shared encrypted data without that, with access control as the protection.
 
 ## 1. Modes

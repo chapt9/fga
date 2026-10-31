@@ -1,6 +1,6 @@
 # fga: Fine-Grained Access Platform
 
-An implementation of the Fine-Grained Access Platform specification 2.6.1 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 added encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)), and 2.6.1 corrects which resources and actions a share grant can name; server mode covers objects, documents, collections and derived outputs so far (see Known gaps). `fga` is a placeholder name (decision D-11).
+An implementation of the Fine-Grained Access Platform specification 2.6.1 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 added encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)), and 2.6.1 corrects which resources and actions a share grant can name; server mode is built (see Known gaps for KEK custody). `fga` is a placeholder name (decision D-11).
 
 The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)); the [mechanism matrix](docs/research/mechanism-matrix.md) records what was taken and what was rejected. Everything runs locally.
 
@@ -9,7 +9,7 @@ The policy engine and the object storage are our own code. MinIO and Cerbos are 
 Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accepted.
 
 - **R1-A, shared authority:** built, including the catch-up list of the [handoff](docs/spec/HANDOFF.md) (section 5).
-- **R1-B, client-encrypted object storage:** built and running locally. That covers the storage and keys roles, the client SDK, the native API, backup, restore and reconcile.
+- **R1-B, encrypted object storage:** built and running locally. That covers the storage and keys roles, server mode (the default: the platform encrypts under data keys released only for exact decisions) and client mode (opt-in per bucket), share grants, the client SDK, the native API, backup, restore and reconcile.
 - **R1-C, documents, labels and approvals:** built and running locally. That covers:
   - default deny for every user action, key lookups included (ruling 7);
   - labels (signed label order, computed ranks, label, relabel, advisory proposals) and approvals of storage operations;
@@ -36,7 +36,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Derived outputs | `internal/content/derived.go`, `internal/cryptowire/lineage.go` ([derived-outputs.md](docs/design/derived-outputs.md)) | DRV-001 to DRV-003, DRV-007 to DRV-009 |
 | Share grants | `internal/content/grants.go`, `internal/catalog/grants.go`; `shared_with` and grant-bounded validity in `internal/decisionsvc`; removals journaled ([share-grants.md](docs/design/share-grants.md)) | SHR-001 to SHR-003 |
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
-| Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006 |
+| Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile against the KEK ring, reclaim with data-key destruction), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006, SSE-006 |
 | Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
 | Labels | `internal/labels` (order arithmetic); ranks in `internal/decision`; the label order published to the catalog on activation; label, relabel and proposals in `internal/content` ([labels-and-approvals.md](docs/design/labels-and-approvals.md)) | LAB-001 to LAB-005, FLW-004 (storage objects so far) |
 | Approvals | `internal/approval` with neutral operation plans (`internal/opplan`). The decision role opens and verifies approvals, the fence consumes them, and finalize, delete, version delete and label changes use them | APR-001 to APR-005 |
@@ -58,7 +58,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 
 ### Known gaps (not done or not verified)
 
-- **Server mode (specification 2.6, D-12) covers objects, documents, collections, derived outputs and share grants.**
+- **Server mode (specification 2.6, D-12) is built: objects, documents, collections, derived outputs, share grants and recovery.**
   - **Bucket modes:** buckets have an encryption mode, server by default, which policy can see and a project lead can change ([encryption-modes.md](docs/design/encryption-modes.md), S1).
   - **Keys role:** it holds each tenant's key-encryption keys and seals and releases data keys under exact decisions ([server-keys.md](docs/design/server-keys.md), S2).
   - **Objects:** in a server-mode bucket, objects are uploaded and read as plaintext, which the storage role encrypts and decrypts, and policy alone decides who reads ([server-objects.md](docs/design/server-objects.md), S3).
@@ -66,7 +66,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
   - **Originals and exports:** an original file uploaded beside the text, released only with complete-content permission checked in the keys role's fence, and exports of selected units (S4b).
   - **Derived outputs:** the lineage is declared with the upload and bound to the caller's decision; a reader reads under their own reader path, which the keys role checks again when it releases the key (S4b).
   - **Share grants:** a user with `share` names a reader of the same tenant, actions from the resource type's read set and an expiry; policy sees the grantees as `resource.attributes.shared_with`, and only a rule that tests it turns a grant into an allow ([share-grants.md](docs/design/share-grants.md), S5).
-  - **Not yet:** server-mode recovery (S6): backups do not yet check the KEK ring, and data keys are not destroyed on final removal.
+  - **Recovery:** backups hold sealed data keys and never a KEK; reconcile needs the KEK ring and quarantines versions whose keys do not open; final removal destroys a version's data key and reports that older backups still hold it ([server-keys.md](docs/design/server-keys.md), S6).
   - **Key custody:** KEKs are kept in a development ring file, which production refuses; KEK custody (D-13) is open.
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
 - **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.
@@ -76,7 +76,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Catalog encryption at rest (DAT-006)** is left to the volume.
 - **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
 - **Approvals** cover publication, deletion and label changes of objects, documents, units and derived outputs, and sharing. Envelope retirement, enrollment and revocation send no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
-- **Security journal:** it must be created once with `fga-admin journal init` before the keys role starts. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
+- **Security journal:** it must be created once with `fga-admin journal init` before the keys and storage roles start. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
 - **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).
 
 ## Checks
@@ -107,9 +107,10 @@ make spec
 - a label raise, and a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), and a label proposal;
 - a document read back unit by unit by both recipients, an original file only its owner may read, and a metadata search;
 - in a server-mode bucket, an object, a document, an appended collection and a derived output that another member reads by policy alone, an original only its owner may read, and a share grant that lets a member of another project read an object until it is removed;
+- reclaim retiring a withdrawn server-mode version and destroying its data key;
 - deletion.
 
-It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles (refused without the KEK ring, then checking every server-mode data key against it) and checks the result. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke

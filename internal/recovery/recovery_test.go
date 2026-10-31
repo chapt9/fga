@@ -221,7 +221,7 @@ func TestReclaim(t *testing.T) {
 	if b, err := alice.Get("reports", "doc", ""); err != nil || string(b) != "two" {
 		t.Fatalf("current version after reclaim: %q, %v", b, err)
 	}
-	if again, _ := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(2*time.Hour)); again != (recovery.Reclaimed{}) {
+	if again, _ := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(2*time.Hour)); again.Retired+again.Aborted+again.KeysDestroyed != 0 {
 		t.Fatalf("second run = %+v, want nothing", again)
 	}
 }

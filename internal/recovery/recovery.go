@@ -3,12 +3,14 @@
 // AVL-008, KEY-017, PUB-006; docs/design/storage-r1b.md, "Backup and
 // restore").
 //
-// A backup holds catalog rows, ciphertext, signed descriptors and opaque
-// envelopes only: no payload key and no client private key exists on the
-// server to back up. A restore leaves admission closed and moves to a new
-// recovery incarnation, so every decision made before it is refused.
-// Reconcile replays the security journal, quarantines versions whose
-// ciphertext is missing or altered, and only then reopens admission.
+// A backup holds catalog rows, ciphertext, signed descriptors, opaque
+// envelopes and server-mode data keys sealed under the keys role's KEKs:
+// no KEK, unsealed data key or client private key is in it (SSE-006). The
+// KEK ring is recovered apart from backups. A restore leaves admission
+// closed and moves to a new recovery incarnation, so every decision made
+// before it is refused. Reconcile replays the security journal,
+// quarantines versions whose ciphertext is missing or altered or whose
+// data key does not open under the ring, and only then reopens admission.
 package recovery
 
 import (
@@ -31,6 +33,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/journal"
+	"fga/internal/kek"
 	"fga/internal/strictjson"
 )
 
@@ -71,7 +74,16 @@ type Options struct {
 	// after the backup may be lost. Only an operator who has restored
 	// those changes by other means may set it.
 	AcceptJournalLoss bool
+	// KEKs is the keys role's KEK ring, recovered apart from backups
+	// (SSE-006). Reconcile needs it when the catalog holds server-mode
+	// data keys, and quarantines every version whose key does not open
+	// under it.
+	KEKs *kek.Ring
 }
+
+// ErrNoKEKs means the catalog holds server-mode data keys and no KEK ring
+// was given to check them. Admission stays closed.
+var ErrNoKEKs = errors.New("recovery: server-mode data keys need the KEK ring to be checked; admission stays closed")
 
 // ErrJournalContinuity means the security journal is not the one the
 // catalog is bound to, or has fewer entries than the catalog recorded, so
@@ -442,12 +454,19 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 type Report struct {
 	Replayed    int
 	Quarantined int
+	// KeysChecked counts the server-mode data keys opened under the ring;
+	// MissingKEKs names the KEK versions the catalog records that the
+	// ring lacks, as "tenant/version".
+	KeysChecked int
+	MissingKEKs []string
 }
 
 // Reconcile replays the security journal onto the catalog, quarantines
 // versions whose ciphertext is missing or does not match its receipt, and
 // reopens admission (AVL-008, KEY-017, PUB-006). If the journal cannot be
-// read, admission stays closed: lost revocations are not assumed away.
+// read, admission stays closed: lost revocations are not assumed away. A
+// catalog with server-mode data keys needs ReconcileWith and the KEK ring
+// (SSE-006).
 func Reconcile(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *journal.Journal) (Report, error) {
 	return ReconcileWith(ctx, store, blobs, j, Options{})
 }
@@ -469,6 +488,17 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 	}
 	if err := continuity(js, id, recorded, ok, opts); err != nil {
 		return rep, err
+	}
+	// A catalog with server-mode data keys is not reopened unchecked; the
+	// refusal comes before anything is changed.
+	if opts.KEKs == nil {
+		var sealedKeys bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM object_versions WHERE sealed_key IS NOT NULL)`).Scan(&sealedKeys); err != nil {
+			return rep, err
+		}
+		if sealedKeys {
+			return rep, ErrNoKEKs
+		}
 	}
 	if opts.AcceptJournalLoss {
 		if err := catalog.SetJournal(ctx, pool, js.ID, js.Entries); err != nil {
@@ -534,11 +564,84 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 		}
 	}
 	rows.Close()
+	locked, err := checkKeys(ctx, pool, opts.KEKs, &rep)
+	if err != nil {
+		return rep, err
+	}
+	for _, l := range locked {
+		quarantine = append(quarantine, bad{l.tenant, l.version})
+	}
 	for _, q := range quarantine {
-		if _, err := pool.Exec(ctx, `UPDATE object_versions SET state = 'QUARANTINED' WHERE tenant = $1 AND id = $2`, q.tenant, q.version); err != nil {
+		tag, err := pool.Exec(ctx, `UPDATE object_versions SET state = 'QUARANTINED' WHERE tenant = $1 AND id = $2 AND state <> 'QUARANTINED'`,
+			q.tenant, q.version)
+		if err != nil {
 			return rep, err
 		}
-		rep.Quarantined++
+		rep.Quarantined += int(tag.RowsAffected())
 	}
 	return rep, store.SetAdmission(ctx, true, 0)
+}
+
+type keyed struct {
+	tenant  string
+	version cryptowire.UUID
+}
+
+// checkKeys verifies the server-mode data keys of a restored catalog
+// against the KEK ring (SSE-006): every KEK version the catalog records
+// must be in the ring, and the sealed key of every LIVE or WITHDRAWN
+// server-mode version must open under its tenant's KEK version and its
+// binding. The opened key is cleared at once. It returns the versions
+// whose key does not open; without a ring (the catalog then holds no
+// sealed key) there is nothing to check.
+func checkKeys(ctx context.Context, pool *pgxpool.Pool, ring *kek.Ring, rep *Report) ([]keyed, error) {
+	if ring == nil {
+		return nil, nil
+	}
+	rows, err := pool.Query(ctx, `SELECT tenant, version FROM kek_versions ORDER BY tenant, version`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var tenant string
+		var version uint32
+		if err := rows.Scan(&tenant, &version); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !slices.Contains(ring.Versions(tenant), version) {
+			rep.MissingKEKs = append(rep.MissingKEKs, tenant+"/"+strconv.FormatUint(uint64(version), 10))
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = pool.Query(ctx, `
+		SELECT v.tenant, t.id, v.object, v.id, v.crypto_version, v.blob, v.kek_version, v.sealed_key
+		  FROM object_versions v JOIN tenants t ON t.name = v.tenant
+		 WHERE v.sealed_key IS NOT NULL AND v.state IN ('LIVE', 'WITHDRAWN')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var locked []keyed
+	for rows.Next() {
+		var k keyed
+		var b kek.Binding
+		var version uint32
+		var sealed []byte
+		if err := rows.Scan(&k.tenant, &b.Tenant, &b.Object, &k.version, &b.CryptoVersion, &b.Blob, &version, &sealed); err != nil {
+			return nil, err
+		}
+		b.Version = k.version
+		dataKey, err := ring.Open(k.tenant, version, sealed, b)
+		clear(dataKey)
+		if err != nil {
+			locked = append(locked, k)
+			continue
+		}
+		rep.KeysChecked++
+	}
+	return locked, rows.Err()
 }

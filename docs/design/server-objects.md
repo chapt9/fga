@@ -73,8 +73,6 @@ The storage role links `internal/payload` and Tink's `streamingaead`, and no KEK
 | `internal/nativeapi` `TestServerModeHTTP` | The routes and SDK over HTTP, with data keys over the keys role's internal route; the stream is aborted on corruption |
 | `scripts/smoke.sh` | Server-mode upload and a read by another member; a bucket switched to client mode reading both versions; no plaintext in blobs |
 
-## Not yet
+## Later stretches
 
-- Server-mode documents, units, originals, collections and derived outputs (S4).
-- Share grants (S5).
-- Recovery of server-mode data (S6): backups hold sealed keys but not the ring.
+Server-mode documents, units, originals, collections and derived outputs (S4, [server-documents.md](server-documents.md)), share grants (S5, [share-grants.md](share-grants.md)) and the recovery of server-mode data (S6, [server-keys.md](server-keys.md)) are built.

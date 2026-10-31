@@ -28,8 +28,9 @@
 //	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
 //	journal init                          create the security journal once, at setup
 //	restore            -backup-key FILE -from DIR [-accept-journal-loss]
-//	reconcile          [-accept-journal-loss]
-//	reclaim
+//	reconcile          [-accept-journal-loss] [-kek-file FILE]   -kek-file is needed when the catalog holds server-mode
+//	                   data keys: each must open under the ring, or its version is quarantined (SSE-006)
+//	reclaim                                          retire withdrawn versions; destroys their server-mode data keys
 //	audit export       -dir D [-follow]             drain the audit outbox into D
 package main
 
@@ -160,6 +161,7 @@ func run(args []string) error {
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
+	kekFile := fs.String("kek-file", "", "reconcile: the KEK ring to check server-mode data keys against")
 	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
 		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
 	if err := fs.Parse(sub); err != nil {
@@ -438,11 +440,22 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		rep, err := recovery.ReconcileWith(ctx, e.store, blobs, j, recovery.Options{AcceptJournalLoss: *acceptJournalLoss})
-		if err == nil {
-			fmt.Printf("replayed %d journal entries, quarantined %d versions; admission is open\n", rep.Replayed, rep.Quarantined)
+		opts := recovery.Options{AcceptJournalLoss: *acceptJournalLoss}
+		if *kekFile != "" {
+			if opts.KEKs, err = kek.ReadRing(*kekFile, kekPassphrase); err != nil {
+				return err
+			}
 		}
-		return err
+		rep, err := recovery.ReconcileWith(ctx, e.store, blobs, j, opts)
+		if err != nil {
+			return err
+		}
+		if len(rep.MissingKEKs) > 0 {
+			fmt.Printf("KEK versions missing from the ring: %s; their data keys do not open\n", strings.Join(rep.MissingKEKs, ", "))
+		}
+		fmt.Printf("replayed %d journal entries, checked %d server-mode data keys, quarantined %d versions; admission is open\n",
+			rep.Replayed, rep.KeysChecked, rep.Quarantined)
+		return nil
 	case "audit export":
 		if err := need(*dir); err != nil {
 			return err
@@ -468,10 +481,15 @@ func run(args []string) error {
 			return err
 		}
 		got, err := recovery.Reclaim(ctx, pool, blobs, time.Now())
-		if err == nil {
-			fmt.Printf("retired %d withdrawn versions, aborted %d expired uploads\n", got.Retired, got.Aborted)
+		if err != nil {
+			return err
 		}
-		return err
+		fmt.Printf("retired %d withdrawn versions, aborted %d expired uploads\n", got.Retired, got.Aborted)
+		if got.KeysDestroyed > 0 {
+			fmt.Printf("destroyed %d server-mode data keys; backups taken before %s still hold them, so that content stays recoverable"+
+				" until every such backup is deleted\n", got.KeysDestroyed, got.At.UTC().Format(time.RFC3339))
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown command %q", cmd)
 }
