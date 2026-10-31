@@ -3,9 +3,11 @@ package content_test
 import (
 	"errors"
 	"maps"
+	"strings"
 	"testing"
 
 	"fga/internal/content"
+	"fga/internal/cryptowire"
 	"fga/internal/envelope"
 	"fga/internal/r1test"
 	"fga/internal/registry"
@@ -212,4 +214,92 @@ func TestEncryptionCeiling(t *testing.T) {
 	if _, err := alice.Put("safe", "a.txt", []byte("x")); err != nil {
 		t.Fatalf("restricted in a client-mode bucket: %v", err)
 	}
+}
+
+// TestEncryptionAttributeOnEveryResource is the regression test of review
+// v3 F08: published document versions and new derived outputs lacked the
+// encryption attribute (ENC-001), so policies testing it behaved by
+// history. Every resource of a bucket, of every type and in both modes,
+// carries the bucket's mode, and follows a mode change.
+func TestEncryptionAttributeOnEveryResource(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	st.ModeBucket("vault", "p1", "internal", "server")
+	lead := st.Client("lena", []string{"member", "lead"}, "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+
+	// Client mode: an object, a document, a collection, a derived output.
+	obj, err := alice.Put("reports", "doc.bin", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := alice.PrepareDocument("reports", "doc.md", []string{"One.", "Two."}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	col, err := alice.PrepareCollection("reports", "chat", []string{"hi"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(col); err != nil {
+		t.Fatal(err)
+	}
+	src := []cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: obj.Object, Version: obj.Version}}
+	if _, err := alice.PutDerived("reports", "summary", []byte("s"), src, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Server mode: the same kinds.
+	sobj, err := st.Content.PutObject(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "doc.bin", IdempotencyKey: "o"}, 1,
+		strings.NewReader("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []content.TextRequest{{Bucket: "vault", Key: "doc.md", IdempotencyKey: "d"},
+		{Bucket: "vault", Key: "chat", IdempotencyKey: "c", Collection: true}} {
+		if _, err := st.Content.PutDocumentText(ctx, alice.Caller, r, []byte("One.\n\nTwo.")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "summary", IdempotencyKey: "s"},
+		[]cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: sobj.Object, Version: sobj.Version}}, -1, strings.NewReader("s")); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(bucket, want string) {
+		t.Helper()
+		rows, err := st.Pool.Query(ctx, `
+			SELECT r.type, coalesce(r.attributes->>'encryption', '') FROM resources r
+			 WHERE r.id IN (SELECT o.id::text FROM objects o JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket WHERE b.name = $1)
+			    OR r.id IN (SELECT d.id::text FROM document_versions d JOIN objects o ON o.tenant = d.tenant AND o.id = d.document
+			                  JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket WHERE b.name = $1)`, bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		types := map[string]bool{}
+		for rows.Next() {
+			var typ, mode string
+			if err := rows.Scan(&typ, &mode); err != nil {
+				t.Fatal(err)
+			}
+			types[typ] = true
+			if mode != want {
+				t.Errorf("a %s in %s has encryption %q, want %q", typ, bucket, mode, want)
+			}
+		}
+		for _, typ := range []string{"storage.object", "document.version", "document.text_unit", "text.entry", "document.derived"} {
+			if !types[typ] {
+				t.Errorf("%s has no %s to check", bucket, typ)
+			}
+		}
+	}
+	check("reports", "client")
+	check("vault", "server")
+	if _, err := st.Content.SetBucketEncryption(ctx, lead.Caller, "reports", "server"); err != nil {
+		t.Fatal(err)
+	}
+	check("reports", "server")
 }

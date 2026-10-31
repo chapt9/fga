@@ -791,8 +791,10 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			m.NormalizationVersion, now, in.encryption); err != nil {
 			return err
 		}
+		// The same protected attributes as the planned version, the
+		// bucket's encryption mode included (ENC-001, review v3 F08).
 		versionAttrs := map[string]any{"document": in.Document}
-		for _, k := range []string{"bucket", "owner", "project", "label", "kind"} {
+		for _, k := range []string{"bucket", "owner", "project", "label", "kind", "encryption"} {
 			versionAttrs[k] = in.attributes[k]
 		}
 		va, _ := json.Marshal(versionAttrs)

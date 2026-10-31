@@ -9,7 +9,7 @@ Specification 2.6 (decision [D-12](../decisions/D-12-encryption-modes.md)) puts 
 | `buckets.encryption` | The bucket's mode. `fga-admin bucket create -encryption server` or `-encryption client` sets it; `server` is the default. The column has no SQL default, so every insert names a mode |
 | `upload_intents.encryption`, `document_intents.encryption` | The mode the upload began under |
 | `object_versions.encryption`, `document_versions.encryption` | The mode the version was published under. It never changes (ENC-002). A delete marker has none |
-| `resources.attributes.encryption` | What policy sees, on the bucket and on every resource in it: objects, documents, document versions, units, entries, originals and derived outputs. It is the bucket's current mode, the mode new uploads get. Open intents carry it in their planned attributes. Envelopes keep the attributes of the version they were made for |
+| `resources.attributes.encryption` | What policy sees, on the bucket and on every resource in it: objects, documents, document versions, units, entries, originals and derived outputs. It is the bucket's current mode, the mode new uploads get. Open intents carry it in their planned attributes, and every resource a publication creates takes it (document versions and derived outputs did not before review v3 F08; migration 0023 backfills them). Envelopes keep the attributes of the version they were made for |
 
 Migration 0015 puts all existing buckets, intents and versions in client mode, because data published before modes was client-encrypted (ENC-003).
 

@@ -306,7 +306,7 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 			return fmt.Errorf("%w: intent is %s or expired", ErrConflict, st)
 		}
 		attrs := map[string]any{"kind": "derived", "label": effective}
-		for _, k := range []string{"bucket", "owner", "project"} {
+		for _, k := range []string{"bucket", "owner", "project", "encryption"} {
 			attrs[k] = in.attributes[k]
 		}
 		ab, _ := json.Marshal(attrs)
