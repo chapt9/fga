@@ -110,6 +110,26 @@ func TestAuthorizedSubset(t *testing.T) {
 	}
 }
 
+// TestDeniedDocumentLooksAbsent is the regression test of a defect found
+// while building the MCP role (R2 stretch M2): the unit listing answered
+// a caller who may not discover the version with an empty page that named
+// the version, and a malformed continuation with INVALID, while an absent
+// key answers NOT_FOUND. Absent and denied must look alike (CNT-004).
+func TestDeniedDocumentLooksAbsent(t *testing.T) {
+	st, _, bob, _, _ := disclosureFixture(t)
+	carol := st.Client("carol", []string{"member"}, "p2")
+	for _, cont := range []string{"", "not-a-continuation"} {
+		for _, key := range []string{"q3.md", "absent.md"} {
+			if page, err := st.Content.ListUnits(ctx, carol.Caller, "reports", key, "", 10, cont); !errors.Is(err, content.ErrNotFound) {
+				t.Errorf("carol lists %s (continuation %q): %+v, %v", key, cont, page, err)
+			}
+		}
+	}
+	if page, err := st.Content.ListUnits(ctx, bob.Caller, "reports", "q3.md", "", 10, ""); err != nil || len(page.Units) == 0 {
+		t.Fatalf("bob's listing: %+v, %v", page, err)
+	}
+}
+
 // TestUnitPackage covers the unit package and ciphertext routes: the
 // owner receives its envelope and the exact ciphertext and decrypts the
 // unit; a reader without an envelope gets nothing; a restricted unit is

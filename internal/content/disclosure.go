@@ -225,6 +225,17 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	if err != nil {
 		return UnitPage{}, err
 	}
+	// Nothing of a version is answered, not even that it exists or that a
+	// continuation is malformed, to a caller who may not discover it: a
+	// hidden document looks like an absent one (CNT-004).
+	_, rec, err := s.decide(ctx, c, registry.OpDocDiscover, Audience, false,
+		[]check{{id: "version", role: registry.RoleVersion, action: "discover", ref: canonical("document.version", d.id.String())}})
+	if err != nil {
+		return UnitPage{}, err
+	}
+	if err := s.checked(ctx, rec); err != nil {
+		return UnitPage{}, err
+	}
 	id, err := s.d.Catalog.GetIdentity(ctx, c.Tenant, c.Principal)
 	if err != nil {
 		return UnitPage{}, ErrNotFound
