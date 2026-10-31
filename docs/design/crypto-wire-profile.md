@@ -95,3 +95,18 @@ Possession proof does not establish the intended recipient: the publishing clien
 ## Examples (RCP-007)
 
 `internal/cryptowire` tests hold the frozen positive example (a fixed context and its exact hex encoding) and negative examples: an unknown field, a duplicate field, fields out of order, a wrong wire type, a short UUID, an overlong varint, a reserved field, trailing bytes and an oversized message. `sdk/go/crypto` tests cover round trips and wrong AAD, wrong recipient, truncated, reordered and forged ciphertext (CRY-006).
+
+## Profile 2: document units (R1-C)
+
+Profile 2 is profile 1 extended for units of a document ([documents.md](documents.md)); profile 1 stays as it is for ordinary objects.
+
+| Change | Rule |
+|---|---|
+| `profile_version` | `2` |
+| Fields 15, 16, 17 | `document_id` (16 bytes), `document_version_id` (16 bytes), `manifest_digest` (32 bytes), all required, in this order after field 14 |
+| Strictness | Same as profile 1; a profile-1 context must not carry fields 15 to 17, and a profile-2 context must carry all of them |
+| HPKE info, signing input, digest | As in profile 1, over the profile-2 context bytes |
+| Manifest | `fga.manifest/v1` strict JSON core; digest = SHA-256(`"fga.manifest/v1"` ‖ `0x00` ‖ core); detached JWS of type `fga-manifest+jws` |
+| Unit descriptor | `fga.unit-descriptor/v1` strict JSON; detached JWS of type `fga-unit-descriptor+jws` |
+
+Frozen examples: a profile-2 golden encoding and negative examples for missing, partial and profile-1-with-document fields are added to the `internal/cryptowire` tests with the implementation.
