@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"fga/internal/content"
+	"fga/internal/decisionsvc"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 )
 
 // objectLabel reads an object's stored label and metadata revision.
@@ -315,5 +317,41 @@ func TestUnitAndDerivedLabels(t *testing.T) {
 	}
 	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "chat", "", col.Intent.Units[0].Unit, "confidential"); !errors.Is(err, content.ErrInvalid) {
 		t.Fatalf("labelling a text entry: %v", err)
+	}
+}
+
+// TestConcurrentRaiseKeepsRelabel is the regression test of review v3
+// finding F01: a change was classified as a raise (label) from the label
+// read before its decision, and a raise committed in between let it lower
+// the label without relabel or its approval. The commit now requires the
+// label it was classified against.
+func TestConcurrentRaiseKeepsRelabel(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	raised := false
+	st.BeforeDecide = func(req decisionsvc.Request) {
+		if req.Operation == registry.OpLabel && !raised {
+			raised = true
+			if _, err := st.Content.SetLabel(ctx, alice.Caller, "reports", "doc", "restricted"); err != nil {
+				t.Errorf("the concurrent raise: %v", err)
+			}
+		}
+	}
+	if _, err := st.Content.SetLabel(ctx, alice.Caller, "reports", "doc", "confidential"); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("a raise classified before a concurrent raise to restricted: %v", err)
+	}
+	st.BeforeDecide = nil
+	if label, _ := objectLabel(t, st, "doc"); label != "restricted" {
+		t.Fatalf("the label is %s, want restricted", label)
+	}
+	// A fresh request to the same label is a lowering and needs approval.
+	_, err := st.Content.SetLabel(ctx, alice.Caller, "reports", "doc", "confidential")
+	var need *content.ApprovalRequired
+	if !errors.As(err, &need) {
+		t.Fatalf("a fresh lowering: %v", err)
 	}
 }

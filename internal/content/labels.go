@@ -156,7 +156,7 @@ func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label s
 	if len(label) > 64 {
 		return LabelOutcome{}, ErrInvalid
 	}
-	_, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
+	orderGen, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
 	if errors.Is(err, catalog.ErrNoLabelOrder) {
 		return LabelOutcome{}, fmt.Errorf("%w: no label order is active", ErrInvalid)
 	}
@@ -184,6 +184,18 @@ func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label s
 	err = s.fenced(ctx, rec, []string{t.id}, func(ctx context.Context, tx pgx.Tx) error {
 		if err := s.labelOrderHolds(ctx, tx, rec, label, t.bucket.ID); err != nil {
 			return err
+		}
+		// The change was classified as label or relabel from the label and
+		// the order read before the decision; both must still hold, or a
+		// raise in between would let a lowering pass as label (review v3
+		// F01). The fence holds the resource row for update.
+		var current string
+		if err := tx.QueryRow(ctx, `SELECT coalesce(attributes->>'label', '') FROM resources WHERE tenant = $1 AND id = $2`,
+			c.Tenant, t.id).Scan(&current); err != nil {
+			return err
+		}
+		if current != previous || orderGen != rec.Context.LabelOrderGeneration {
+			return fmt.Errorf("%w: the label changed since the request was classified", ErrConflict)
 		}
 		if label == previous {
 			return nil
