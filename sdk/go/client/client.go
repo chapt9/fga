@@ -32,6 +32,26 @@ type Error struct {
 
 func (e *Error) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Code) }
 
+// ErrIdentity means the endpoint returned a correctly signed package of
+// something other than what was requested (review finding 8). No
+// plaintext is released.
+var ErrIdentity = errors.New("fga: the package is not the requested version")
+
+// checkVersion compares a package's signed descriptor with the version the
+// package claims and the version that was requested ("" for the current
+// one). The descriptor's signature is verified on the same bytes before
+// any plaintext is released.
+func checkVersion(descriptor []byte, claimed, requested string) error {
+	d, err := cryptowire.ParseDescriptor(descriptor)
+	if err != nil {
+		return err
+	}
+	if d.LogicalVersionID != claimed || requested != "" && d.LogicalVersionID != requested {
+		return ErrIdentity
+	}
+	return nil
+}
+
 // ApprovalRequired is returned when the storage role answers 202: the
 // operation needs an approval. Repeat it with Client.Approval set to ID
 // once an approver has approved it. For a put, the upload is kept and only
@@ -275,6 +295,9 @@ func (c *Client) Get(ctx context.Context, bucket, key, version string, dst io.Wr
 	if err != nil {
 		return VersionInfo{}, err
 	}
+	if err := checkVersion(p.Descriptor, p.Version.Version, version); err != nil {
+		return VersionInfo{}, err
+	}
 	resp, err := c.do(ctx, http.MethodGet, objectURL(c.StorageURL, bucket, "/ciphertext", key, p.Version.Version, nil), c.StorageToken, nil, -1, nil, nil)
 	if err != nil {
 		return VersionInfo{}, err
@@ -417,6 +440,9 @@ func (c *Client) Delete(ctx context.Context, bucket, key, version string) error 
 func (c *Client) Share(ctx context.Context, bucket, key, version string, target crypto.Recipient, generation uint64) (string, error) {
 	p, err := c.pkg(ctx, bucket, key, version)
 	if err != nil {
+		return "", err
+	}
+	if err := checkVersion(p.Descriptor, p.Version.Version, version); err != nil {
 		return "", err
 	}
 	env, err := crypto.Reshare(crypto.Package{Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,

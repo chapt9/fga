@@ -204,6 +204,15 @@ func (c *Client) GetOriginal(ctx context.Context, bucket, key, version string, d
 	if err != nil || n != p.Version.CiphertextLength {
 		return fmt.Errorf("fga: incomplete original transfer: %v", err)
 	}
+	// The envelope names the document version the original belongs to; it
+	// must be the requested one (review finding 8).
+	ectx, err := cryptowire.ParseEnvelopeContext(p.Envelope.Context)
+	if err != nil {
+		return err
+	}
+	if err := checkVersion(p.Descriptor, p.Version.Version, ""); err != nil || version != "" && ectx.DocumentVersion.String() != version {
+		return ErrIdentity
+	}
 	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
 	_, err = crypto.DecryptOriginal(dst, tmp, crypto.Package{Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
 		Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
@@ -260,31 +269,46 @@ func (c *Client) Units(ctx context.Context, bucket, key, version string) ([]Unit
 // verified plaintext to dst (crypto.DecryptUnit), withdrawing trust from a
 // signer the keys role reports as compromised.
 func (c *Client) GetUnit(ctx context.Context, bucket, key, version, unit string, dst io.Writer) error {
+	_, err := c.getUnit(ctx, bucket, key, version, unit, dst)
+	return err
+}
+
+// getUnit is GetUnit; it returns the unit's signed document version. The
+// signed unit and unit version, and the document version when one was
+// requested, must be what was asked for (review finding 8).
+func (c *Client) getUnit(ctx context.Context, bucket, key, version, unit string, dst io.Writer) (string, error) {
 	var p struct {
 		Unit     UnitEntry    `json:"unit"`
 		Envelope envelopeJSON `json:"envelope"`
 	}
 	extra := url.Values{"unit": {unit}, "recipient": {c.Recipient.Fingerprint().String()}}
 	if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/package", key, version, extra), c.StorageToken, nil, -1, nil, &p); err != nil {
-		return err
+		return "", err
 	}
-	resp, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/ciphertext", key, version, url.Values{"unit": {unit}}),
+	d, err := cryptowire.ParseUnitDescriptor(p.Unit.Descriptor)
+	if err != nil {
+		return "", err
+	}
+	if d.UnitID != unit || d.UnitVersionID != p.Unit.UnitVersion || version != "" && d.DocumentVersionID != version {
+		return "", ErrIdentity
+	}
+	resp, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/ciphertext", key, d.DocumentVersionID, url.Values{"unit": {unit}}),
 		c.StorageToken, nil, -1, nil, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	var ct bytes.Buffer
 	n, err := io.Copy(&ct, io.LimitReader(resp.Body, p.Unit.CiphertextLength+1))
 	if err != nil || n != p.Unit.CiphertextLength {
-		return fmt.Errorf("fga: incomplete unit transfer: %v", err)
+		return "", fmt.Errorf("fga: incomplete unit transfer: %v", err)
 	}
 	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
 	_, err = crypto.DecryptUnit(dst, bytes.NewReader(ct.Bytes()), crypto.UnitPackage{Descriptor: p.Unit.Descriptor,
 		DescriptorSignature: p.Unit.DescriptorSignature,
 		Envelope:            crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
 		c.Recipient, trust)
-	return err
+	return d.DocumentVersionID, err
 }
 
 // GetDocument writes every unit of a document version the caller may
@@ -296,11 +320,15 @@ func (c *Client) GetDocument(ctx context.Context, bucket, key, version string, d
 	if err != nil {
 		return 0, err
 	}
+	// Every unit must come from one document version: the requested one,
+	// or the version the first unit names.
 	for i, u := range units {
 		var plain bytes.Buffer
-		if err := c.GetUnit(ctx, bucket, key, version, u.Unit, &plain); err != nil {
+		dv, err := c.getUnit(ctx, bucket, key, version, u.Unit, &plain)
+		if err != nil {
 			return i, err
 		}
+		version = dv
 		if i > 0 {
 			if _, err := io.WriteString(dst, "\n\n"); err != nil {
 				return i, err
