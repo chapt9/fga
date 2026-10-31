@@ -86,6 +86,23 @@ type (
 		ManifestSignature string          `json:"manifest_signature"`
 		Units             []unitFinalBody `json:"units"`
 	}
+	selectBody struct {
+		Units []string `json:"unit_ids"`
+	}
+	unitsBody struct {
+		Units []content.UnitEntry `json:"units"`
+	}
+	manifestBody struct {
+		Manifest          []byte `json:"manifest"`
+		ManifestSignature string `json:"manifest_signature"`
+	}
+	unitPackageBody struct {
+		Unit             content.UnitEntry    `json:"unit"`
+		EnvelopeID       string               `json:"envelope_id"`
+		Envelope         httpapi.EnvelopeBody `json:"envelope"`
+		Receipt          []byte               `json:"receipt"`
+		ReceiptSignature string               `json:"receipt_signature"`
+	}
 	approvalsBody struct {
 		Approvals []content.ApprovalView `json:"approvals"`
 		Next      string                 `json:"next,omitempty"`
@@ -261,15 +278,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		defer s.Close()
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Length", strconv.FormatInt(s.Version.CiphertextLength, 10))
-		w.Header().Set("Fga-Version-Id", s.Version.Version)
-		w.Header().Set("Fga-Ciphertext-Sha256", s.Version.CiphertextSHA256)
-		w.WriteHeader(http.StatusOK)
-		if n, err := io.Copy(w, s); err != nil || n != s.Version.CiphertextLength {
-			// Abort rather than complete a shorter body (CNT-009).
-			panic(http.ErrAbortHandler)
-		}
+		streamBody(w, r, s)
 	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/objects", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		q := r.URL.Query()
@@ -399,5 +408,104 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		httpapi.WriteJSON(w, http.StatusOK, p)
 	}))
+	document := func(r *http.Request) (bucket, key, version string, ok bool) {
+		q := r.URL.Query()
+		if len(q["key"]) != 1 || len(q["version"]) > 1 || !content.ValidKey(q.Get("key")) || r.Header.Get("Range") != "" {
+			return "", "", "", false
+		}
+		return r.PathValue("bucket"), q.Get("key"), q.Get("version"), true
+	}
+	mux.HandleFunc("POST /v1/buckets/{bucket}/document/units/select", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		var body selectBody
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		units, err := svc.SelectUnits(r.Context(), c, b, k, v, body.Units)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, unitsBody{Units: units})
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/units", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if r.URL.Query().Get("limit") == "" {
+			limit, err = 0, nil
+		}
+		if !ok || err != nil {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		page, err := svc.ListUnits(r.Context(), c, b, k, v, limit, r.URL.Query().Get("continuation"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, page)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/manifest", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		m, sig, err := svc.Manifest(r.Context(), c, b, k, v)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, manifestBody{Manifest: m, ManifestSignature: sig})
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/unit/package", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		q := r.URL.Query()
+		if !ok || len(q["unit"]) != 1 || len(q["recipient"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		p, err := svc.UnitPackage(r.Context(), c, b, k, v, q.Get("unit"), q.Get("recipient"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, unitPackageBody{Unit: p.Unit, EnvelopeID: p.Envelope.EnvelopeID,
+			Envelope: httpapi.EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature},
+			Receipt:  p.Envelope.Receipt, ReceiptSignature: p.Envelope.ReceiptSignature})
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/unit/ciphertext", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		q := r.URL.Query()
+		if !ok || len(q["unit"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadUnitCiphertext(r.Context(), c, b, k, v, q.Get("unit"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		streamBody(w, r, st)
+	}))
 	return mux
+}
+
+// streamBody writes an admitted ciphertext stream. A stream that ends
+// early or fails aborts the response rather than completing a shorter
+// body (CNT-009).
+func streamBody(w http.ResponseWriter, _ *http.Request, s *content.Stream) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(s.Version.CiphertextLength, 10))
+	w.Header().Set("Fga-Version-Id", s.Version.Version)
+	w.Header().Set("Fga-Ciphertext-Sha256", s.Version.CiphertextSHA256)
+	w.WriteHeader(http.StatusOK)
+	if n, err := io.Copy(w, s); err != nil || n != s.Version.CiphertextLength {
+		panic(http.ErrAbortHandler)
+	}
 }

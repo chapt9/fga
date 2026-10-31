@@ -109,3 +109,15 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 **Client.** `crypto.SplitText` normalizes to NFC and splits at blank lines (`fga.text/nfc-paragraphs-v1`, at most 64 MiB and 1,000 units). Each unit is encrypted with its own keyset (`crypto.EncryptUnit`). `crypto.SealDocument` signs the manifest, the descriptors and the envelopes. `crypto.DecryptUnit` verifies one unit from its descriptor without the manifest. `client.PutDocument` and `fga put-document` run the whole flow.
 
 **API.** `POST /v1/buckets/{bucket}/documents` (begin), then `PUT /v1/uploads/{unit intent}/ciphertext` per new unit, then `POST /v1/document-uploads/{intent}/finalize`. The finalize body may be up to 48 MiB.
+
+## Implementation (step 4: disclosure of units)
+
+| Route | Operation and checks | Result |
+|---|---|---|
+| `POST /v1/buckets/{b}/document/units/select?key=&version=` with `unit_ids` (at most 100, distinct) | `document.select-units`: `read-units` on the version and `read` on every named unit, in batches | All named units, or `404` if any is absent or denied, with no hint which (V-054) |
+| `GET /v1/buckets/{b}/document/units?key=&version=&limit=&continuation=` | Per batch of members the same operation; on a denial, one decision per unit | Permitted units in document order. The continuation is sealed and bound to the caller, its identity revision and the document version; no positions or totals (V-055, V-070) |
+| `GET …/document/manifest` | `document.manifest`: `read-units` and `read` on every unit | The signed manifest, only if every unit may be disclosed |
+| `GET …/document/unit/package?unit=&recipient=` | `document.unit.read` (`read-units`, `read`), then for the keys role `document.unit.get-envelope`: those two, the envelope's `release`, and the recipient's `read-units`, `read` and `receive-key` | The unit's descriptor for this document version and the recipient's existing envelope with a delivery receipt. The keys role delivers a unit envelope only for this operation, bound to the envelope's document version, unit, version and recipient, and only while unit and document version are LIVE |
+| `GET …/document/unit/ciphertext?unit=` | `document.unit.read`, single use, admitted under the fence with a read lease | The unit's exact ciphertext |
+
+Entries carry the unit ID, unit version, ciphertext length and signed descriptor, never a position. `client.GetDocument` and `fga get-document` fetch the permitted units and verify each with `crypto.DecryptUnit`. A document key is never served by the object routes.

@@ -164,6 +164,54 @@ paths:
                   generation: { type: integer }
                   units: { type: integer }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/units/select:
+    post:
+      operationId: selectUnits
+      description: Explicit unit selection; all named units or a generic NOT_FOUND.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [unit_ids], properties: { unit_ids: { type: array, minItems: 1, maxItems: 100, items: { type: string, format: uuid } } } }
+      responses:
+        "200": { description: Units, content: { application/json: { schema: { $ref: "#/components/schemas/UnitPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/units:
+    get:
+      operationId: listUnits
+      description: Authorized subset in document order; no positions or totals.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { $ref: "#/components/parameters/limit" }, { $ref: "#/components/parameters/continuation" }]
+      responses:
+        "200": { description: Page, content: { application/json: { schema: { $ref: "#/components/schemas/UnitPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/manifest:
+    get:
+      operationId: getManifest
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200":
+          description: The signed manifest, only when every unit may be disclosed
+          content: { application/json: { schema: { type: object, properties: { manifest: { $ref: "#/components/schemas/Base64" }, manifest_signature: { type: string } } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/unit/package:
+    get:
+      operationId: getUnitPackage
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { name: unit, in: query, required: true, schema: { type: string, format: uuid } },
+                   { name: recipient, in: query, required: true, schema: { $ref: "#/components/schemas/Digest" } }]
+      responses:
+        "200": { description: Descriptor and the recipient's envelope with a receipt, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/unit/ciphertext:
+    get:
+      operationId: getUnitCiphertext
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { name: unit, in: query, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: The unit's exact ciphertext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/approvals:
     get:
       operationId: listApprovals
@@ -507,3 +555,17 @@ components:
       properties:
         approvals: { type: array, items: { $ref: "#/components/schemas/Approval" } }
         next: { type: string }
+    UnitPage:
+      type: object
+      properties:
+        units:
+          type: array
+          items:
+            type: object
+            properties:
+              unit_id: { type: string, format: uuid }
+              unit_version_id: { type: string, format: uuid }
+              ciphertext_length: { type: integer }
+              descriptor: { $ref: "#/components/schemas/Base64" }
+              descriptor_signature: { type: string }
+        continuation: { type: string }

@@ -161,13 +161,16 @@ type stored struct {
 	Signer     string
 	Digest     string
 	Status     string
+	// DocumentVersion is set for a unit envelope (profile 2).
+	DocumentVersion *cryptowire.UUID
 }
 
 func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string, id cryptowire.UUID, lock string) (stored, error) {
 	var e stored
-	err := q.QueryRow(ctx, `SELECT id, object, version, recipient, generation, context, ciphertext, signature, signer, digest, status
+	err := q.QueryRow(ctx, `SELECT id, object, version, recipient, generation, context, ciphertext, signature, signer, digest, status, document_version
 	                          FROM envelopes WHERE tenant = $1 AND id = $2 `+lock, tenant, id).
-		Scan(&e.ID, &e.Object, &e.Version, &e.Recipient, &e.Generation, &e.Context, &e.Ciphertext, &e.Signature, &e.Signer, &e.Digest, &e.Status)
+		Scan(&e.ID, &e.Object, &e.Version, &e.Recipient, &e.Generation, &e.Context, &e.Ciphertext, &e.Signature, &e.Signer, &e.Digest, &e.Status,
+			&e.DocumentVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, ErrNotFound
 	}
@@ -184,7 +187,8 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // envelope (RCP-005, KEY-015).
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
-	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld) || !s.exactly(rec) {
+	unit := rec.Operation == registry.OpDocGetUnitEnvelope
+	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit) || !s.exactly(rec) {
 		return Delivered{}, ErrDecision
 	}
 	id, err := cryptowire.ParseUUID(envelopeID)
@@ -195,14 +199,24 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	if err != nil {
 		return Delivered{}, err
 	}
+	// A unit envelope is delivered only for the unit operation, bound to
+	// its document version, and an object envelope only for the object
+	// operations.
+	if unit != (e.DocumentVersion != nil) {
+		return Delivered{}, ErrDecision
+	}
 	for _, c := range rec.Checks {
 		var ok bool
+		holder := c.Kind == string(registry.KindOperation) || c.PrincipalBinding == e.Recipient
 		switch c.ResourceType + " " + c.Action {
 		case "crypto.envelope release":
 			ok = c.ResourceID == e.ID.String() && c.Version == e.Version.String()
 		case "storage.object read", "storage.object read-history":
-			ok = c.ResourceID == e.Object.String() && c.Version == e.Version.String() &&
-				(c.Kind == string(registry.KindOperation) || c.PrincipalBinding == e.Recipient)
+			ok = !unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
+		case "document.text_unit read":
+			ok = unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
+		case "document.version read-units":
+			ok = unit && c.ResourceID == e.DocumentVersion.String() && holder
 		case "crypto.recipient receive-key":
 			ok = c.ResourceID == e.Recipient && c.PrincipalBinding == e.Recipient
 		}
@@ -227,6 +241,15 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 		}
 		if state != "LIVE" || locked.Status != "ACTIVE" {
 			return ErrNotFound
+		}
+		if e.DocumentVersion != nil {
+			if err := tx.QueryRow(ctx, `SELECT state FROM document_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,
+				rec.Tenant, *e.DocumentVersion).Scan(&state); err != nil {
+				return err
+			}
+			if state != "LIVE" {
+				return ErrNotFound
+			}
 		}
 		if err := tx.QueryRow(ctx, `SELECT t.id, k.principal FROM tenants t, recipient_keys k
 		                             WHERE t.name = $1 AND k.tenant = $1 AND k.fingerprint = $2`, rec.Tenant, e.Recipient).

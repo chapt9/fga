@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -120,4 +122,106 @@ func (c *Client) PutDocument(ctx context.Context, bucket, key string, text []byt
 	_, err = c.do(ctx, http.MethodPost, c.StorageURL+"/v1/document-uploads/"+url.PathEscape(in.IntentID)+"/finalize", c.StorageToken, body, n,
 		map[string]string{"Content-Type": "application/json"}, &out)
 	return out, err
+}
+
+// UnitEntry is a disclosed unit's identity and signed descriptor.
+type UnitEntry struct {
+	Unit                string `json:"unit_id"`
+	UnitVersion         string `json:"unit_version_id"`
+	CiphertextLength    int64  `json:"ciphertext_length"`
+	Descriptor          []byte `json:"descriptor"`
+	DescriptorSignature string `json:"descriptor_signature"`
+}
+
+func documentURL(base, bucket, path, key, version string, extra url.Values) string {
+	q := url.Values{"key": {key}}
+	if version != "" {
+		q.Set("version", version)
+	}
+	for k, v := range extra {
+		q[k] = v
+	}
+	return base + "/v1/buckets/" + url.PathEscape(bucket) + "/document" + path + "?" + q.Encode()
+}
+
+// Units lists the units of a document version the caller may read, in
+// document order: an authorized subset without hidden IDs or counts.
+func (c *Client) Units(ctx context.Context, bucket, key, version string) ([]UnitEntry, error) {
+	var all []UnitEntry
+	cont := ""
+	for {
+		extra := url.Values{"limit": {"100"}}
+		if cont != "" {
+			extra.Set("continuation", cont)
+		}
+		var page struct {
+			Units        []UnitEntry `json:"units"`
+			Continuation string      `json:"continuation"`
+		}
+		if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/units", key, version, extra), c.StorageToken, nil, -1, nil, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Units...)
+		if page.Continuation == "" {
+			return all, nil
+		}
+		cont = page.Continuation
+	}
+}
+
+// GetUnit fetches one unit's package and ciphertext and writes its
+// verified plaintext to dst (crypto.DecryptUnit), withdrawing trust from a
+// signer the keys role reports as compromised.
+func (c *Client) GetUnit(ctx context.Context, bucket, key, version, unit string, dst io.Writer) error {
+	var p struct {
+		Unit     UnitEntry    `json:"unit"`
+		Envelope envelopeJSON `json:"envelope"`
+	}
+	extra := url.Values{"unit": {unit}, "recipient": {c.Recipient.Fingerprint().String()}}
+	if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/package", key, version, extra), c.StorageToken, nil, -1, nil, &p); err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/ciphertext", key, version, url.Values{"unit": {unit}}),
+		c.StorageToken, nil, -1, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var ct bytes.Buffer
+	n, err := io.Copy(&ct, io.LimitReader(resp.Body, p.Unit.CiphertextLength+1))
+	if err != nil || n != p.Unit.CiphertextLength {
+		return fmt.Errorf("fga: incomplete unit transfer: %v", err)
+	}
+	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
+	_, err = crypto.DecryptUnit(dst, bytes.NewReader(ct.Bytes()), crypto.UnitPackage{Descriptor: p.Unit.Descriptor,
+		DescriptorSignature: p.Unit.DescriptorSignature,
+		Envelope:            crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
+		c.Recipient, trust)
+	return err
+}
+
+// GetDocument writes every unit of a document version the caller may
+// read, in document order, separated by blank lines. Units it may not read
+// are left out without a trace, so the result is complete only for a
+// caller who may read every unit.
+func (c *Client) GetDocument(ctx context.Context, bucket, key, version string, dst io.Writer) (int, error) {
+	units, err := c.Units(ctx, bucket, key, version)
+	if err != nil {
+		return 0, err
+	}
+	for i, u := range units {
+		var plain bytes.Buffer
+		if err := c.GetUnit(ctx, bucket, key, version, u.Unit, &plain); err != nil {
+			return i, err
+		}
+		if i > 0 {
+			if _, err := io.WriteString(dst, "\n\n"); err != nil {
+				return i, err
+			}
+		}
+		if _, err := dst.Write(plain.Bytes()); err != nil {
+			return i, err
+		}
+	}
+	return len(units), nil
 }

@@ -37,6 +37,7 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Decide an approval | `POST /v1/approvals/{id}` | Single-use `approve` decision on the target, under the fence; never by the requester or acting agent |
 | Begin a document | `POST /v1/buckets/{bucket}/documents` | New key: bucket `create-object` (`document.begin-create`); existing document: `new-version` (`document.begin-version`). Returns one unit intent per new unit (documents.md) |
 | Finalize a document | `POST /v1/document-uploads/{intent}/finalize` | The batches of documents.md (`document.publish-*`, `document.label-units`, `document.reuse-units`, `document.share-version`, `document.share-units`), admitted together by the fence; body up to 48 MiB |
+| Disclose units | `POST …/document/units/select`, `GET …/document/units`, `GET …/document/manifest`, `GET …/document/unit/package`, `GET …/document/unit/ciphertext` | See documents.md, "Implementation (step 4)" |
 | Share | `POST /v1/envelopes` | `PublishRecipientEnvelope`: publisher `share`, envelope `create`, recipient `read`, `receive-key` |
 | Retire envelope | `DELETE /v1/envelopes/{id}` | envelope `retire` |
 

@@ -119,6 +119,10 @@ UNITS=$(psql "$URL" -tAc "SELECT count(*) FROM document_units u JOIN document_ve
 ENVS=$(psql "$URL" -tAc "SELECT count(*) FROM envelopes WHERE document_version IS NOT NULL")
 [ "$UNITS" = 3 ] && [ "$ENVS" = 6 ] || { echo "SMOKE FAILED: $UNITS units, $ENVS unit envelopes"; exit 1; }
 echo "document published: $UNITS units, $ENVS unit envelopes"
+printf 'First paragraph.\n\nSecond paragraph, with a line\nbreak.\n\nThird paragraph.' > notes.expected
+as alice; check $B/fga get-document -bucket reports -key q3/notes.md -out alice-notes.txt; check cmp notes.expected alice-notes.txt
+as bob;   check $B/fga get-document -bucket reports -key q3/notes.md -out bob-notes.txt; check cmp notes.expected bob-notes.txt
+echo "document read back by both recipients, unit by unit"
 as bob; if $B/fga get -bucket reports -key q3/notes.md -out x.out 2>err.txt; then echo "UNEXPECTED: a document read through the object API"; exit 1; fi
 echo "object API on a document key: $(cat err.txt)"
 

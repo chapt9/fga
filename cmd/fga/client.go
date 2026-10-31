@@ -43,6 +43,7 @@ import (
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
 //	fga put-document   -bucket B -key K -in FILE [-to FP,...]   UTF-8 text, one unit per paragraph
 //	fga get            -bucket B -key K -out FILE [-version V]
+//	fga get-document   -bucket B -key K -out FILE [-version V]   the units the caller may read
 //	fga ls             -bucket B [-prefix P]
 //	fga rm             -bucket B -key K [-version V] [-approval A]
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
@@ -352,6 +353,22 @@ func clientCommand(cmd string, args []string) error {
 		}
 		fmt.Printf("published document %s version %s: %d units, manifest %s\n", *key, p.DocumentVersion, p.Units, p.ManifestDigest)
 		return nil
+	case "get-document":
+		tmp := *out + ".partial"
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		n, err := c.GetDocument(ctx, *bucket, *key, *version, f)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		fmt.Printf("verified and decrypted %d permitted units\n", n)
+		return os.Rename(tmp, *out)
 	case "finalize":
 		body, err := os.ReadFile(*request)
 		if err != nil {

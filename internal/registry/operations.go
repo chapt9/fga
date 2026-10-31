@@ -54,6 +54,13 @@ const (
 	OpDocShareVersion   = "document.share-version"
 	OpDocShareUnits     = "document.share-units"
 	OpDocDiscover       = "document.version.discover"
+	// Disclosure (DOC-006, DOC-007, DSC-001): selecting units, reading a
+	// unit's ciphertext, the full manifest, and a unit's envelope from the
+	// keys role.
+	OpDocSelectUnits     = "document.select-units"
+	OpDocReadUnit        = "document.unit.read"
+	OpDocManifest        = "document.manifest"
+	OpDocGetUnitEnvelope = "document.unit.get-envelope"
 )
 
 // Check roles shared by several operations.
@@ -71,6 +78,9 @@ const (
 	RoleDocument      = "document"
 	RoleVersion       = "version"
 	RoleUnit          = "unit"
+	// RoleRecipientVersion is the recipient's read-units on a document
+	// version.
+	RoleRecipientVersion = "recipient-version"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -155,6 +165,26 @@ func r1Operations() []Operation {
 			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},
 		}},
 		one(OpDocDiscover, RoleVersion, "document.version", "discover"),
+		{Name: OpDocSelectUnits, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true},
+		}},
+		{Name: OpDocReadUnit, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"},
+		}},
+		{Name: OpDocManifest, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true},
+		}},
+		{Name: OpDocGetUnitEnvelope, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
+			{Role: RoleRecipientVersion, ResourceType: "document.version", Action: "read-units", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientRead, ResourceType: "document.text_unit", Action: "read", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
+		}},
 	}
 }
 
