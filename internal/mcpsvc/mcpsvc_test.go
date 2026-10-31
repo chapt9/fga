@@ -7,9 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -21,13 +19,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"fga/internal/admission"
 	"fga/internal/content"
 	"fga/internal/decisionsvc"
-	"fga/internal/httpapi"
 	"fga/internal/mcpsvc"
+	"fga/internal/mcptest"
 	"fga/internal/mcpwire"
-	"fga/internal/nativeapi"
 	"fga/internal/r1test"
 	"fga/internal/registry"
 	"fga/sdk/go/crypto"
@@ -35,125 +31,18 @@ import (
 
 var ctx = context.Background()
 
-// deployment is a decision role and a storage role over HTTP, as in
-// production, and the MCP role calling both as its workload (mcp-1).
-type deployment struct {
-	st      *r1test.Stack
-	storage *httptest.Server
-	mcp     *httptest.Server
-}
+func deploy(t *testing.T) *mcptest.Deployment { return mcptest.Deploy(t, mcpsvc.DefaultLimits, nil) }
 
-func deploy(t *testing.T) *deployment { return deployWith(t, mcpsvc.DefaultLimits, nil) }
-
-// deployWith deploys with limits; beforeDecision, if set, runs in the
-// MCP role's goroutine before each of its decision requests is sent.
-func deployWith(t *testing.T, limits mcpsvc.Limits, beforeDecision func(body string)) *deployment {
+// connect opens a session for user: a generic MCP client, or with a
+// recipient fingerprint one that declares the encrypted-package
+// capability.
+func connect(t *testing.T, d *mcptest.Deployment, user, recipient string) *mcp.ClientSession {
 	t.Helper()
-	st := r1test.New(t)
-	workloadOf := func(r *http.Request) (string, error) { return r.Header.Get("X-Test-Workload"), nil }
-	decision := httptest.NewServer(st.Decisions.Handler(workloadOf))
-	t.Cleanup(decision.Close)
-	gw := &httpapi.Gateway{AdapterOf: workloadOf, Adapters: map[string]bool{r1test.MCPAdapter: true}, Operation: registry.OpMCPInvoke,
-		Verifier: st.Verifier(content.Audience)}
-	storage := httptest.NewServer(nativeapi.StorageWith(st.Content, st.Tokens, func() bool { return true },
-		admission.New(admission.DefaultLimits), gw))
-	t.Cleanup(storage.Close)
-	asMCP := &http.Client{Transport: workload{r1test.MCPAdapter}}
-	toDecision := asMCP
-	if beforeDecision != nil {
-		toDecision = &http.Client{Transport: hooked{workload{r1test.MCPAdapter}, beforeDecision}}
-	}
-	svc, err := mcpsvc.New(mcpsvc.Deps{Tokens: st.Tokens, Audience: r1test.MCPAudience, StorageAudience: content.Audience,
-		Decision: mcpsvc.Peer{URL: decision.URL, HTTP: toDecision}, Storage: mcpsvc.Peer{URL: storage.URL, HTTP: asMCP},
-		Buckets: []string{"vault", "other"}, Limits: limits, Logger: slog.New(slog.DiscardHandler)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(svc.Handler())
-	t.Cleanup(srv.Close)
-	return &deployment{st: st, storage: storage, mcp: srv}
-}
-
-type workload struct{ name string }
-
-func (w workload) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("X-Test-Workload", w.name)
-	return http.DefaultTransport.RoundTrip(r)
-}
-
-// hooked runs before on each request's body, then sends it.
-type hooked struct {
-	next   http.RoundTripper
-	before func(body string)
-}
-
-func (h hooked) RoundTrip(r *http.Request) (*http.Response, error) {
-	b, _ := io.ReadAll(r.Body)
-	h.before(string(b))
-	r = r.Clone(r.Context())
-	r.Body = io.NopCloser(bytes.NewReader(b))
-	return h.next.RoundTrip(r)
-}
-
-type bearer struct{ token string }
-
-func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer "+b.token)
-	return http.DefaultTransport.RoundTrip(r)
-}
-
-// mcpToken issues a user's token for the MCP role.
-func (d *deployment) mcpToken(t *testing.T, user string) string {
-	t.Helper()
-	tok, err := d.st.Issuer.Issue(user, r1test.Tenant, r1test.MCPAudience, 30*time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tok
-}
-
-// connect opens an MCP session for user, as a generic MCP client.
-func (d *deployment) connect(t *testing.T, user string) *mcp.ClientSession {
-	t.Helper()
-	s, err := d.tryConnect(t, user)
+	s, err := d.Connect(t, user, recipient)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
-}
-
-func (d *deployment) tryConnect(t *testing.T, user string) (*mcp.ClientSession, error) {
-	t.Helper()
-	return d.tryConnectWith(t, user, "")
-}
-
-// connectWith opens a session for user whose client declares the
-// encrypted-package capability with the recipient key fingerprint.
-func (d *deployment) connectWith(t *testing.T, user, recipient string) *mcp.ClientSession {
-	t.Helper()
-	s, err := d.tryConnectWith(t, user, recipient)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-func (d *deployment) tryConnectWith(t *testing.T, user, recipient string) (*mcp.ClientSession, error) {
-	t.Helper()
-	var opts *mcp.ClientOptions
-	if recipient != "" {
-		opts = &mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{
-			Experimental: mcpwire.ClientCapability{Version: mcpwire.Version, Recipient: recipient}.Experimental()}}
-	}
-	c := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, opts)
-	s, err := c.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: d.mcp.URL + "/mcp",
-		HTTPClient: &http.Client{Transport: bearer{d.mcpToken(t, user)}}, MaxRetries: -1}, nil)
-	if err == nil {
-		t.Cleanup(func() { s.Close() })
-	}
-	return s, err
 }
 
 func toolNames(t *testing.T, s *mcp.ClientSession) []string {
@@ -218,9 +107,9 @@ func resourceNotFound(err error) bool {
 
 // nativeUnit reads a unit's plaintext over the native API with the user's
 // own storage token, as any client does.
-func (d *deployment) nativeUnit(t *testing.T, c *r1test.Client, bucket, key, unit string) string {
+func nativeUnit(t *testing.T, d *mcptest.Deployment, c *r1test.Client, bucket, key, unit string) string {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodGet, d.storage.URL+"/v1/buckets/"+bucket+"/document/unit/content?"+
+	req, _ := http.NewRequest(http.MethodGet, d.Storage.URL+"/v1/buckets/"+bucket+"/document/unit/content?"+
 		url.Values{"key": {key}, "unit": {unit}}.Encode(), nil)
 	req.Header.Set("Authorization", "Bearer "+c.Caller.Token)
 	resp, err := http.DefaultClient.Do(req)
@@ -259,7 +148,7 @@ const notes = "First paragraph.\n\nSecond paragraph, restricted later.\n\nThird 
 // (V-002, V-050).
 func TestMCPReads(t *testing.T) {
 	d := deploy(t)
-	st := d.st
+	st := d.St
 	st.ModeBucket("vault", "p1", "internal", "server")
 	alice := st.Client("alice", []string{"member"}, "p1")
 	bob := st.Client("bob", []string{"member"}, "p1")
@@ -276,7 +165,7 @@ func TestMCPReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	units := unitIDs(t, st, alice, "vault", "q3/notes.md")
-	s := d.connect(t, "bob")
+	s := connect(t, d, "bob", "")
 
 	// Before the tenant enables MCP there are no tools and no reads.
 	if names := toolNames(t, s); len(names) != 0 {
@@ -319,7 +208,7 @@ func TestMCPReads(t *testing.T) {
 		!strings.Contains(err.Error(), "not found") {
 		t.Fatalf("bob selects the restricted unit: %v", err)
 	}
-	a := d.connect(t, "alice")
+	a := connect(t, d, "alice", "")
 	if text, err := call(a, mcpsvc.ToolReadDocument, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, nil); err != nil ||
 		!strings.Contains(text, "Second paragraph") {
 		t.Fatalf("the owner's read: %q %v", text, err)
@@ -342,7 +231,7 @@ func TestMCPReads(t *testing.T) {
 		seen = nil
 		return r
 	}
-	native := d.nativeUnit(t, bob, "vault", "q3/notes.md", units[2])
+	native := nativeUnit(t, d, bob, "vault", "q3/notes.md", units[2])
 	nativeDecision := last()
 	viaResource, err := readResource(s, "fga://vault/q3/notes.md?unit="+units[2])
 	resourceDecision := last()
@@ -415,7 +304,7 @@ func TestMCPReads(t *testing.T) {
 // p1; a user without the tool permissions sees no tools and calls none.
 func TestMCPNoPermissionFromTools(t *testing.T) {
 	d := deploy(t)
-	st := d.st
+	st := d.St
 	st.ModeBucket("vault", "p1", "internal", "server")
 	alice := st.Client("alice", []string{"member"}, "p1")
 	st.Client("carol", []string{"member"}, "p2")
@@ -427,7 +316,7 @@ func TestMCPNoPermissionFromTools(t *testing.T) {
 	if err := st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
-	carol := d.connect(t, "carol")
+	carol := connect(t, d, "carol", "")
 	if names := toolNames(t, carol); len(names) != 4 {
 		t.Fatalf("carol's tools: %v", names)
 	}
@@ -446,7 +335,7 @@ func TestMCPNoPermissionFromTools(t *testing.T) {
 		t.Fatalf("carol lists %v, %v", res, err)
 	}
 
-	guest := d.connect(t, "guest")
+	guest := connect(t, d, "guest", "")
 	if names := toolNames(t, guest); len(names) != 0 {
 		t.Fatalf("the guest's tools: %v", names)
 	}
@@ -461,23 +350,23 @@ func TestMCPNoPermissionFromTools(t *testing.T) {
 // audience or none is refused, and the session ID alone is no authority.
 func TestMCPSessions(t *testing.T) {
 	d := deploy(t)
-	d.st.ModeBucket("vault", "p1", "internal", "server")
-	d.st.Client("alice", []string{"member"}, "p1")
-	d.st.Client("bob", []string{"member"}, "p1")
-	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+	d.St.ModeBucket("vault", "p1", "internal", "server")
+	d.St.Client("alice", []string{"member"}, "p1")
+	d.St.Client("bob", []string{"member"}, "p1")
+	if err := d.St.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
-	s := d.connect(t, "alice")
+	s := connect(t, d, "alice", "")
 	if s.ID() == "" {
 		t.Fatal("no session ID")
 	}
-	storageToken, err := d.st.Issuer.Issue("alice", r1test.Tenant, content.Audience, 30*time.Minute)
+	storageToken, err := d.St.Issuer.Issue("alice", r1test.Tenant, content.Audience, 30*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	post := func(token string) int {
 		body := `{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}`
-		req, _ := http.NewRequest(http.MethodPost, d.mcp.URL+"/mcp", bytes.NewBufferString(body))
+		req, _ := http.NewRequest(http.MethodPost, d.MCP.URL+"/mcp", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Mcp-Session-Id", s.ID())
@@ -492,14 +381,14 @@ func TestMCPSessions(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	if code := post(d.mcpToken(t, "alice")); code != http.StatusOK {
+	if code := post(d.Token(t, "alice")); code != http.StatusOK {
 		t.Fatalf("alice in her session: %d", code)
 	}
 	for name, c := range map[string]struct {
 		token string
 		want  int
 	}{
-		"bob's token in alice's session (V-115)": {d.mcpToken(t, "bob"), http.StatusForbidden},
+		"bob's token in alice's session (V-115)": {d.Token(t, "bob"), http.StatusForbidden},
 		"alice's token for the storage role":     {storageToken, http.StatusUnauthorized},
 		"no token":                               {"", http.StatusUnauthorized},
 	} {
@@ -511,17 +400,17 @@ func TestMCPSessions(t *testing.T) {
 
 // serverDocument publishes a server-mode document of alice's that bob,
 // of the same project, may read, and enables MCP for the tenant.
-func serverDocument(t *testing.T, d *deployment) {
+func serverDocument(t *testing.T, d *mcptest.Deployment) {
 	t.Helper()
-	d.st.ModeBucket("vault", "p1", "internal", "server")
-	alice := d.st.Client("alice", []string{"member"}, "p1")
-	d.st.Client("bob", []string{"member"}, "p1")
-	d.st.Client("carol", []string{"member"}, "p1")
-	if _, err := d.st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "d1"},
+	d.St.ModeBucket("vault", "p1", "internal", "server")
+	alice := d.St.Client("alice", []string{"member"}, "p1")
+	d.St.Client("bob", []string{"member"}, "p1")
+	d.St.Client("carol", []string{"member"}, "p1")
+	if _, err := d.St.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "d1"},
 		[]byte(notes)); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+	if err := d.St.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -532,13 +421,13 @@ func serverDocument(t *testing.T, d *deployment) {
 // would end the process and every user's session.
 func TestMCPPanicContained(t *testing.T) {
 	var panicking atomic.Bool
-	d := deployWith(t, mcpsvc.DefaultLimits, func(string) {
+	d := mcptest.Deploy(t, mcpsvc.DefaultLimits, func(string) {
 		if panicking.Load() {
 			panic("a broken decision client")
 		}
 	})
 	serverDocument(t, d)
-	alice, bob := d.connect(t, "alice"), d.connect(t, "bob")
+	alice, bob := connect(t, d, "alice", ""), connect(t, d, "bob", "")
 	read := map[string]any{"bucket": "vault", "key": "q3/notes.md"}
 
 	panicking.Store(true)
@@ -564,7 +453,7 @@ func TestMCPPanicContained(t *testing.T) {
 // bound is refused at once, and closing a session frees its place.
 func TestMCPLimits(t *testing.T) {
 	entered, proceed := make(chan struct{}), make(chan struct{})
-	d := deployWith(t, mcpsvc.Limits{MaxBytes: 1 << 20, MaxUnits: 100, UserRequests: 1, TotalRequests: 2, UserSessions: 2, TotalSessions: 3},
+	d := mcptest.Deploy(t, mcpsvc.Limits{MaxBytes: 1 << 20, MaxUnits: 100, UserRequests: 1, TotalRequests: 2, UserSessions: 2, TotalSessions: 3},
 		func(body string) {
 			if strings.Contains(body, `"actor":{"id":"alice"`) && strings.Contains(body, `"name":"documents.read"`) {
 				entered <- struct{}{}
@@ -572,12 +461,12 @@ func TestMCPLimits(t *testing.T) {
 			}
 		})
 	serverDocument(t, d)
-	a1, a2 := d.connect(t, "alice"), d.connect(t, "alice")
-	if _, err := d.tryConnect(t, "alice"); err == nil {
+	a1, a2 := connect(t, d, "alice", ""), connect(t, d, "alice", "")
+	if _, err := d.Connect(t, "alice", ""); err == nil {
 		t.Fatal("alice opened a third session")
 	}
-	b := d.connect(t, "bob")
-	if _, err := d.tryConnect(t, "carol"); err == nil {
+	b := connect(t, d, "bob", "")
+	if _, err := d.Connect(t, "carol", ""); err == nil {
 		t.Fatal("a session over the total")
 	}
 
@@ -607,7 +496,7 @@ func TestMCPLimits(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := d.tryConnect(t, "alice"); err == nil {
+		if _, err := d.Connect(t, "alice", ""); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -626,16 +515,16 @@ func TestGatewayRevision(t *testing.T) {
 	d := deploy(t)
 	serverDocument(t, d)
 	var bucket string
-	if err := d.st.Pool.QueryRow(ctx, `SELECT id::text FROM buckets WHERE name = 'vault'`).Scan(&bucket); err != nil {
+	if err := d.St.Pool.QueryRow(ctx, `SELECT id::text FROM buckets WHERE name = 'vault'`).Scan(&bucket); err != nil {
 		t.Fatal(err)
 	}
 	tool := decisionsvc.Alias{Namespace: registry.MCPToolNamespace, Name: mcpsvc.ToolSearch}
 	decide := func(adapter, audience, op string, check decisionsvc.Check) string {
-		token, err := d.st.Issuer.Issue("bob", r1test.Tenant, audience, 30*time.Minute)
+		token, err := d.St.Issuer.Issue("bob", r1test.Tenant, audience, 30*time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp := d.st.Decisions.Decide(ctx, adapter, decisionsvc.Request{RequestID: "r-" + adapter + op, Tenant: r1test.Tenant,
+		resp := d.St.Decisions.Decide(ctx, adapter, decisionsvc.Request{RequestID: "r-" + adapter + op, Tenant: r1test.Tenant,
 			Operation: op, OperationID: "o-" + adapter + op, Audience: content.Audience, Actor: decisionsvc.Ref{ID: "bob"}, Evidence: token,
 			Checks: []decisionsvc.Check{check}})
 		return resp.Outcome + " " + resp.Reason
@@ -658,39 +547,6 @@ func TestGatewayRevision(t *testing.T) {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
-}
-
-var paragraphs = []string{"First client paragraph.", "Second client paragraph, restricted later.", "Third client paragraph."}
-
-// clientFixture publishes, in the client-mode bucket reports, alice's
-// object plan.bin and three-unit document q3.md, each with envelopes for
-// alice and bob, members of p1; carol is of p2. MCP is enabled.
-func clientFixture(t *testing.T, d *deployment) (alice, bob *r1test.Client, plain []byte, units []string) {
-	t.Helper()
-	d.st.Bucket("reports", "p1")
-	alice = d.st.Client("alice", []string{"member"}, "p1")
-	bob = d.st.Client("bob", []string{"member"}, "p1")
-	d.st.Client("carol", []string{"member"}, "p2")
-	alice.Pin(bob)
-	bob.Pin(alice)
-	plain = bytes.Repeat([]byte("client-mode secret "), 3000)
-	if _, err := alice.Put("reports", "plan.bin", plain, alice, bob); err != nil {
-		t.Fatal(err)
-	}
-	up, err := alice.PrepareDocument("reports", "q3.md", paragraphs, nil, alice, bob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := alice.FinalizeDocument(up); err != nil {
-		t.Fatal(err)
-	}
-	for _, u := range up.Intent.Units {
-		units = append(units, u.Unit)
-	}
-	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
-		t.Fatal(err)
-	}
-	return alice, bob, plain, units
 }
 
 func unb64(t *testing.T, s string) []byte {
@@ -745,10 +601,10 @@ func openUnits(t *testing.T, c *r1test.Client, p *mcpwire.Package) []string {
 // left out of the package without a trace.
 func TestMCPClientMode(t *testing.T) {
 	d := deploy(t)
-	_, bob, plain, units := clientFixture(t, d)
+	_, bob, plain, units := mcptest.ClientFixture(t, d)
 	secret := "client-mode secret"
 
-	generic := d.connect(t, "bob")
+	generic := connect(t, d, "bob", "")
 	if _, err := readResource(generic, "fga://reports/plan.bin"); err == nil || !strings.Contains(err.Error(), "client-mode") ||
 		strings.Contains(err.Error(), secret) {
 		t.Fatalf("a generic client reads a client-mode object (V-170): %v", err)
@@ -758,7 +614,7 @@ func TestMCPClientMode(t *testing.T) {
 		t.Fatalf("a generic client reads a client-mode document: %v", err)
 	}
 
-	s := d.connectWith(t, "bob", bob.Recipient.Fingerprint().String())
+	s := connect(t, d, "bob", bob.Recipient.Fingerprint().String())
 	res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "fga://reports/plan.bin"})
 	if err != nil || len(res.Contents) != 1 || res.Contents[0].MIMEType != mcpwire.MIMEType {
 		t.Fatalf("the object for a capable client: %+v %v", res, err)
@@ -780,13 +636,13 @@ func TestMCPClientMode(t *testing.T) {
 	if err != nil || !strings.Contains(text, "Client-mode content") || len(out.Units) != 0 {
 		t.Fatalf("the document for a capable client: %q %+v %v", text, out, err)
 	}
-	if got := openUnits(t, bob, out.Package); !slices.Equal(got, paragraphs) {
+	if got := openUnits(t, bob, out.Package); !slices.Equal(got, mcptest.Paragraphs) {
 		t.Fatalf("bob's units: %q", got)
 	}
 
 	// A unit out of bob's reach is left out of the package, ID and all.
-	alice := d.st.Client("alice", []string{"member"}, "p1")
-	if _, err := d.st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "q3.md", "", units[1], "restricted"); err != nil {
+	alice := d.St.Client("alice", []string{"member"}, "p1")
+	if _, err := d.St.Content.SetUnitLabel(ctx, alice.Caller, "reports", "q3.md", "", units[1], "restricted"); err != nil {
 		t.Fatal(err)
 	}
 	res2, err := s.CallTool(ctx, &mcp.CallToolParams{Name: mcpsvc.ToolReadDocument, Arguments: map[string]any{"bucket": "reports", "key": "q3.md"}})
@@ -802,14 +658,14 @@ func TestMCPClientMode(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got := openUnits(t, bob, out.Package); !slices.Equal(got, []string{paragraphs[0], paragraphs[2]}) {
+	if got := openUnits(t, bob, out.Package); !slices.Equal(got, []string{mcptest.Paragraphs[0], mcptest.Paragraphs[2]}) {
 		t.Fatalf("bob's units after the label change: %q", got)
 	}
 	if _, err := readResource(s, "fga://reports/q3.md?unit="+units[1]); !resourceNotFound(err) {
 		t.Fatalf("bob reads the restricted unit: %v", err)
 	}
 
-	carol := d.connectWith(t, "carol", bob.Recipient.Fingerprint().String())
+	carol := connect(t, d, "carol", bob.Recipient.Fingerprint().String())
 	if _, err := call(carol, mcpsvc.ToolReadDocument, map[string]any{"bucket": "reports", "key": "q3.md"}, nil); err == nil ||
 		!strings.Contains(err.Error(), "not found") {
 		t.Fatalf("carol, of another project: %v", err)
@@ -823,17 +679,17 @@ func TestMCPClientMode(t *testing.T) {
 // permission, and a recipient without an envelope gets nothing.
 func TestMCPExport(t *testing.T) {
 	d := deploy(t)
-	alice, bob, plain, _ := clientFixture(t, d)
-	d.st.ModeBucket("vault", "p1", "internal", "server")
-	if _, err := d.st.Content.PutObject(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "plan.txt", IdempotencyKey: "o1"},
+	alice, bob, plain, _ := mcptest.ClientFixture(t, d)
+	d.St.ModeBucket("vault", "p1", "internal", "server")
+	if _, err := d.St.Content.PutObject(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "plan.txt", IdempotencyKey: "o1"},
 		8, strings.NewReader("the plan")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "d1"},
+	if _, err := d.St.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "d1"},
 		[]byte(notes)); err != nil {
 		t.Fatal(err)
 	}
-	a := d.connect(t, "alice")
+	a := connect(t, d, "alice", "")
 
 	// Server mode.
 	var x mcpsvc.ExportOutput
@@ -846,7 +702,7 @@ func TestMCPExport(t *testing.T) {
 		text != strings.TrimSpace(notes) || len(x.Units) != 3 {
 		t.Fatalf("server-mode document export: %q %+v %v", text, x, err)
 	}
-	b := d.connect(t, "bob")
+	b := connect(t, d, "bob", "")
 	if _, err := call(b, mcpsvc.ToolExport, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, nil); err == nil ||
 		!strings.Contains(err.Error(), "not found") {
 		t.Fatalf("bob may read but not export: %v", err)
@@ -873,10 +729,10 @@ func TestMCPExport(t *testing.T) {
 	if _, err := call(a, mcpsvc.ToolExport, forBob, &x); err != nil {
 		t.Fatal(err)
 	}
-	if got := openUnits(t, bob, x.Package); !slices.Equal(got, paragraphs) {
+	if got := openUnits(t, bob, x.Package); !slices.Equal(got, mcptest.Paragraphs) {
 		t.Fatalf("bob's units of the export: %q", got)
 	}
-	carol := d.st.Client("carol", []string{"member"}, "p2")
+	carol := d.St.Client("carol", []string{"member"}, "p2")
 	if _, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "reports", "key": "plan.bin",
 		"recipient": carol.Recipient.Fingerprint().String()}, nil); err == nil {
 		t.Fatal("an export for a recipient without an envelope")

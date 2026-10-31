@@ -302,6 +302,36 @@ assert st == 403, ("alice in bob's session", st)
 print("MCP: alice's token in bob's session:", st)
 P
 check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)" "$BOBFP"
+# The local bridge (M3): bob's application starts fga mcp-bridge and talks
+# MCP over its stdin and stdout; the bridge opens client-mode packages
+# with bob's keys, so the application reads plaintext the server never had.
+cat > mcp_bridge.py <<'P'
+import base64, json, subprocess, sys
+p = subprocess.Popen([sys.argv[1], "mcp-bridge"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open("bridge.log", "wb"))
+def send(m):
+    p.stdin.write((json.dumps(m) + "\n").encode()); p.stdin.flush()
+def recv(i):
+    while True:
+        line = p.stdout.readline()
+        assert line, "the bridge closed its output; see bridge.log"
+        m = json.loads(line)
+        if m.get("id") == i:
+            return m
+send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+      "clientInfo": {"name": "smoke-app", "version": "1"}}})
+assert "result" in recv(1)
+send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+send({"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {"uri": "fga://reports/q3/report.bin"}})
+c = recv(2)["result"]["contents"][0]
+assert base64.b64decode(c["blob"]) == open("plain.bin", "rb").read(), "the object differs"
+send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "documents.read", "arguments": {"bucket": "reports", "key": "q3/notes.md"}}})
+t = recv(3)["result"]
+assert not t.get("isError") and t["content"][0]["text"] == open("notes.expected").read(), t
+print("MCP bridge: bob's application reads his client-mode object and document as plaintext, opened by the bridge")
+p.stdin.close()
+p.wait(timeout=10)
+P
+as bob; check env FGA_MCP_URL=http://127.0.0.1:18446/mcp FGA_MCP_TOKEN="$(tok bob fga-mcp)" python3 -I mcp_bridge.py $B/fga
 # Final removal of a server-mode version destroys its data key (S6,
 # SSE-006): reclaim retires the withdrawn version and reports that backups
 # taken before still hold the key.

@@ -39,6 +39,7 @@ The guard does not undo work. Code releases locks and transactions with `defer`,
 | keys | Server-mode reads and writes and client-mode envelope delivery fail; listings and decisions go on |
 | storage | No content is stored or delivered; decisions go on; the MCP role answers that a backing service is unavailable |
 | mcp | Its sessions end and MCP clients reconnect; nothing else is affected, and it keeps no state to lose |
+| a user's `fga mcp-bridge` | Only the application that started it loses its MCP server; it is a client process on the user's machine, guarded like the MCP role (`guard.Recover` around every request) |
 | PostgreSQL | Every role fails closed |
 
 ## Deployment

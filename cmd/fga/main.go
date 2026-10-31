@@ -38,11 +38,15 @@ func main() {
 const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR" +
 	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]" +
 	" | fga keys init|keys enroll|keys protect|keys unprotect|trust add|put|put-document|append|get|get-document|get-original|get-derived|search|ls|rm|share|finalize|label|set-encryption|propose-label|approvals [flags]" +
-	" | fga approve|reject [flags] ID (see cmd/fga/client.go)"
+	" | fga approve|reject [flags] ID (see cmd/fga/client.go)" +
+	" | fga mcp-bridge [-dir DIR] [-mcp-url URL] (MCP over stdio; see cmd/fga/bridge.go)"
 
 func run(args []string) error {
 	if len(args) >= 1 && args[0] == "dev-token" {
 		return devToken(args[1:])
+	}
+	if len(args) >= 1 && args[0] == "mcp-bridge" {
+		return mcpBridge(args[1:])
 	}
 	if len(args) < 1 {
 		return errors.New(usage)

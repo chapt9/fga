@@ -61,6 +61,8 @@ The storage role decides the read and the envelope delivery exactly as for a nat
 
 **Export.** `documents.export` exports for the `recipient` argument, or the declared key when it is absent, so a generic client may also export for someone else: it receives ciphertext it cannot open.
 
+**The local bridge.** `fga mcp-bridge` is the client that declares the capability and opens the packages with the user's keys ([mcp-bridge.md](mcp-bridge.md)).
+
 ## Sessions (MCP-007, V-115)
 
 A session is bound to the tenant and user of the token that opened it, via the SDK's `TokenInfo.UserID`. A request carrying the session ID with another user's token is refused `403`. The session ID alone is never authority: every request is authenticated again, and every call is decided again. An idle session closes after `session_timeout` (default 30 minutes).
@@ -92,6 +94,8 @@ The SDK runs handlers in its own goroutines, outside the HTTP server's panic rec
 The decision role needs the MCP workload in `adapter_audiences` (for `fga-mcp`) and in `gateways` (for `fga-storage`), and the storage role needs it in `mcp_adapters` ([mcp-gateway.md](mcp-gateway.md)). `fga-admin mcp enable` registers the tools for a tenant.
 
 ## Tests
+
+The tests deploy through `internal/mcptest`: a decision role and a storage role over HTTP, and the MCP role calling both as its workload, which the bridge's tests share.
 
 | Test | Covers |
 |---|---|
