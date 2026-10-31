@@ -133,6 +133,8 @@ var Policies = map[string]string{
 	"entries.json": `{"format":"fga.policy/v1","set":"business","resource":"text.entry","scope":"","rules":[
   {"id":"owner-entries","effect":"allow","actions":["read","update","use-in-model","share"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
   {"id":"members-read-entries","effect":"allow","actions":["read"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"leads-approve-entries","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
@@ -148,7 +150,7 @@ var UserActions = map[string][]string{
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export", "approve"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},
 	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"},
-	"text.entry":         {"read", "use-in-model", "update", "share"},
+	"text.entry":         {"read", "use-in-model", "update", "share", "approve"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
 }

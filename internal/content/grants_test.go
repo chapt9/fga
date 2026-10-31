@@ -442,3 +442,44 @@ func TestGrantApprovalOnDocumentVersion(t *testing.T) {
 		t.Fatalf("%d grants on the document version", n)
 	}
 }
+
+// TestGrantApprovalOnEntry is the regression test of review v3 F03 for
+// collection entries (specification 2.6.2 gives text.entry approve): a
+// grant on an entry can wait for a lead's approval.
+func TestGrantApprovalOnEntry(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["entries.json"] = `{"format":"fga.policy/v1","set":"business","resource":"text.entry","scope":"","rules":[
+	  {"id":"owner-entries","effect":"allow","actions":["read","update","use-in-model"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-shares-entries-with-approval","effect":"allow","actions":["share"],"roles":["*"],"requires":["approval"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"leads-approve-entries","effect":"allow","actions":["approve"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.Client("bob", []string{"member"}, "p2")
+	lena := st.User("lena", []string{"lead"}, "p1")
+	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "chat", IdempotencyKey: "c",
+		Collection: true}, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.Content.ListUnits(ctx, alice.Caller, "vault", "chat", "", 10, "")
+	if err != nil || len(page.Units) != 1 {
+		t.Fatalf("entries: %+v, %v", page, err)
+	}
+	target := content.GrantTarget{Bucket: "vault", Key: "chat", Unit: page.Units[0].Unit}
+	_, err = grant(st, alice.Caller, target, "bob", time.Hour, "read")
+	var need *content.ApprovalRequired
+	if !errors.As(err, &need) {
+		t.Fatalf("a grant on an entry needing an approval: %v", err)
+	}
+	if _, err := st.Content.DecideApproval(ctx, lena, need.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grant(st, withApproval(alice.Caller, need.ID), target, "bob", time.Hour, "read"); err != nil {
+		t.Fatalf("the grant with the approval: %v", err)
+	}
+	if n := count(t, st, `SELECT count(*) FROM share_grants WHERE resource_type = 'text.entry' AND removed_at IS NULL`); n != 1 {
+		t.Fatalf("%d grants on the entry", n)
+	}
+}

@@ -585,7 +585,7 @@ func newID() string {
 // approvable are the resource types an approval can target in R1-C
 // (ruling 6; storage-role operations only).
 var approvable = map[string]bool{"storage.object": true, "storage.bucket": true, "document.text_unit": true, "document.derived": true,
-	"document.version": true}
+	"document.version": true, "text.entry": true}
 
 // settleApproval handles a NEEDS_APPROVAL outcome (APR-001 to APR-003).
 // Without an approval in the request it opens a pending approval for the

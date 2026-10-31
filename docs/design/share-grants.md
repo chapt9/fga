@@ -77,7 +77,7 @@ A grant's removal is a revocation. The storage role, which now opens the securit
 | SDK | `RecordGrant` | `RemoveGrant` | `Grants` |
 | CLI | `fga grant -grantee P -actions read,stat -expires 24h` | `fga ungrant -grantee P` | `fga grants` |
 
-Record and remove answer `202` with the approval's ID when a policy requires one; repeat with `-approval` once it is given. The approval's target is the granted resource, decided with `approve` on it: objects, buckets, document versions (`document.version.approve`, review v3 F03), units and derived outputs. Collection entries have no `approve` action, so a grant on an entry cannot wait for an approval yet: a policy requiring one there is refused (open with review v3 F03).
+Record and remove answer `202` with the approval's ID when a policy requires one; repeat with `-approval` once it is given. The approval's target is the granted resource, decided with `approve` on it: objects, buckets, document versions (`document.version.approve`), units, collection entries (`collection.entry.approve`; specification 2.6.2 gives `text.entry` the action) and derived outputs (review v3 F03).
 
 ## Not covered
 

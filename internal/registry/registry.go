@@ -85,7 +85,7 @@ var r1TypeDefs = []TypeDef{
 		ActionAliases: map[string]string{"storage.object.read": "read"}},
 	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},
-	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update", "share"}},
+	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update", "share", "approve"}},
 	// new-version on derived outputs is our addition to the spec's table:
 	// a derived output gets new versions, each with its own lineage.
 	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"}},
