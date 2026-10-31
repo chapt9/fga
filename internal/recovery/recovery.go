@@ -250,21 +250,42 @@ func backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 		if err != nil {
 			return Manifest{}, err
 		}
-		rc, err := blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: r.tenant, Blob: r.blob}, Length: r.length, SHA256: d})
-		if err != nil {
+		missing := func() {
 			// The backup does not invent a blob it cannot read, and says
 			// so; reconcile quarantines the version after a restore.
 			m.Missing = append(m.Missing, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: r.sum})
 			if r.state != "QUARANTINED" && !opts.AllowMissing {
 				unreadable = append(unreadable, r.blob.String())
 			}
+		}
+		rc, err := blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: r.tenant, Blob: r.blob}, Length: r.length, SHA256: d})
+		if err != nil {
+			missing()
 			continue
 		}
+		// The copy is checked against the catalog's length and digest, so
+		// a backup never holds a blob its restore would refuse (review v3
+		// F09).
+		var intact bool
 		file := filepath.Join("blobs", r.blob.String())
-		sum, err := writeFile(dir, file, sealer, func(w io.Writer) error { _, err := io.Copy(w, rc); return err })
+		sum, err := writeFile(dir, file, sealer, func(w io.Writer) error {
+			h := sha256.New()
+			n, err := io.Copy(io.MultiWriter(w, h), rc)
+			var got cryptowire.Digest
+			copy(got[:], h.Sum(nil))
+			intact = n == r.length && got == d
+			return err
+		})
 		rc.Close()
 		if err != nil {
 			return Manifest{}, err
+		}
+		if !intact {
+			if err := os.Remove(filepath.Join(dir, file)); err != nil {
+				return Manifest{}, err
+			}
+			missing()
+			continue
 		}
 		m.Blobs = append(m.Blobs, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: r.sum,
 			File: file, FileSHA256: sum})
@@ -285,7 +306,25 @@ func backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	if _, err := writeFile(dir, "manifest.json", sealer, func(w io.Writer) error { _, err := w.Write(b); return err }); err != nil {
 		return Manifest{}, err
 	}
+	// Every file is flushed as it is written; the directories that name
+	// them are flushed before the backup is reported complete (review v3
+	// F14).
+	for _, d := range []string{filepath.Join(dir, "catalog"), filepath.Join(dir, "blobs"), dir, filepath.Dir(dir)} {
+		if err := syncDir(d); err != nil {
+			return Manifest{}, err
+		}
+	}
 	return m, nil
+}
+
+// syncDir flushes a directory's entries.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // writeFile creates dir/name (0600) exclusively, fills it through the

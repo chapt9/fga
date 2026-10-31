@@ -385,3 +385,50 @@ func TestReclaimDuringUpload(t *testing.T) {
 		t.Fatalf("%d blobs after the reclaimed uploads, %d before: orphans were left", after, before)
 	}
 }
+
+// TestBackupVerifiesCiphertext is the regression test of review v3 F09:
+// a blob corrupted without changing its length passed backup, which
+// checked only the size, and the restore then failed on its digest. The
+// backup now checks each blob's digest while it copies it, and treats a
+// mismatch like an unreadable blob.
+func TestBackupVerifiesCiphertext(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	p, err := alice.Put("reports", "doc", []byte("payroll"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := st.Pool.QueryRow(ctx, `SELECT blob::text FROM object_versions WHERE id::text = $1`, p.Version).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	if err := filepath.WalkDir(filepath.Join(st.BlobDir, "blobs"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Name() == id {
+			path = p
+		}
+		return err
+	}); err != nil || path == "" {
+		t.Fatalf("blob file of %s: %q, %v", id, path, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[len(b)/2] ^= 0xff
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); !errors.Is(err, recovery.ErrIncomplete) {
+		t.Fatalf("a backup of a same-length corrupted blob: %v", err)
+	}
+	m, err := recovery.BackupWith(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme, recovery.BackupOptions{AllowMissing: true})
+	if err != nil || len(m.Blobs) != 0 || len(m.Missing) != 1 {
+		t.Fatalf("a backup accepting the corrupted blob as missing: %+v, %v", m, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "blobs", id)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the corrupted copy was kept in the backup: %v", err)
+	}
+}
