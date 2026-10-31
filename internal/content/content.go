@@ -145,10 +145,37 @@ func planned(namespace, name string) decisionsvc.Alias {
 }
 
 // decide asks for a decision for operation op with checks, as caller, for
-// audience, and returns the verified signed decision. Only an ALLOW whose
-// record is bound to exactly this operation counts (DEC-002).
+// audience, and returns the verified signed decision.
 func (s *Service) decide(ctx context.Context, c Caller, op, audience string, singleUse bool, checks []check) (signing.Signed, signing.Record, error) {
-	id, err := s.d.Catalog.GetIdentity(ctx, c.Tenant, c.Principal)
+	out := make([]Check, len(checks))
+	for i, ch := range checks {
+		out[i] = Check{ID: ch.id, Role: ch.role, Action: ch.action, Resource: ch.ref, Version: ch.version, Recipient: ch.recipient}
+	}
+	return Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, audience, singleUse, out)
+}
+
+// Check is one check of a registered operation, as an enforcing role plans
+// it.
+type Check struct {
+	ID       string
+	Role     string
+	Action   string
+	Resource decisionsvc.Alias
+	Version  string
+	// Recipient is the key fingerprint of a recipient-eligibility check.
+	Recipient string
+}
+
+// Authorize asks the decision role for a decision for operation op with
+// checks, as caller, for audience, and returns the verified signed record.
+// Only an ALLOW whose record is bound to exactly this operation counts
+// (DEC-002); everything else is ErrNotFound, or ErrUnavailable for a
+// failure. verifier verifies decisions for the enforcing role's own
+// audience; a decision for another audience is only checked for integrity
+// here and verified by that role.
+func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *catalog.Store, c Caller, op, audience string,
+	singleUse bool, checks []Check) (signing.Signed, signing.Record, error) {
+	id, err := cat.GetIdentity(ctx, c.Tenant, c.Principal)
 	if err != nil {
 		return signing.Signed{}, signing.Record{}, ErrNotFound
 	}
@@ -158,16 +185,17 @@ func (s *Service) decide(ctx context.Context, c Caller, op, audience string, sin
 	h := sha256.New()
 	fmt.Fprintf(h, "fga.storage-operation/v1\n%s\n%s\n", op, c.Tenant)
 	for _, ch := range checks {
-		dc := decisionsvc.Check{ID: ch.id, Role: ch.role, Action: ch.action, Resource: ch.ref, Version: ch.version}
-		if ch.recipient != "" {
-			dc.Kind, dc.PrincipalBinding = string(registry.KindRecipientEligibility), ch.recipient
+		dc := decisionsvc.Check{ID: ch.ID, Role: ch.Role, Action: ch.Action, Resource: ch.Resource, Version: ch.Version}
+		if ch.Recipient != "" {
+			dc.Kind, dc.PrincipalBinding = string(registry.KindRecipientEligibility), ch.Recipient
 		}
 		req.Checks = append(req.Checks, dc)
-		fmt.Fprintf(h, "%s %s %s %s/%s/%s/%s %s %s\n", ch.id, ch.role, ch.action, ch.ref.Namespace, ch.ref.Name, ch.ref.Type, ch.ref.ID, ch.version, ch.recipient)
+		fmt.Fprintf(h, "%s %s %s %s/%s/%s/%s %s %s\n", ch.ID, ch.Role, ch.Action, ch.Resource.Namespace, ch.Resource.Name,
+			ch.Resource.Type, ch.Resource.ID, ch.Version, ch.Recipient)
 	}
 	req.OperationDigest = "sha256:" + hex.EncodeToString(h.Sum(nil))
 
-	resp, err := s.d.Decider.Decide(ctx, req)
+	resp, err := d.Decide(ctx, req)
 	switch {
 	case err != nil:
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision: %v", ErrUnavailable, err)
@@ -182,17 +210,12 @@ func (s *Service) decide(ctx context.Context, c Caller, op, audience string, sin
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: malformed decision", ErrUnavailable)
 	}
 	signed := signing.Signed{Payload: payload, JWS: resp.Signed.JWS}
-	verifier := s.d.Verifier
-	if audience != Audience {
-		// A decision for another role is checked for integrity here and
-		// verified for its audience by that role.
-		rec, err := verifier.Inspect(signed)
-		if err != nil || !bound(rec, req) {
-			return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision does not verify", ErrUnavailable)
-		}
-		return signed, rec, nil
+	var rec signing.Record
+	if verifier.Audience() == audience {
+		rec, err = verifier.Check(signed)
+	} else {
+		rec, err = verifier.Inspect(signed)
 	}
-	rec, err := verifier.Check(signed)
 	if err != nil || !bound(rec, req) {
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision does not verify", ErrUnavailable)
 	}

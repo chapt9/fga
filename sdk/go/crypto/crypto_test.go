@@ -234,3 +234,26 @@ func TestRecipientKeyStorageAndProof(t *testing.T) {
 }
 
 func cryptowireDigest(b []byte) [32]byte { return sha256.Sum256(b) }
+
+// TestReshare covers KEY-004 and KEY-011: a recipient re-wraps the same
+// data key for a pinned recipient, who then decrypts; an unpinned target
+// is refused.
+func TestReshare(t *testing.T) {
+	f := newFixture(t)
+	ct, sealed := f.encrypt(t, []byte("payroll"), f.alice)
+	carol, _ := NewRecipientKey()
+	env, err := Reshare(pkgFor(sealed, 0), f.alice, f.trust, Recipient{Fingerprint: f.bob.Fingerprint(), KeyVersion: 1}, 1, f.signer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decrypt(ct, Package{Descriptor: sealed.Descriptor, DescriptorSignature: sealed.DescriptorSignature, Envelope: env}, f.bob, f.trust)
+	if err != nil || string(got) != "payroll" {
+		t.Fatalf("bob decrypts the reshared envelope: %q, %v", got, err)
+	}
+	if _, err := Reshare(pkgFor(sealed, 0), f.alice, f.trust, Recipient{Fingerprint: carol.Fingerprint(), KeyVersion: 1}, 1, f.signer, now); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("unpinned target: %v", err)
+	}
+	if _, err := Reshare(pkgFor(sealed, 0), f.bob, f.trust, Recipient{Fingerprint: f.bob.Fingerprint(), KeyVersion: 1}, 1, f.signer, now); !errors.Is(err, ErrBinding) {
+		t.Fatalf("resharing an envelope that is not the caller's: %v", err)
+	}
+}

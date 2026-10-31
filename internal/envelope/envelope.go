@@ -47,7 +47,9 @@ type Deps struct {
 	// (RCP-001).
 	ReceiptKeyID string
 	ReceiptKey   ed25519.PrivateKey
-	Now          func() time.Time
+	// Journal, when set, records revocations before they commit.
+	Journal Journal
+	Now     func() time.Time
 }
 
 // Service is the keys role.

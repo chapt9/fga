@@ -518,7 +518,7 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		return Published{}, err
 	}
 	for _, e := range envs {
-		if err := insertEnvelope(ctx, tx, c.Tenant, in.scope, in.attributes, e.id, in.Object, in.LogicalVersion, e.ctx, e.keyVersion,
+		if err := InsertEnvelope(ctx, tx, c.Tenant, in.scope, in.attributes, e.id, in.Object, in.LogicalVersion, e.ctx, e.keyVersion,
 			e.EnvelopeIn, e.digest, now); err != nil {
 			return Published{}, err
 		}
@@ -532,8 +532,10 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 	return result, nil
 }
 
-// insertEnvelope stores an envelope and its crypto.envelope resource.
-func insertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
+// InsertEnvelope stores an envelope and its crypto.envelope resource. The
+// publication transaction of the content service and the keys role's
+// PublishRecipientEnvelope both use it, inside their fences.
+func InsertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
 	ctxv cryptowire.EnvelopeContext, keyVersion uint64, e EnvelopeIn, digest cryptowire.Digest, now time.Time) error {
 	var principal string
 	if err := tx.QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`, tenant, ctxv.Recipient.String()).Scan(&principal); err != nil {

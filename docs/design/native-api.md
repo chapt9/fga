@@ -29,9 +29,8 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Delete version | `DELETE /v1/buckets/{bucket}/object?key=&version=` | `delete-version`; retention and reference guards |
 | Enroll recipient | `POST /v1/recipients`, then `POST /v1/recipients/{fp}/activate` | `crypto.recipient` `enroll`, then `activate`, with possession proof |
 | Revoke recipient | `DELETE /v1/recipients/{fp}` | `crypto.recipient` `revoke` |
-| Enroll signing key | `POST /v1/signing-keys`, then `.../{fp}/activate` | Same pattern, own key purpose |
-| Retire signing key | `POST /v1/signing-keys/{fp}/retire` | The key's principal |
-| Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | Same tenant; a directory answer is not a trust anchor (RCP-002) |
+| Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). The registry has no resource type for signing keys, so a self-service operation would fail closed (RES-001) |
+| Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | Authenticated caller of the same tenant; the tenant directory of public keys is not policy-protected. A directory answer is not a trust anchor (RCP-002) |
 | Share | `POST /v1/envelopes` | `PublishRecipientEnvelope`: publisher `share`, envelope `create`, recipient `read`, `receive-key` |
 | Retire envelope | `DELETE /v1/envelopes/{id}` | envelope `retire` |
 

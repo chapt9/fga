@@ -519,3 +519,57 @@ func (d *digestWriter) Write(p []byte) (int, error) {
 	d.n += uint64(n)
 	return n, err
 }
+
+// Reshare is CreateRecipientEnvelope (KEY-004, KEY-011, RCP-002): from a
+// package the caller can open, it verifies the origin and bindings, opens
+// the key package locally and wraps the same package for a pinned target
+// recipient with the given generation, signed by signer. The data key and
+// ciphertext stay the same; the server receives only the new envelope.
+func Reshare(pkg Package, key *RecipientKey, trust TrustStore, target Recipient, generation uint64, signer SigningKey, now time.Time) (Envelope, error) {
+	targetPub, ok := trust.Recipient(target.Fingerprint)
+	if !ok || cryptowire.RecipientFingerprint(cryptowire.Suite1, targetPub) != target.Fingerprint {
+		return Envelope{}, fmt.Errorf("%w: recipient %s", ErrUntrusted, target.Fingerprint)
+	}
+	keyFor := trustedSigner(trust)
+	if _, err := cryptowire.Verify(cryptowire.TypeDescriptor, pkg.DescriptorSignature, pkg.Descriptor, keyFor); err != nil {
+		return Envelope{}, err
+	}
+	desc, err := cryptowire.ParseDescriptor(pkg.Descriptor)
+	if err != nil {
+		return Envelope{}, err
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, pkg.Envelope.Signature,
+		cryptowire.EnvelopeSigningInput(pkg.Envelope.Context, pkg.Envelope.Ciphertext), keyFor); err != nil {
+		return Envelope{}, err
+	}
+	ctx, err := cryptowire.ParseEnvelopeContext(pkg.Envelope.Context)
+	if err != nil {
+		return Envelope{}, err
+	}
+	if !contextMatches(ctx, desc) || ctx.Recipient != key.fingerprint {
+		return Envelope{}, ErrBinding
+	}
+	dec, err := hybrid.NewHybridDecrypt(key.handle)
+	if err != nil {
+		return Envelope{}, err
+	}
+	keyPackage, err := dec.Decrypt(pkg.Envelope.Ciphertext, cryptowire.HPKEInfo(pkg.Envelope.Context))
+	if err != nil {
+		return Envelope{}, ErrBinding
+	}
+	defer clear(keyPackage)
+	binding, ks, err := cryptowire.DecodeKeyPackage(keyPackage)
+	if err != nil {
+		return Envelope{}, ErrKeyset
+	}
+	if !bytes.Equal(binding, cryptowire.PayloadAAD(ctx.Tenant, ctx.Object, ctx.CryptoVersion, ctx.Suite, ctx.Format)) {
+		return Envelope{}, ErrBinding
+	}
+	if _, err := payloadAEAD(ks); err != nil {
+		return Envelope{}, err
+	}
+	next := ctx
+	next.Recipient, next.RecipientKeyVersion, next.Generation = target.Fingerprint, target.KeyVersion, generation
+	next.Sharer, next.CreatedAt = signer.Fingerprint, now
+	return wrap(next, targetPub, keyPackage, signer)
+}

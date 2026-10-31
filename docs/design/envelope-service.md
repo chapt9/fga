@@ -20,7 +20,7 @@ Status: design record, 31 October 2026. Mechanism-matrix row "Client-side envelo
 | Enroll recipient | Client | Decision for `crypto.recipient` `enroll` (planned resource: the caller's own new key) | PENDING record and challenge |
 | Activate recipient | Client | Decision for `activate` on the PENDING record, valid proof, unused unexpired challenge | ACTIVE, revision + 1; challenge deleted |
 | Revoke recipient | Client or `fga-admin` | `revoke` decision, or local administrator | Security-journal entry first, then REVOKED, revision + 1 (fence step 5) |
-| Enroll / activate / retire signing key | Client | Same pattern on the key's own principal | ACTIVE or RETIRED; history kept for verification (RCP-011) |
+| Provision / retire signing key | `fga-admin` | Local administrator, trusted provisioning (RCP-002); no registered resource type exists for self-service | ACTIVE or RETIRED; history kept for verification (RCP-011) |
 | Mark signer compromised | `fga-admin` | Local administrator (ADM-003) | Journal entry, then COMPROMISED |
 | PublishRecipientEnvelope | Client (sharer) | Fresh decision with the `PublishRecipientEnvelope` checks of Table "Compound operations"; fence | Envelope ACTIVE, generation = previous for this (version, recipient) + 1, audit |
 | GetRecipientEnvelope | Storage role (TB3) | Decision signed for audience `fga-keys` whose checks are exactly the `GetRecipientEnvelope` mapping, bound to the object, version and recipient (TRU-005); fence with consumption | Returns the stored envelope and a signed delivery receipt; audit `ENVELOPE_DELIVERED` |
@@ -38,4 +38,4 @@ The role verifies, in this order: workload identity of the storage role; the dec
 2. `POST /v1/recipients/{fp}/activate` with the proof over the authenticated session of the same principal. A wrong, reused or expired proof leaves the key PENDING.
 3. Publishing clients pin recipient fingerprints out of band (owner-approved provisioning). `GET /v1/recipients/{fp}` is a directory lookup only; the SDK never trusts it alone (RCP-002).
 
-Content-signing keys follow the same steps with a JWS proof. A retired key keeps verifying historical content; a compromised key fails verification of every signature it made unless an object-specific reviewed disposition exists (none can be recorded in R1, so all fail closed) (RCP-011).
+Content-signing keys are provisioned by the local administrator in R1 (trusted provisioning); the JWS possession proof of the wire profile is defined for a later self-service operation. A retired key keeps verifying historical content; a compromised key fails verification of every signature it made unless an object-specific reviewed disposition exists (none can be recorded in R1, so all fail closed) (RCP-011).

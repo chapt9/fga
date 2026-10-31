@@ -229,10 +229,17 @@ func (st *Stack) User(id string, roles []string, projects ...string) content.Cal
 	return st.Caller(id)
 }
 
-// Caller returns a caller for an existing identity with a fresh token.
-func (st *Stack) Caller(id string) content.Caller {
+// Caller returns a caller for an existing identity with a fresh token for
+// the storage role.
+func (st *Stack) Caller(id string) content.Caller { return st.CallerFor(id, content.Audience) }
+
+// KeysCaller returns a caller with a fresh token for the keys role.
+func (st *Stack) KeysCaller(id string) content.Caller { return st.CallerFor(id, content.KeysAudience) }
+
+// CallerFor returns a caller with a fresh token for audience.
+func (st *Stack) CallerFor(id, audience string) content.Caller {
 	st.T.Helper()
-	tok, err := st.Issuer.Issue(id, Tenant, content.Audience, 30*time.Minute)
+	tok, err := st.Issuer.Issue(id, Tenant, audience, 30*time.Minute)
 	if err != nil {
 		st.T.Fatal(err)
 	}

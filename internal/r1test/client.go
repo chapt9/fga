@@ -193,3 +193,22 @@ func (c *Client) DeliveryDecision(bucket, key, recipient, op, audience string) (
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
 	return signing.Signed{Payload: payload, JWS: resp.Signed.JWS}, envelopeID, nil
 }
+
+// Share publishes a new envelope for to on the given version (the current
+// one when version is ""), made from c's own envelope (KEY-012).
+func (c *Client) Share(bucket, key, version string, to *Client, generation uint64) (string, error) {
+	ctx := context.Background()
+	pkg, err := c.st.Content.ReadPackage(ctx, c.Caller, bucket, key, version, c.Recipient.Fingerprint().String())
+	if err != nil {
+		return "", err
+	}
+	env, err := crypto.Reshare(crypto.Package{Descriptor: pkg.Descriptor, DescriptorSignature: pkg.DescriptorSignature,
+		Envelope: crypto.Envelope{Context: pkg.Envelope.Context, Ciphertext: pkg.Envelope.Ciphertext, Signature: pkg.Envelope.Signature}},
+		c.Recipient, c.Trust, crypto.Recipient{Fingerprint: to.Recipient.Fingerprint(), KeyVersion: to.KeyVersion}, generation, c.Signer, *c.st.Clock)
+	if err != nil {
+		return "", err
+	}
+	ref, err := c.st.Envelopes.Publish(ctx, c.st.KeysCaller(c.Caller.Principal), bucket, key, pkg.Version.Version,
+		content.EnvelopeIn{Context: env.Context, Ciphertext: env.Ciphertext, Signature: env.Signature})
+	return ref.ID, err
+}

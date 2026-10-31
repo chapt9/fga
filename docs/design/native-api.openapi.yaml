@@ -134,34 +134,12 @@ paths:
       responses:
         "200": { description: Active, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
         default: { $ref: "#/components/responses/Error" }
-  /v1/signing-keys:
-    post:
-      operationId: enrollSigningKey
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EnrollRequest" } } } }
-      responses:
-        "201": { description: Challenge, content: { application/json: { schema: { $ref: "#/components/schemas/Challenge" } } } }
-        default: { $ref: "#/components/responses/Error" }
   /v1/signing-keys/{fingerprint}:
     get:
       operationId: getSigningKey
       parameters: [{ $ref: "#/components/parameters/fingerprint" }]
       responses:
         "200": { description: Verification record, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
-        default: { $ref: "#/components/responses/Error" }
-  /v1/signing-keys/{fingerprint}/activate:
-    post:
-      operationId: activateSigningKey
-      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProofRequest" } } } }
-      responses:
-        "200": { description: Active, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
-        default: { $ref: "#/components/responses/Error" }
-  /v1/signing-keys/{fingerprint}/retire:
-    post:
-      operationId: retireSigningKey
-      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
-      responses:
-        "200": { description: Retired, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
         default: { $ref: "#/components/responses/Error" }
   /v1/envelopes:
     post:

@@ -264,6 +264,9 @@ func (v *Verifier) Verify(ctx context.Context, s Signed) (Record, error) {
 	return rec, nil
 }
 
+// Audience returns the audience the verifier accepts.
+func (v *Verifier) Audience() string { return v.audience }
+
 // Check verifies like Verify but consumes nothing. The caller must consume
 // a single-use decision itself, atomically with the protected transition
 // it authorizes (DEC-011): the authority fence does.
