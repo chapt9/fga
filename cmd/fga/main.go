@@ -6,6 +6,9 @@
 //	                                         sign a bundle directory in place
 //	fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]
 //	                                         print a development access token
+//
+// and the client commands of client.go (keys init, keys enroll, trust add,
+// put, get, ls, rm, share).
 package main
 
 import (
@@ -16,6 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -32,16 +36,26 @@ func main() {
 }
 
 const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR" +
-	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]"
+	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]" +
+	" | fga keys init|keys enroll|trust add|put|get|ls|rm|share [flags] (see cmd/fga/client.go)"
 
 func run(args []string) error {
 	if len(args) >= 1 && args[0] == "dev-token" {
 		return devToken(args[1:])
 	}
+	if len(args) < 1 {
+		return errors.New(usage)
+	}
+	switch args[0] {
+	case "put", "get", "ls", "rm", "share":
+		return clientCommand(args[0], args[1:])
+	}
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
 	switch args[0] + " " + args[1] {
+	case "keys init", "keys enroll", "trust add":
+		return clientCommand(args[0]+" "+args[1], args[2:])
 	case "keys generate":
 		return generateKeys(args[2:])
 	case "policy validate":
@@ -178,3 +192,7 @@ func signBundle(b *release.Bundle, keyID string, priv ed25519.PrivateKey) error 
 type noEpochs struct{}
 
 func (noEpochs) RequiredEpoch(context.Context, string) (uint64, error) { return 0, nil }
+
+func httpClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}

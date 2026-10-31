@@ -1,0 +1,5 @@
+{"format":"fga.policy/v1","set":"business","resource":"crypto.envelope","scope":"","rules":[
+  {"id":"create-for-sharers","effect":"allow","actions":["create"],"roles":["*"]},
+  {"id":"release-to-recipient","effect":"allow","actions":["release"],"roles":["*"],
+   "when":"resource.attributes.recipient_principal == principal.id"},
+  {"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"when":"resource.attributes.owner == principal.id"}]}

@@ -1,40 +1,58 @@
 # fga: Fine-Grained Access Platform
 
-An implementation of the Fine-Grained Access Platform specification 2.5 (draft), which is kept in [docs/spec](docs/spec) together with its handoff, errata, test vectors and consistency check. `fga` is a placeholder name (decision D-11).
+An implementation of the Fine-Grained Access Platform specification 2.5 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. `fga` is a placeholder name (decision D-11).
 
-The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)). Everything runs locally.
+The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)); the [mechanism matrix](docs/research/mechanism-matrix.md) records what was taken and what was rejected. Everything runs locally.
 
-## Status
+## Status (31 October 2026)
 
-Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accepted. Release R1, phase A (decision core) is implemented; phase B (encrypted object storage) is in progress. Nothing here is qualified (GATE-001).
+Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accepted.
 
-| Package | What it does | Specification |
+- **R1-A, shared authority:** built, including the catch-up list of the [handoff](docs/spec/HANDOFF.md) (section 5).
+- **R1-B, client-encrypted object storage:** built and running locally. That covers the storage and keys roles, the client SDK, the native API, backup, restore and reconcile.
+- **R1-C (documents, text units, labels), R2 and R3:** not built.
+
+**Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
+
+| Area | Packages | Specification |
 |---|---|---|
-| `internal/policy/format` | Policy format `fga.policy/v1`, strict parsing and bundle validation | POL-002, POL-007, POL-014 |
-| `internal/policy/engine` | CEL policy engine: deny overrides, deny-only ceiling set, strict errors, cost limit | "Policy format", POL-005, POL-009 |
-| `internal/decision` | Batch decision: gate, then ceiling, then business; only an explicit allow counts | POL-003, DEC-002 to DEC-004 |
-| `internal/gate` | Envelope checks, principal from authoritative state, admission and commit rechecks | ID-002, ID-004, DLG-*, DEC-005, DEC-006 |
-| `internal/delegation` | Delegation chains: narrowing, expiry, revocation, audience | DLG-001 to DLG-007 |
-| `internal/identity` | Identities with revisions | ID-003, ID-004 |
-| `internal/registry` | Resource types and actions, aliases to canonical resources, operation mapping | RES-001 to RES-008 |
-| `internal/release` | Signed policy bundles, activation states, required epochs | REL-001 to REL-005 |
-| `internal/signing` | Signed decisions (detached JWS), single-use consumption, key rotation | DEC-008, DEC-011, DEC-012 |
-| `internal/audit` | Audit outbox that refuses rather than drops | AUD-001 to AUD-003 |
-| `internal/catalog` | PostgreSQL authority for all of the above | DAT-001 to DAT-004 |
-| `internal/decisionsvc` | DecideBatch service and HTTP/JSON API | DEC-001, DEC-007 |
-| `internal/approval` | Operation-bound approvals | APR-001 to APR-005 |
-| `cmd/fga-decision` | Decision role binary: strict config and import allowlist | MOD-003, MOD-004 |
-| `cmd/fga` | Key generation, and bundle validation and signing | REL-001 |
+| Policy | `internal/policy/format`, `internal/policy/engine`: `fga.policy/v1`, deny overrides, deny-only ceiling set, strict errors, cost limit, `request.now` only against timestamp literals | "Policy format", POL-001 to POL-014 |
+| Decisions | `internal/decision`, `internal/gate`, `internal/decisionsvc`, `cmd/fga-decision`. Check kinds with per-check principals, registered operations only, first-hop token evidence, public projection, signed record v2 with recovery incarnation | DEC-001 to DEC-012, RES-009, TRU-003 |
+| Releases | `internal/release`: signed bundles whose manifest names the business and ceiling sets, evaluator build, registry digests, label order and cost limit | REL-001 to REL-005, POL-007 |
+| Authority | `internal/identity`, `internal/delegation`, `internal/registry` (R1 types, operations, planned resources), `internal/catalog`, `internal/audit`, `internal/authn` (development token profile) | ID-*, DLG-*, RES-*, DAT-*, AUD-* |
+| Authority fence | `internal/fence`: checks, consumption and transition in one transaction under a fixed lock order | DAT-007, DEC-006, DEC-011 |
+| Storage | `internal/content` (content service), `internal/blob` (single-node store), `internal/nativeapi`, `cmd/fga-storage` | CNT-*, PUB-*, BKD-* |
+| Keys | `internal/envelope` (recipient registry, envelope publication, delivery, retirement), `cmd/fga-keys` | KEY-*, RCP-*, TRU-005 |
+| Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
+| Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `cmd/fga-admin` | AVL-008, KEY-017, PUB-005, PUB-006 |
+| Approvals | `internal/approval` with a neutral operation plan (`internal/opplan`); not yet used by any storage operation | APR-001 to APR-005 |
 
-Optional R2 executor (feature `executor`, built for specification 2.2 and parked; no R1 role links it): `internal/tools`, `internal/toolstore`, `internal/tools/connector`, `internal/invocation`, `internal/reservation`.
+Optional R2 executor (feature `executor`, built for specification 2.2 and parked; no R1 role links it): `internal/tools`, `internal/toolstore` (its tables are applied only by `toolstore.Migrate`), `internal/tools/connector`, `internal/invocation`, `internal/reservation`.
 
-**Not built yet:** the R1-A catch-up list of [the handoff](docs/spec/HANDOFF.md) (section 5), and R1-B encrypted object storage, envelope service, client SDK, backup and restore. R1-C documents and text units, R2 MCP, R3 S3 and replication.
+Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decisions/rulings-2026-10-31.md](docs/decisions/rulings-2026-10-31.md). Dependency records: [docs/dependencies](docs/dependencies).
 
-Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decisions/rulings-2026-10-31.md](docs/decisions/rulings-2026-10-31.md).
+### Specification fixtures
 
-Supporting records:
-- Mechanism matrix (what was taken from MinIO and Cerbos): [docs/research/mechanism-matrix.md](docs/research/mechanism-matrix.md)
-- Dependency records: [docs/dependencies](docs/dependencies)
+`internal/conformance` runs the fixture-ready R1-A and R1-B cases as [fixture-binding.md](docs/design/fixture-binding.md) describes:
+
+| Case | Result |
+|---|---|
+| V-001, V-142, V-144, V-146, V-149 | Pass |
+| V-143 | Passes with fence clock margin 0. One host clock in the local profile. With the default one-second margin, the admission one second before the cutoff is refused (more restrictive than the fixture). |
+| V-141 | Unbound. Its decision carries a `metadata_projection` obligation. R1 maps no obligations (POL-011 not built), so verifiers reject every obligation. |
+| V-145, V-147, V-148 | Not applicable: R1-C |
+
+### Known gaps (not done or not verified)
+
+- **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
+- **D-08 (client key custody) is open.** `fga keys init` stores the recipient keyset in the clear in a mode-0600 file. That is acceptable for development only.
+- **Mutual TLS** between roles is implemented but was not exercised; the smoke run uses the development profile on loopback.
+- **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.
+- **Backups are not encrypted** (AVL-005 asks for encrypted, access-separated backups). They hold ciphertext and catalog rows in mode-0700 directories.
+- **Restore replaces the audit outbox.** No audit exporter process exists in R1, so events recorded after a backup are lost when that backup is restored.
+- **Missing operational controls:** tenant-aware admission limits (AVL-006), sizing measurements (SIZ-001), catalog encryption at rest (DAT-006) and `govulncheck` (LIB-003) are not done.
+- **Content-signing keys** are provisioned by the administrator. The registry has no resource type for self-service enrollment.
+- **Keys role imports:** it links `internal/blob` through `internal/content`'s shared types. It never opens a blob, but splitting those types out would remove the import.
 
 ## Checks
 
@@ -53,12 +71,22 @@ make spec
 ```
 
 - `make check` runs gofmt, `go vet` and `go test -race`.
-- `make check-pg` adds the PostgreSQL-backed tests, each in a throwaway schema.
-- `make spec` runs the specification consistency check.
+- `make check-pg` adds the PostgreSQL-backed tests, each in a throwaway schema, including the conformance cases.
+- `make spec` runs the specification consistency check in check-only mode and its tests.
 
-## Run locally
+## Run the storage roles locally
 
-The `.local/` directory is ignored by git and holds keys, the signed bundle and the configuration.
+`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing, listing and deletion. It then takes a backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+
+```bash
+scripts/smoke.sh .local/smoke
+```
+
+The script is also the reference for configuring the three roles: it writes `decision.json`, `keys.json` and `storage.json` into its working directory. Production profiles require mutual TLS and refuse the development token issuer.
+
+## Run the decision role alone
+
+The `.local/` directory is ignored by git.
 
 1. Build the binaries and generate a publisher key and a decision-signing key:
 
@@ -112,4 +140,4 @@ The `.local/` directory is ignored by git and holds keys, the signed bundle and 
    curl -s -X POST --data @examples/local/request.json http://127.0.0.1:7443/v1/decide-batch
    ```
 
-The example request reads an object of the subject's project and returns `ALLOW` with a signed decision. Change its name to `reports/q4.txt` and the business policy denies it.
+The example request is an agent reading an object of its user's project through a delegation, and returns `ALLOW` with a signed decision. Change its name to `reports/q4.txt` and the business policy denies it.

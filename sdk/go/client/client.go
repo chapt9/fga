@@ -29,7 +29,7 @@ type Error struct {
 	Code   string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("fga: %d %s", e.Status, e.Code) }
+func (e *Error) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Code) }
 
 // Client calls one deployment's storage and keys roles as one user.
 type Client struct {

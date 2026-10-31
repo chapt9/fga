@@ -1,0 +1,2 @@
+{"format":"fga.policy/v1","set":"business","resource":"crypto.recipient","scope":"","rules":[
+  {"id":"own-key","effect":"allow","actions":["*"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}
