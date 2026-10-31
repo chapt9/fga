@@ -398,3 +398,47 @@ func TestGrantLookupRedacted(t *testing.T) {
 		t.Fatalf("a bucket grant with a version: %v", err)
 	}
 }
+
+// TestGrantApprovalOnDocumentVersion is the regression test of review v3
+// F03 for document versions: a policy requiring an approval for share on
+// a document version answered not found, because document versions were
+// not an approval target. The grant now waits for a lead's approval.
+func TestGrantApprovalOnDocumentVersion(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["documents.json"] = `{"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
+	  {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","export"],"roles":["*"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-shares-with-approval","effect":"allow","actions":["share"],"roles":["*"],"requires":["approval"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"leads-approve-versions","effect":"allow","actions":["approve"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.Client("bob", []string{"member"}, "p2")
+	lena := st.User("lena", []string{"lead"}, "p1")
+	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "notes.md", IdempotencyKey: "n"},
+		[]byte("One.\n\nTwo.")); err != nil {
+		t.Fatal(err)
+	}
+	target := content.GrantTarget{Bucket: "vault", Key: "notes.md"}
+	_, err := grant(st, alice.Caller, target, "bob", time.Hour, "read-units")
+	var need *content.ApprovalRequired
+	if !errors.As(err, &need) {
+		t.Fatalf("a grant needing an approval: %v", err)
+	}
+	if views, _, err := st.Content.PendingApprovals(ctx, lena, "", 10); err != nil || len(views) != 1 {
+		t.Fatalf("the lead's pending approvals: %+v, %v", views, err)
+	}
+	if _, err := st.Content.DecideApproval(ctx, lena, need.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grant(st, withApproval(alice.Caller, need.ID), target, "bob", time.Hour, "read-units"); err != nil {
+		t.Fatalf("the grant with the approval: %v", err)
+	}
+	// Listing grants is itself share, which this policy approves case by
+	// case; the catalog shows the grant.
+	if n := count(t, st, `SELECT count(*) FROM share_grants WHERE resource_type = 'document.version' AND removed_at IS NULL`); n != 1 {
+		t.Fatalf("%d grants on the document version", n)
+	}
+}

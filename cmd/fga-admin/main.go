@@ -88,6 +88,7 @@ var ApproverPreset = map[string][]string{
 	"storage.object":     {"approve"},
 	"document.text_unit": {"approve"},
 	"document.derived":   {"approve"},
+	"document.version":   {"approve"},
 }
 
 type env struct {

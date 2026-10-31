@@ -107,6 +107,8 @@ var Policies = map[string]string{
 	  {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","share","export"],"roles":["*"],
 	   "when":"resource.attributes.owner == principal.id"},
 	  {"id":"members-read-versions","effect":"allow","actions":["read-units","discover"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-approve-versions","effect":"allow","actions":["approve"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"units.json": `{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
 	  {"id":"owner-lowers-units-with-approval","effect":"allow","actions":["relabel"],"roles":["*"],"requires":["approval"],
@@ -143,7 +145,7 @@ var UserActions = map[string][]string{
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
 		"label", "relabel", "propose-label", "export", "approve"},
 	"crypto.envelope":    {"create", "release", "retire"},
-	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
+	"document.version":   {"read-units", "raw-read", "discover", "share", "export", "approve"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},
 	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"},
 	"text.entry":         {"read", "use-in-model", "update", "share"},

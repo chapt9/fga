@@ -2,4 +2,6 @@
   {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","share","export"],"roles":["*"],
    "when":"resource.attributes.owner == principal.id"},
   {"id":"members-read-versions","effect":"allow","actions":["read-units","discover"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"leads-approve-versions","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}

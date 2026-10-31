@@ -146,6 +146,9 @@ const (
 	OpDerivedLabel   = "derived.label"
 	OpDerivedRelabel = "derived.relabel"
 	OpApproveUnit    = "document.unit.approve"
+	// OpApproveVersion decides an approval whose target is a document
+	// version, such as a share grant on it (review v3 F03).
+	OpApproveVersion = "document.version.approve"
 	OpApproveDerived = "derived.approve"
 	// Withdrawal of documents (PUB-005, DOC-002): deleting the key clears
 	// its head; withdrawing a version also withdraws units no live version
@@ -424,6 +427,7 @@ func baseOperations() []Operation {
 		one(OpDerivedLabel, RoleOutput, "document.derived", "label"),
 		one(OpDerivedRelabel, RoleOutput, "document.derived", "relabel"),
 		one(OpApproveUnit, RoleUnit, "document.text_unit", "approve"),
+		one(OpApproveVersion, RoleVersion, "document.version", "approve"),
 		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
 		{Name: OpObjectExport, Checks: []CheckSpec{
 			{Role: RoleObject, ResourceType: "storage.object", Action: "export"},
