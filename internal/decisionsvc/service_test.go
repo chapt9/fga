@@ -27,7 +27,8 @@ var now = time.Unix(1_800_000_000, 0)
 const (
 	business = `{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
 	  {"id":"reviewers-read-own-projects","effect":"allow","actions":["read"],"roles":["reviewer"],
-	   "when":"resource.attributes.project_id in principal.attributes.project_ids"}]}`
+	   "when":"resource.attributes.project_id in principal.attributes.project_ids"},
+	  {"id":"reviewers-share","effect":"allow","actions":["share"],"roles":["reviewer"]}]}`
 	ceiling = `{"format":"fga.policy/v1","set":"ceiling","resource":"document.text_unit","scope":"","rules":[
 	  {"id":"only-live","effect":"deny","actions":["read"],"roles":["*"],"when":"resource.attributes.state != 'LIVE'"}]}`
 )
@@ -66,6 +67,10 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 	ids.Put(identity.Identity{ID: "user-42", Tenant: "t-acme", Revision: 88, Roles: []string{"reviewer"},
 		Attributes: map[string]any{"project_ids": []string{"p1"}}})
 	ids.Put(identity.Identity{ID: "agent-7", Tenant: "t-acme", Revision: 12, Roles: []string{"agent"}})
+	ids.Put(identity.Identity{ID: "user-77", Tenant: "t-acme", Revision: 5, Roles: []string{"reviewer"},
+		Attributes: map[string]any{"project_ids": []string{"p1"}}})
+	ids.Put(identity.Identity{ID: "user-90", Tenant: "t-acme", Revision: 2, Roles: []string{"reviewer"},
+		Attributes: map[string]any{"project_ids": []string{"p2"}}})
 	dels := delegation.NewMemoryStore()
 	if err := dels.Put(delegation.Delegation{ID: "dlg-5", Tenant: "t-acme", Actor: "agent-7", Subject: "user-42", Audience: "tools-gw-1",
 		ExpiresAt: now.Add(time.Hour), Revision: 3, Grants: []delegation.Grant{{ResourceType: "document.text_unit", Actions: []string{"read"}}}}); err != nil {
@@ -95,8 +100,13 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		t.Fatal(err)
 	}
 
-	g, err := gate.New(gate.Deps{Identities: ids, Delegations: dels, Resources: resolver, Epochs: ep, Now: clock,
-		Capabilities: capabilities{{"agent-7", "document.text_unit read"}: true}})
+	recipients := gate.MemoryRecipients{
+		{"t-acme", "sha256:77"}:  {Fingerprint: "sha256:77", Principal: "user-77", KeyVersion: 1, Revision: 3, Active: true},
+		{"t-acme", "sha256:90"}:  {Fingerprint: "sha256:90", Principal: "user-90", KeyVersion: 1, Revision: 1, Active: true},
+		{"t-acme", "sha256:old"}: {Fingerprint: "sha256:old", Principal: "user-77", KeyVersion: 0, Revision: 9, Active: false},
+	}
+	g, err := gate.New(gate.Deps{Recipients: recipients, Identities: ids, Delegations: dels, Resources: resolver, Epochs: ep, Now: clock,
+		Capabilities: capabilities{{"agent-7", "document.text_unit read"}: true, {"user-42", "document.text_unit share"}: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +120,17 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		t.Fatal(err)
 	}
 	outbox := audit.NewMemoryOutbox(outboxCapacity)
-	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Signer: signer,
+	ops, err := registry.NewOperations(types, []registry.Operation{
+		{Name: "unit.read", Checks: []registry.CheckSpec{{Role: "unit", ResourceType: "document.text_unit", Action: "read"}}},
+		{Name: "unit.share", Checks: []registry.CheckSpec{
+			{Role: "unit", ResourceType: "document.text_unit", Action: "share"},
+			{Role: "recipient-read", ResourceType: "document.text_unit", Action: "read", Kind: registry.KindRecipientEligibility, Repeated: true},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Operations: ops, Signer: signer,
 		Outbox: outbox, Audiences: []string{"storage"}, MaxAge: 30 * time.Second, Limits: DefaultLimits, Now: clock})
 	if err != nil {
 		t.Fatal(err)
@@ -123,9 +143,74 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 }
 
 func request(alias string) Request {
-	return Request{RequestID: "r-81", Tenant: "t-acme", OperationID: "op-9f3", OperationDigest: "sha256:op", Audience: "storage",
-		Actor: Ref{ID: "agent-7", Revision: 12}, Subject: &Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5",
-		Checks: []Check{{ID: "c1", Action: "read", Resource: Alias{Namespace: "mcp", Name: alias}}}}
+	return Request{RequestID: "r-81", Tenant: "t-acme", Operation: "unit.read", OperationID: "op-9f3", OperationDigest: "sha256:op",
+		Audience: "storage", Actor: Ref{ID: "agent-7", Revision: 12}, Subject: &Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5",
+		Checks: []Check{{ID: "c1", Role: "unit", Action: "read", Resource: Alias{Namespace: "mcp", Name: alias}}}}
+}
+
+// shareRequest is user-42 sharing u-1 with the holders of the given
+// recipient keys.
+func shareRequest(fingerprints ...string) Request {
+	r := Request{RequestID: "r-82", Tenant: "t-acme", Operation: "unit.share", OperationID: "op-a1", OperationDigest: "sha256:share",
+		Audience: "storage", Actor: Ref{ID: "user-42", Revision: 88},
+		Checks: []Check{{ID: "share", Role: "unit", Action: "share", Resource: Alias{Type: "document.text_unit", ID: "u-1"}}}}
+	for _, fp := range fingerprints {
+		r.Checks = append(r.Checks, Check{ID: "read-" + fp, Role: "recipient-read", Action: "read", Kind: "RECIPIENT_ELIGIBILITY",
+			PrincipalBinding: fp, Resource: Alias{Type: "document.text_unit", ID: "u-1"}})
+	}
+	return r
+}
+
+// TestRecipientChecks covers RES-009 and the check kinds: a recipient
+// check is evaluated for the principal its fingerprint resolves to, the
+// result names that principal, and the signed record binds it with the
+// key's revision. An unknown or inactive key, or a recipient the policy
+// does not allow, denies the whole batch.
+func TestRecipientChecks(t *testing.T) {
+	f := newFixture(t, 10)
+	ctx := context.Background()
+	resp := f.svc.Decide(ctx, "storage-1", shareRequest("sha256:77"))
+	if resp.Outcome != "ALLOW" || resp.Results[0].PrincipalID != "user-42" || resp.Results[1].PrincipalID != "user-77" {
+		t.Fatalf("share with user-77 = %+v", resp)
+	}
+	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	rec, err := f.verifier.Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := rec.Checks[1]; c.Kind != "RECIPIENT_ELIGIBILITY" || c.PrincipalBinding != "sha256:77" || c.Principal != (signing.Ref{ID: "user-77", Revision: 5}) || c.KeyRevision != 3 {
+		t.Fatalf("signed recipient check = %+v", c)
+	}
+	if c := rec.Checks[0]; c.Kind != "OPERATION" || c.Principal != (signing.Ref{ID: "user-42", Revision: 88}) {
+		t.Fatalf("signed operation check = %+v", c)
+	}
+
+	for name, tc := range map[string]struct {
+		req    Request
+		reason string
+	}{
+		"unknown fingerprint":       {shareRequest("sha256:nobody"), "RECIPIENT_UNKNOWN"},
+		"revoked key":               {shareRequest("sha256:old"), "RECIPIENT_INACTIVE"},
+		"recipient may not read":    {shareRequest("sha256:77", "sha256:90"), "BUSINESS_DENY"},
+		"no recipient check":        {shareRequest(), "OPERATION_MISMATCH"},
+		"unregistered operation":    {func() Request { r := shareRequest("sha256:77"); r.Operation = "unit.delete"; return r }(), "UNKNOWN_OPERATION"},
+		"other action for the role": {func() Request { r := shareRequest("sha256:77"); r.Checks[0].Action = "read"; return r }(), "OPERATION_MISMATCH"},
+		"operation kind for recipient": {func() Request {
+			r := shareRequest("sha256:77")
+			r.Checks[1].Kind = ""
+			return r
+		}(), "OPERATION_MISMATCH"},
+		"recipient kind for operation": {func() Request {
+			r := shareRequest("sha256:77")
+			r.Checks[0].Kind, r.Checks[0].PrincipalBinding = "RECIPIENT_ELIGIBILITY", "sha256:77"
+			return r
+		}(), "OPERATION_MISMATCH"},
+	} {
+		resp := f.svc.Decide(ctx, "storage-1", tc.req)
+		if resp.Outcome != "DENY" || resp.Reason != tc.reason || resp.Signed != nil {
+			t.Errorf("%s: %s %s, want DENY %s", name, resp.Outcome, resp.Reason, tc.reason)
+		}
+	}
 }
 
 // TestAllowReturnsAVerifiableSignedDecision follows scenario A.1's read
@@ -222,9 +307,9 @@ func TestHTTP(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	good := `{"request_id":"r","tenant":"t-acme","operation_id":"o","operation_digest":"d","audience":"storage","single_use":false,
+	good := `{"request_id":"r","tenant":"t-acme","operation":"unit.read","operation_id":"o","operation_digest":"d","audience":"storage","single_use":false,
 	  "actor":{"id":"agent-7","revision":12},"subject":{"id":"user-42","revision":88},"delegation":"dlg-5",
-	  "checks":[{"id":"c1","action":"read","resource":{"namespace":"mcp","name":"doc://q3#overview"}}]}`
+	  "checks":[{"id":"c1","role":"unit","action":"read","resource":{"namespace":"mcp","name":"doc://q3#overview"}}]}`
 	if code := post(good, true); code != http.StatusOK {
 		t.Errorf("valid request: status %d", code)
 	}

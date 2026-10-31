@@ -46,11 +46,21 @@ type Ref struct {
 	Revision uint64 `json:"revision"`
 }
 
-// Check is one allowed check and the resource state it was bound to.
+// Check is one allowed check, the principal it was evaluated for and the
+// resource state it was bound to.
 type Check struct {
-	ID               string `json:"id"`
+	ID string `json:"id"`
+	// Kind is OPERATION or RECIPIENT_ELIGIBILITY. A recipient check names
+	// the key fingerprint it was bound to and the key's revision.
+	Kind             string `json:"kind"`
+	PrincipalBinding string `json:"principal_binding"`
+	Principal        Ref    `json:"principal"`
+	KeyRevision      uint64 `json:"key_revision"`
 	ResourceType     string `json:"resource_type"`
 	ResourceID       string `json:"resource_id"`
+	// Version is the exact immutable version the check is bound to, when
+	// the operation names one.
+	Version          string `json:"version"`
 	Generation       uint64 `json:"generation"`
 	MetadataRevision uint64 `json:"metadata_revision"`
 	Action           string `json:"action"`

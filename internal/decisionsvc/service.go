@@ -29,6 +29,8 @@ const (
 	ReasonInvalidRequest     decision.Reason = "INVALID_REQUEST"
 	ReasonUnknownResource    decision.Reason = "UNKNOWN_RESOURCE"
 	ReasonUnknownAction      decision.Reason = "UNKNOWN_ACTION"
+	ReasonUnknownOperation   decision.Reason = "UNKNOWN_OPERATION"
+	ReasonOperationMismatch  decision.Reason = "OPERATION_MISMATCH"
 	ReasonPolicyUnavailable  decision.Reason = "POLICY_UNAVAILABLE"
 	ReasonCatalogUnavailable decision.Reason = "CATALOG_UNAVAILABLE"
 	ReasonAuditUnavailable   decision.Reason = "AUDIT_UNAVAILABLE"
@@ -41,24 +43,37 @@ type Ref struct {
 	Revision uint64 `json:"revision"`
 }
 
-// Alias is a resource reference in one protocol namespace.
+// Alias references a resource either by an alias in one protocol namespace
+// or canonically by type and ID. Exactly one form is used.
 type Alias struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type,omitempty"`
+	ID        string `json:"id,omitempty"`
 }
 
-// Check asks for one action on one referenced resource.
+// Check asks for one action on one referenced resource. Role names the
+// check of the registered operation it fills; Kind and PrincipalBinding say
+// whose authority it evaluates (RES-009). Version, when set, is the exact
+// immutable version the check is bound to.
 type Check struct {
-	ID       string `json:"id"`
-	Action   string `json:"action"`
-	Resource Alias  `json:"resource"`
+	ID               string `json:"id"`
+	Role             string `json:"role"`
+	Action           string `json:"action"`
+	Kind             string `json:"kind,omitempty"`
+	PrincipalBinding string `json:"principal_binding,omitempty"`
+	Resource         Alias  `json:"resource"`
+	Version          string `json:"version,omitempty"`
 }
 
 // Request is the body of a DecideBatch call. The adapter's identity is not
 // part of it; it comes from the authenticated connection (DEC-007).
 type Request struct {
-	RequestID       string  `json:"request_id"`
-	Tenant          string  `json:"tenant"`
+	RequestID string `json:"request_id"`
+	Tenant    string `json:"tenant"`
+	// Operation is the registered operation; its checks are fixed by the
+	// registry, not chosen by the caller (RES-001, DEC-001).
+	Operation       string  `json:"operation"`
 	OperationID     string  `json:"operation_id"`
 	OperationDigest string  `json:"operation_digest"`
 	Audience        string  `json:"audience"`
@@ -72,11 +87,12 @@ type Request struct {
 // Result reports one check, with the business and ceiling effects kept apart
 // from the effective result (DEC-003).
 type Result struct {
-	CheckID  string `json:"check_id"`
-	Business string `json:"business"`
-	Ceiling  string `json:"ceiling"`
-	Effect   string `json:"effect"`
-	Reason   string `json:"reason,omitempty"`
+	CheckID     string `json:"check_id"`
+	PrincipalID string `json:"principal_id,omitempty"`
+	Business    string `json:"business"`
+	Ceiling     string `json:"ceiling"`
+	Effect      string `json:"effect"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // SignedDecision is the exact signed record (base64) and its detached JWS.
@@ -110,17 +126,18 @@ var DefaultLimits = Limits{MaxChecks: 50, Deadline: 250 * time.Millisecond}
 
 // Deps are the service's collaborators. Every field is required.
 type Deps struct {
-	Decider   *decision.Decider
-	Gate      *gate.Gate
-	Releases  *release.Manager
-	Resolver  *registry.Resolver
-	Types     *registry.Types
-	Signer    *signing.Signer
-	Outbox    audit.Outbox
-	Audiences []string
-	MaxAge    time.Duration
-	Limits    Limits
-	Now       func() time.Time
+	Decider    *decision.Decider
+	Gate       *gate.Gate
+	Releases   *release.Manager
+	Resolver   *registry.Resolver
+	Types      *registry.Types
+	Operations *registry.Operations
+	Signer     *signing.Signer
+	Outbox     audit.Outbox
+	Audiences  []string
+	MaxAge     time.Duration
+	Limits     Limits
+	Now        func() time.Time
 }
 
 // Service decides batches.
@@ -131,7 +148,7 @@ type Service struct {
 
 // New returns a Service.
 func New(d Deps) (*Service, error) {
-	if d.Decider == nil || d.Gate == nil || d.Releases == nil || d.Resolver == nil || d.Types == nil ||
+	if d.Decider == nil || d.Gate == nil || d.Releases == nil || d.Resolver == nil || d.Types == nil || d.Operations == nil ||
 		d.Signer == nil || d.Outbox == nil || d.Now == nil || d.MaxAge <= 0 || d.Limits.MaxChecks <= 0 || d.Limits.Deadline <= 0 {
 		return nil, errors.New("decisionsvc: every dependency and limit is required")
 	}
@@ -189,6 +206,10 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if req.Tenant == "" || adapter == "" || len(req.Checks) == 0 || len(req.Checks) > s.d.Limits.MaxChecks || !s.audiences[req.Audience] {
 		return deny(ReasonInvalidRequest)
 	}
+	op, ok := s.d.Operations.Lookup(req.Operation)
+	if !ok {
+		return deny(ReasonUnknownOperation)
+	}
 
 	snap, err := s.d.Releases.Snapshot(ctx, req.Tenant)
 	if err != nil {
@@ -198,8 +219,10 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 
 	checks := make([]decision.Check, 0, len(req.Checks))
 	for _, c := range req.Checks {
-		res, err := s.d.Resolver.Resolve(ctx, req.Tenant, registry.Alias{Namespace: c.Resource.Namespace, Name: c.Resource.Name})
+		res, err := s.resolve(ctx, req.Tenant, c.Resource)
 		switch {
+		case errors.Is(err, errBadReference):
+			return deny(ReasonInvalidRequest)
 		case errors.Is(err, registry.ErrUnknownAlias), errors.Is(err, registry.ErrUnknownResource), errors.Is(err, registry.ErrUnknownType):
 			return deny(ReasonUnknownResource)
 		case err != nil:
@@ -209,8 +232,12 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		if !ok {
 			return deny(ReasonUnknownAction)
 		}
-		checks = append(checks, decision.Check{ID: c.ID, Action: action, Resource: res.PolicyResource()})
+		checks = append(checks, decision.Check{ID: c.ID, Action: action, Resource: res.PolicyResource(),
+			Kind: decision.CheckKind(c.Kind), PrincipalBinding: c.PrincipalBinding})
 		bound = append(bound, res)
+	}
+	if !matchesOperation(op, req.Checks, checks, bound) {
+		return deny(ReasonOperationMismatch)
 	}
 
 	env := decision.Envelope{Tenant: req.Tenant, Adapter: adapter, Actor: decision.Ref(req.Actor), Delegation: req.Delegation}
@@ -220,8 +247,8 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	d := s.d.Decider.DecideBatch(ctx, decision.Batch{Envelope: env, SnapshotDigest: snap.Digest, Checks: checks})
 	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
 	for _, r := range d.Results {
-		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, Business: r.Business.String(), Ceiling: r.Ceiling.String(),
-			Effect: effectName(r.Effect), Reason: string(r.Reason)})
+		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, PrincipalID: r.Principal.ID, Business: r.Business.String(),
+			Ceiling: r.Ceiling.String(), Effect: effectName(r.Effect), Reason: string(r.Reason)})
 	}
 	if d.Outcome != decision.OutcomeAllow {
 		return resp, bound
@@ -243,7 +270,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !s.d.Now().Before(binding.ValidUntil) {
 		return deny(gate.ReasonDecisionExpired)
 	}
-	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, req, binding, bound, snap))
+	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, req, binding, bound, snap, d.Results))
 	if err != nil {
 		return fail(ReasonSigningFailed)
 	}
@@ -252,7 +279,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	return resp, bound
 }
 
-func (s *Service) record(id string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot) signing.Record {
+func (s *Service) record(id string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot, results []decision.CheckResult) signing.Record {
 	rec := signing.Record{
 		DecisionID: id, Audience: req.Audience, Tenant: req.Tenant,
 		Actor: signing.Ref(b.Envelope.Actor), Subject: signing.Ref(b.Envelope.Subject), Delegation: req.Delegation,
@@ -262,10 +289,57 @@ func (s *Service) record(id string, req Request, b gate.Binding, bound []registr
 	}
 	for i, c := range req.Checks {
 		action, _ := s.d.Types.CanonicalAction(bound[i].Type, c.Action)
-		rec.Checks = append(rec.Checks, signing.Check{ID: c.ID, ResourceType: bound[i].Type, ResourceID: bound[i].ID,
-			Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision, Action: action})
+		r := results[i]
+		rec.Checks = append(rec.Checks, signing.Check{ID: c.ID, Kind: string(kindOf(c.Kind)), PrincipalBinding: c.PrincipalBinding,
+			Principal: signing.Ref(r.Principal), KeyRevision: r.KeyRevision, ResourceType: bound[i].Type, ResourceID: bound[i].ID,
+			Version: c.Version, Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision, Action: action})
 	}
 	return rec
+}
+
+func kindOf(k string) decision.CheckKind {
+	if k == "" {
+		return decision.KindOperation
+	}
+	return decision.CheckKind(k)
+}
+
+// errBadReference marks a resource reference that uses neither or both
+// forms.
+var errBadReference = errors.New("a resource is referenced by alias or by type and ID")
+
+// resolve resolves a check's resource reference.
+func (s *Service) resolve(ctx context.Context, tenant string, ref Alias) (registry.Resource, error) {
+	switch byAlias, byID := ref.Namespace != "" || ref.Name != "", ref.Type != "" || ref.ID != ""; {
+	case byAlias && !byID && ref.Namespace != "" && ref.Name != "":
+		return s.d.Resolver.Resolve(ctx, tenant, registry.Alias{Namespace: ref.Namespace, Name: ref.Name})
+	case byID && !byAlias && ref.Type != "" && ref.ID != "":
+		return s.d.Resolver.ResolveID(ctx, tenant, ref.Type, ref.ID)
+	default:
+		return registry.Resource{}, errBadReference
+	}
+}
+
+// matchesOperation reports whether the request's checks are exactly the
+// registered operation's: every check fills a registered role with that
+// role's resource type, canonical action and kind; a role that is not
+// repeated is filled once and a repeated role at least once (RES-001,
+// RES-006, KEY-012). Absence of a required check fails the match.
+func matchesOperation(op registry.Operation, reqs []Check, checks []decision.Check, bound []registry.Resource) bool {
+	count := map[string]int{}
+	for i, c := range reqs {
+		spec, ok := op.Spec(c.Role)
+		if !ok || bound[i].Type != spec.ResourceType || checks[i].Action != spec.Action || kindOf(c.Kind) != spec.CheckKind() {
+			return false
+		}
+		count[c.Role]++
+	}
+	for _, spec := range op.Checks {
+		if n := count[spec.Role]; n == 0 || (!spec.Repeated && n != 1) {
+			return false
+		}
+	}
+	return true
 }
 
 func effectName(e decision.CheckEffect) string {

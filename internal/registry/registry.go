@@ -183,6 +183,21 @@ func (r *Resolver) Resolve(ctx context.Context, tenant string, alias Alias) (Res
 	return res, nil
 }
 
+// ResolveID returns the canonical resource of the given type and ID.
+func (r *Resolver) ResolveID(ctx context.Context, tenant, typ, id string) (Resource, error) {
+	res, err := r.catalog.Get(ctx, tenant, id)
+	if err != nil {
+		return Resource{}, err
+	}
+	if res.Type != typ {
+		return Resource{}, ErrUnknownResource
+	}
+	if !r.types.HasResourceType(res.Type) {
+		return Resource{}, fmt.Errorf("%w: %s", ErrUnknownType, res.Type)
+	}
+	return res, nil
+}
+
 // Revalidate returns ErrStale if the resource's generation or metadata
 // revision changed after bound was resolved (RES-004, DAT-003).
 func (r *Resolver) Revalidate(ctx context.Context, bound Resource) error {
@@ -196,17 +211,13 @@ func (r *Resolver) Revalidate(ctx context.Context, bound Resource) error {
 	return nil
 }
 
-// CheckKind says whose authority a check evaluates (specification 2.5,
-// "Decision API", check kinds).
-type CheckKind string
+// CheckKind says whose authority a check evaluates.
+type CheckKind = decision.CheckKind
 
+// Check kinds, as defined by the decision package.
 const (
-	// KindOperation checks are evaluated for the request principal.
-	KindOperation CheckKind = "OPERATION"
-	// KindRecipientEligibility checks are evaluated for the recipient that
-	// the check's principal binding (a key fingerprint) resolves to
-	// (RES-009).
-	KindRecipientEligibility CheckKind = "RECIPIENT_ELIGIBILITY"
+	KindOperation            = decision.KindOperation
+	KindRecipientEligibility = decision.KindRecipientEligibility
 )
 
 // CheckSpec is one check an operation needs: an action on the resource bound
@@ -219,6 +230,9 @@ type CheckSpec struct {
 	Kind         CheckKind
 	Repeated     bool
 }
+
+// CheckKind returns the check's kind, OPERATION when unset.
+func (c CheckSpec) CheckKind() CheckKind { return c.kind() }
 
 // kind returns the check's kind, OPERATION when unset.
 func (c CheckSpec) kind() CheckKind {
@@ -264,6 +278,16 @@ func NewOperations(types *Types, ops []Operation) (*Operations, error) {
 		o.byName[op.Name] = op
 	}
 	return o, nil
+}
+
+// Spec returns the check registered for role.
+func (op Operation) Spec(role string) (CheckSpec, bool) {
+	for _, c := range op.Checks {
+		if c.Role == role {
+			return c, true
+		}
+	}
+	return CheckSpec{}, false
 }
 
 // Lookup returns a registered operation.

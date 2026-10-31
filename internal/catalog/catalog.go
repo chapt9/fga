@@ -22,6 +22,7 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/delegation"
+	"fga/internal/gate"
 	"fga/internal/identity"
 	"fga/internal/registry"
 	"fga/internal/signing"
@@ -42,6 +43,7 @@ var (
 	_ registry.Catalog    = resourceView{}
 	_ signing.Consumption = (*Store)(nil)
 	_ audit.Outbox        = (*Store)(nil)
+	_ gate.Recipients     = (*Store)(nil)
 )
 
 // The identity, delegation and registry stores each have a Get method with
@@ -200,6 +202,20 @@ func (s *Store) GetResource(ctx context.Context, tenant, id string) (registry.Re
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
 	return r, err
+}
+
+// Recipient implements gate.Recipients.
+func (s *Store) Recipient(ctx context.Context, tenant, fingerprint string) (gate.RecipientKey, error) {
+	k := gate.RecipientKey{Tenant: tenant, Fingerprint: fingerprint}
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT principal, key_version, revision, status FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`,
+		tenant, fingerprint).Scan(&k.Principal, &k.KeyVersion, &k.Revision, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gate.RecipientKey{}, gate.ErrUnknownRecipient
+	}
+	k.Active = status == "ACTIVE"
+	return k, err
 }
 
 // Allows implements gate.Capabilities.

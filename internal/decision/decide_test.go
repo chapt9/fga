@@ -38,13 +38,15 @@ func (f *fakeEvaluator) Evaluate(_ context.Context, req policy.Request) (policy.
 	return out, nil
 }
 
-type gateFunc func(context.Context, Batch) (policy.Principal, error)
+type gateFunc func(context.Context, Batch) (Admission, error)
 
-func (g gateFunc) Admit(ctx context.Context, b Batch) (policy.Principal, error) { return g(ctx, b) }
+func (g gateFunc) Admit(ctx context.Context, b Batch) (Admission, error) { return g(ctx, b) }
 
 var reviewer = policy.Principal{ID: "user-42", Roles: []string{"reviewer"}}
 
-var admitAll = gateFunc(func(context.Context, Batch) (policy.Principal, error) { return reviewer, nil })
+var admitAll = gateFunc(func(context.Context, Batch) (Admission, error) {
+	return Admission{Principal: reviewer, PrincipalRef: Ref{ID: reviewer.ID, Revision: 1}}, nil
+})
 
 func fixedClock(t time.Time, reads *int) func() time.Time {
 	return func() time.Time {
@@ -191,11 +193,11 @@ func TestNothingIsAllowedWhenEvaluationStops(t *testing.T) {
 	}{
 		{"empty batch", context.Background(), admitAll, nil, Batch{}, OutcomeDeny, ReasonEmptyBatch, false},
 		{"duplicate check IDs", context.Background(), admitAll, nil, duplicate, OutcomeDeny, ReasonDuplicateCheckID, false},
-		{"gate rejection", context.Background(), gateFunc(func(context.Context, Batch) (policy.Principal, error) {
-			return policy.Principal{}, &Rejection{Reason: "DELEGATION_EXPIRED"}
+		{"gate rejection", context.Background(), gateFunc(func(context.Context, Batch) (Admission, error) {
+			return Admission{}, &Rejection{Reason: "DELEGATION_EXPIRED"}
 		}), nil, batch("read"), OutcomeDeny, "DELEGATION_EXPIRED", false},
-		{"gate failure", context.Background(), gateFunc(func(context.Context, Batch) (policy.Principal, error) {
-			return policy.Principal{}, errors.New("catalog unreachable")
+		{"gate failure", context.Background(), gateFunc(func(context.Context, Batch) (Admission, error) {
+			return Admission{}, errors.New("catalog unreachable")
 		}), nil, batch("read"), OutcomeError, ReasonGateUnavailable, false},
 		{"engine failure (V-015)", context.Background(), admitAll, errors.New("cost limit exceeded"), batch("read"), OutcomeError, ReasonEngineUnavailable, true},
 		{"cancelled request", cancelled, admitAll, nil, batch("read"), OutcomeError, ReasonCancelled, false},

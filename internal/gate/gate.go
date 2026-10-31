@@ -38,7 +38,29 @@ const (
 	ReasonDecisionExpired       decision.Reason = "DECISION_EXPIRED"
 	ReasonResourceChanged       decision.Reason = "RESOURCE_CHANGED"
 	ReasonPolicyEpochSuperseded decision.Reason = "POLICY_EPOCH_SUPERSEDED"
+	ReasonRecipientUnknown      decision.Reason = "RECIPIENT_UNKNOWN"
+	ReasonRecipientInactive     decision.Reason = "RECIPIENT_INACTIVE"
 )
+
+// ErrUnknownRecipient is returned for a fingerprint with no recipient key in
+// the tenant.
+var ErrUnknownRecipient = errors.New("unknown recipient key")
+
+// RecipientKey is a recipient public key as recorded in authoritative state
+// (RCP-001). Only an active key resolves a recipient check.
+type RecipientKey struct {
+	Tenant      string
+	Fingerprint string
+	Principal   string
+	KeyVersion  uint64
+	Revision    uint64
+	Active      bool
+}
+
+// Recipients resolves recipient-key fingerprints (RES-009).
+type Recipients interface {
+	Recipient(ctx context.Context, tenant, fingerprint string) (RecipientKey, error)
+}
 
 // Capabilities reports what an actor may execute at all, whatever any
 // subject permits (DLG-004).
@@ -64,6 +86,7 @@ type Gate struct {
 	capabilities Capabilities
 	resources    Resources
 	epochs       Epochs
+	recipients   Recipients
 	now          func() time.Time
 }
 
@@ -76,58 +99,121 @@ type Deps struct {
 	Capabilities Capabilities
 	Resources    Resources
 	Epochs       Epochs
+	Recipients   Recipients
 	Now          func() time.Time
 }
 
 // New returns a Gate. Every dependency is required.
 func New(d Deps) (*Gate, error) {
-	if d.Identities == nil || d.Delegations == nil || d.Capabilities == nil || d.Resources == nil || d.Epochs == nil || d.Now == nil {
+	if d.Identities == nil || d.Delegations == nil || d.Capabilities == nil || d.Resources == nil || d.Epochs == nil ||
+		d.Recipients == nil || d.Now == nil {
 		return nil, errors.New("gate: every dependency is required")
 	}
 	return &Gate{identities: d.Identities, delegations: d.Delegations, capabilities: d.Capabilities,
-		resources: d.Resources, epochs: d.Epochs, now: d.Now}, nil
+		resources: d.Resources, epochs: d.Epochs, recipients: d.Recipients, now: d.Now}, nil
 }
 
 func reject(r decision.Reason) error { return &decision.Rejection{Reason: r} }
 
-// Admit implements decision.Gate. It returns the business principal: the
-// subject when a delegation applies, otherwise the actor (DLG-003), with
-// roles and attributes from the identity store.
-func (g *Gate) Admit(ctx context.Context, b decision.Batch) (policy.Principal, error) {
+// Admit implements decision.Gate. The request principal is the subject when
+// a delegation applies, otherwise the actor (DLG-003). Delegation scope and
+// the actor's capability apply to operation checks; a recipient check is
+// evaluated for the recipient its fingerprint resolves to, which must be an
+// active key of an enabled identity (RES-009). Roles and attributes always
+// come from the identity store.
+func (g *Gate) Admit(ctx context.Context, b decision.Batch) (decision.Admission, error) {
 	env := b.Envelope
 	if env.Tenant == "" {
-		return policy.Principal{}, reject(ReasonTenantMissing)
+		return decision.Admission{}, reject(ReasonTenantMissing)
 	}
 	if (env.Delegation == "") != (env.Subject.ID == "") {
-		return policy.Principal{}, reject(ReasonSubjectMismatch)
+		return decision.Admission{}, reject(ReasonSubjectMismatch)
 	}
 	actor, err := g.current(ctx, env.Tenant, env.Actor)
 	if err != nil {
-		return policy.Principal{}, err
+		return decision.Admission{}, err
 	}
-	principal := actor
+	principal, principalRef := actor, env.Actor
 	var chain delegation.Chain
 	if env.Delegation != "" {
 		if principal, err = g.current(ctx, env.Tenant, env.Subject); err != nil {
-			return policy.Principal{}, err
+			return decision.Admission{}, err
 		}
+		principalRef = env.Subject
 		if chain, err = g.chain(ctx, env); err != nil {
-			return policy.Principal{}, err
+			return decision.Admission{}, err
 		}
 	}
+	adm := decision.Admission{Principal: toPrincipal(principal), PrincipalRef: principalRef}
 	for _, c := range b.Checks {
+		if c.IsRecipient() {
+			if _, done := adm.Recipients[c.PrincipalBinding]; done {
+				continue
+			}
+			r, err := g.recipient(ctx, env.Tenant, c.PrincipalBinding)
+			if err != nil {
+				return decision.Admission{}, err
+			}
+			if adm.Recipients == nil {
+				adm.Recipients = map[string]decision.Recipient{}
+			}
+			adm.Recipients[c.PrincipalBinding] = r
+			continue
+		}
 		if chain != nil && !chain.Covers(c.Resource.Kind, c.Action) {
-			return policy.Principal{}, reject(ReasonDelegationScope)
+			return decision.Admission{}, reject(ReasonDelegationScope)
 		}
 		ok, err := g.capabilities.Allows(ctx, env.Tenant, env.Actor.ID, c.Resource.Kind, c.Action)
 		if err != nil {
-			return policy.Principal{}, fmt.Errorf("gate: actor capability: %w", err)
+			return decision.Admission{}, fmt.Errorf("gate: actor capability: %w", err)
 		}
 		if !ok {
-			return policy.Principal{}, reject(ReasonActorCapability)
+			return decision.Admission{}, reject(ReasonActorCapability)
 		}
 	}
-	return policy.Principal{ID: principal.ID, Roles: principal.Roles, Attributes: principal.Attributes}, nil
+	return adm, nil
+}
+
+func toPrincipal(id identity.Identity) policy.Principal {
+	return policy.Principal{ID: id.ID, Roles: id.Roles, Attributes: id.Attributes}
+}
+
+// recipient resolves a fingerprint to an active key and its enabled,
+// unexpired principal at the principal's current revision.
+func (g *Gate) recipient(ctx context.Context, tenant, fingerprint string) (decision.Recipient, error) {
+	key, err := g.recipients.Recipient(ctx, tenant, fingerprint)
+	switch {
+	case errors.Is(err, ErrUnknownRecipient):
+		return decision.Recipient{}, reject(ReasonRecipientUnknown)
+	case err != nil:
+		return decision.Recipient{}, fmt.Errorf("gate: recipient: %w", err)
+	case !key.Active:
+		return decision.Recipient{}, reject(ReasonRecipientInactive)
+	}
+	id, err := g.identities.Get(ctx, tenant, key.Principal)
+	switch {
+	case errors.Is(err, identity.ErrUnknown):
+		return decision.Recipient{}, reject(ReasonRecipientUnknown)
+	case err != nil:
+		return decision.Recipient{}, fmt.Errorf("gate: recipient identity: %w", err)
+	case id.Disabled || id.ExpiredAt(g.now()):
+		return decision.Recipient{}, reject(ReasonRecipientInactive)
+	}
+	return decision.Recipient{Principal: toPrincipal(id), Ref: decision.Ref{ID: id.ID, Revision: id.Revision},
+		KeyVersion: key.KeyVersion, KeyRevision: key.Revision}, nil
+}
+
+// MemoryRecipients is an in-memory Recipients for tests and the
+// development profile, keyed by tenant and fingerprint.
+type MemoryRecipients map[[2]string]RecipientKey
+
+// Recipient implements Recipients.
+func (m MemoryRecipients) Recipient(_ context.Context, tenant, fingerprint string) (RecipientKey, error) {
+	k, ok := m[[2]string{tenant, fingerprint}]
+	if !ok {
+		return RecipientKey{}, ErrUnknownRecipient
+	}
+	return k, nil
 }
 
 // current loads an identity and checks it is enabled and at the revision the

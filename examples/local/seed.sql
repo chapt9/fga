@@ -4,12 +4,12 @@ INSERT INTO identities VALUES
   ('t-acme', 'agent-7', 12, false, '{agent}', '{}');
 INSERT INTO delegations VALUES
   ('t-acme', 'dlg-5', 'agent-7', 'user-42', 'local-dev',
-   '[{"resource_type": "document.text_unit", "actions": ["read"]}]', now() + interval '1 day', NULL, 3, false);
+   '[{"resource_type": "storage.object", "actions": ["read"]}]', now() + interval '1 day', NULL, 3, false);
 INSERT INTO resources VALUES
-  ('t-acme', 'u-1', 'document.text_unit', '', 7, 17, 2, '{"project_id": "p1", "state": "LIVE"}'),
-  ('t-acme', 'u-2', 'document.text_unit', '', 1, 4, 1, '{"project_id": "p1", "state": "DRAFT"}');
+  ('t-acme', 'obj-1', 'storage.object', '', 1, 3, 1, '{"project": "p1", "owner": "user-42"}'),
+  ('t-acme', 'obj-2', 'storage.object', '', 1, 2, 1, '{"project": "p2", "owner": "user-9"}');
 INSERT INTO aliases VALUES
-  ('t-acme', 'mcp', 'doc://q3#overview', 'u-1'),
-  ('t-acme', 'mcp', 'doc://q3#draft', 'u-2');
-INSERT INTO capabilities VALUES ('t-acme', 'agent-7', 'document.text_unit', 'read');
+  ('t-acme', 'native.object', 'reports/q3.txt', 'obj-1'),
+  ('t-acme', 'native.object', 'reports/q4.txt', 'obj-2');
+INSERT INTO capabilities VALUES ('t-acme', 'agent-7', 'storage.object', 'read');
 INSERT INTO tenant_epochs VALUES ('t-acme', 1);

@@ -68,6 +68,7 @@ type Reason string
 const (
 	ReasonEmptyBatch          Reason = "EMPTY_BATCH"
 	ReasonDuplicateCheckID    Reason = "DUPLICATE_CHECK_ID"
+	ReasonMalformedCheck      Reason = "MALFORMED_CHECK"
 	ReasonGateUnavailable     Reason = "GATE_UNAVAILABLE"
 	ReasonEngineUnavailable   Reason = "ENGINE_UNAVAILABLE"
 	ReasonCancelled           Reason = "CANCELLED"
@@ -80,12 +81,35 @@ const (
 	ReasonReservationRequired Reason = "RESERVATION_REQUIRED"
 )
 
-// Check is one action on one resource (specification, "Resources, actions and canonical identity").
+// CheckKind says whose authority a check evaluates (specification 2.5,
+// "Decision API", check kinds).
+type CheckKind string
+
+const (
+	// KindOperation checks are evaluated for the request principal: the
+	// represented subject, or the actor acting for itself (DLG-003). The
+	// zero value means KindOperation.
+	KindOperation CheckKind = "OPERATION"
+	// KindRecipientEligibility checks are evaluated for the recipient that
+	// the check's principal binding, a recipient-key fingerprint, resolves
+	// to in authoritative state (RES-009).
+	KindRecipientEligibility CheckKind = "RECIPIENT_ELIGIBILITY"
+)
+
+// Check is one action on one resource (specification 2.5, "Resources,
+// actions and canonical identity").
 type Check struct {
 	ID       string
 	Action   string
 	Resource policy.Resource
+	Kind     CheckKind
+	// PrincipalBinding is the recipient-key fingerprint of a recipient
+	// check and empty for an operation check.
+	PrincipalBinding string
 }
+
+// IsRecipient reports whether the check is a recipient-eligibility check.
+func (c Check) IsRecipient() bool { return c.Kind == KindRecipientEligibility }
 
 // Ref names an identity at the revision the request was built from.
 type Ref struct {
@@ -120,11 +144,16 @@ type Batch struct {
 // CheckResult reports one check. The business and ceiling effects are kept
 // apart from the effective result (DEC-003).
 type CheckResult struct {
-	CheckID  string
-	Business policy.Effect
-	Ceiling  policy.Effect
-	Effect   CheckEffect
-	Reason   Reason
+	CheckID string
+	// Principal is the identity the check was evaluated for, at the
+	// revision read from authoritative state, and KeyRevision the recipient
+	// key's revision for a recipient check.
+	Principal   Ref
+	KeyRevision uint64
+	Business    policy.Effect
+	Ceiling     policy.Effect
+	Effect      CheckEffect
+	Reason      Reason
 	// Requires lists the prerequisites of an allowed check.
 	Requires []string
 	// NextChange is the earliest next change of a time condition in either
@@ -153,12 +182,31 @@ type Rejection struct {
 
 func (r *Rejection) Error() string { return "rejected: " + string(r.Reason) }
 
+// Admission is the authority a gate admitted a batch under: the request
+// principal and every recipient its checks bind, all read from
+// authoritative state.
+type Admission struct {
+	Principal    policy.Principal
+	PrincipalRef Ref
+	// Recipients maps each recipient check's principal binding to the
+	// recipient it resolved to.
+	Recipients map[string]Recipient
+}
+
+// Recipient is a recipient key resolved to its principal (RES-009).
+type Recipient struct {
+	Principal   policy.Principal
+	Ref         Ref
+	KeyVersion  uint64
+	KeyRevision uint64
+}
+
 // Gate validates the execution envelope (identity, tenant binding,
 // delegation, freshness) before policy evaluation (POL-003 step 1) and
-// returns the business principal built from authoritative state. A batch
-// never supplies its own principal, roles or attributes (ID-002).
+// returns the principals built from authoritative state. A batch never
+// supplies its own principal, roles or attributes (ID-002).
 type Gate interface {
-	Admit(ctx context.Context, b Batch) (policy.Principal, error)
+	Admit(ctx context.Context, b Batch) (Admission, error)
 }
 
 // Decider decides batches.
@@ -187,7 +235,7 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 	if reason := malformed(b); reason != "" {
 		return Decision{Outcome: OutcomeDeny, Reason: reason, Results: results}
 	}
-	principal, err := d.gate.Admit(ctx, b)
+	admission, err := d.gate.Admit(ctx, b)
 	if err != nil {
 		var rejection *Rejection
 		if errors.As(err, &rejection) {
@@ -199,7 +247,18 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 	now := d.now()
 	decision := Decision{Outcome: OutcomeAllow, Results: results}
 	for i, c := range b.Checks {
+		principal, ref, keyRevision := admission.Principal, admission.PrincipalRef, uint64(0)
+		if c.IsRecipient() {
+			r, ok := admission.Recipients[c.PrincipalBinding]
+			if !ok {
+				// A gate that admitted the batch without resolving the
+				// recipient cannot authorize it (DEC-004).
+				return Decision{Outcome: OutcomeError, Reason: ReasonGateUnavailable, Results: results}
+			}
+			principal, ref, keyRevision = r.Principal, r.Ref, r.KeyRevision
+		}
 		result, err := d.decideCheck(ctx, b, principal, c, now)
+		result.Principal, result.KeyRevision = ref, keyRevision
 		if err != nil {
 			reason := ReasonEngineUnavailable
 			if ctx.Err() != nil {
@@ -242,6 +301,18 @@ func malformed(b Batch) Reason {
 			return ReasonDuplicateCheckID
 		}
 		seen[c.ID] = true
+		switch c.Kind {
+		case "", KindOperation:
+			if c.PrincipalBinding != "" {
+				return ReasonMalformedCheck
+			}
+		case KindRecipientEligibility:
+			if c.PrincipalBinding == "" {
+				return ReasonMalformedCheck
+			}
+		default:
+			return ReasonMalformedCheck
+		}
 	}
 	return ""
 }

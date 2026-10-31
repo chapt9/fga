@@ -112,7 +112,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 
 	resolver := registry.NewResolver(store.Resources(), types)
 	g, err := gate.New(gate.Deps{Identities: store.Identities(), Delegations: store.Delegations(), Capabilities: store,
-		Resources: resolver, Epochs: store, Now: time.Now})
+		Resources: resolver, Epochs: store, Recipients: store, Now: time.Now})
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,8 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	}
 	maxAge, _ := time.ParseDuration(cfg.DecisionMaxAge) // validated by Config.Validate
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
-		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
+		Operations: registry.R1Operations(types),
+		Signer:     signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
 }
 
 func loadSigner(cfg Config) (*signing.Signer, error) {

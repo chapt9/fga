@@ -1,7 +1,7 @@
 {
   "epoch": 0,
   "audience": "fga-decision",
-  "business": ["units.json"],
+  "business": ["objects.json", "units.json"],
   "ceiling": ["ceiling.json"],
   "cost_limit": 10000,
   "label_order": [],

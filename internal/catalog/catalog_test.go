@@ -103,7 +103,7 @@ func TestDelegationsAndResources(t *testing.T) {
 // roles come from the database.
 func TestGateOverCatalog(t *testing.T) {
 	s, _ := testStore(t)
-	g, err := gate.New(gate.Deps{Identities: s.Identities(), Delegations: s.Delegations(), Capabilities: s,
+	g, err := gate.New(gate.Deps{Recipients: gate.MemoryRecipients{}, Identities: s.Identities(), Delegations: s.Delegations(), Capabilities: s,
 		Resources: registry.NewResolver(s.Resources(), registry.R1Types()), Epochs: s, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -113,9 +113,9 @@ func TestGateOverCatalog(t *testing.T) {
 			Subject: decision.Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5"},
 		Checks: []decision.Check{{ID: "c1", Action: "read", Resource: policy.Resource{Kind: "document.text_unit", ID: "u-1"}}},
 	}
-	p, err := g.Admit(context.Background(), b)
-	if err != nil || p.ID != "user-42" || p.Roles[0] != "reviewer" {
-		t.Fatalf("Admit = %+v, %v", p, err)
+	adm, err := g.Admit(context.Background(), b)
+	if p := adm.Principal; err != nil || p.ID != "user-42" || p.Roles[0] != "reviewer" {
+		t.Fatalf("Admit = %+v, %v", adm, err)
 	}
 }
 

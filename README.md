@@ -112,4 +112,4 @@ The `.local/` directory is ignored by git and holds keys, the signed bundle and 
    curl -s -X POST --data @examples/local/request.json http://127.0.0.1:7443/v1/decide-batch
    ```
 
-The example request reads a LIVE unit and returns `ALLOW` with a signed decision. Change its resource to `doc://q3#draft` and the ceiling denies it.
+The example request reads an object of the subject's project and returns `ALLOW` with a signed decision. Change its name to `reports/q4.txt` and the business policy denies it.

@@ -53,7 +53,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.catalog.Put(registry.Resource{ID: "u-1", Tenant: "t-acme", Type: "document.text_unit", Generation: 17, MetadataRevision: 2})
 	caps := capabilityTable{{"agent-7", "document.text_unit", "read"}: true, {"user-42", "document.text_unit", "read"}: true}
-	g, err := New(Deps{Identities: f.identities, Delegations: f.delegations, Capabilities: caps,
+	g, err := New(Deps{Recipients: MemoryRecipients{}, Identities: f.identities, Delegations: f.delegations, Capabilities: caps,
 		Resources: registry.NewResolver(f.catalog, registry.R1Types()), Epochs: f.epochs, Now: func() time.Time { return *f.clock }})
 	if err != nil {
 		t.Fatal(err)
@@ -83,18 +83,18 @@ func reason(err error) decision.Reason {
 // cannot supply roles.
 func TestAdmitReturnsSubjectFromStore(t *testing.T) {
 	f := newFixture(t)
-	p, err := f.gate.Admit(context.Background(), delegatedBatch("read"))
+	adm, err := f.gate.Admit(context.Background(), delegatedBatch("read"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.ID != "user-42" || !slices.Equal(p.Roles, []string{"reviewer"}) {
-		t.Fatalf("principal = %+v, want user-42 with stored roles", p)
+	if p := adm.Principal; p.ID != "user-42" || !slices.Equal(p.Roles, []string{"reviewer"}) || adm.PrincipalRef.Revision != 88 {
+		t.Fatalf("admission = %+v, want user-42 at revision 88 with stored roles", adm)
 	}
 
 	own := decision.Batch{Envelope: decision.Envelope{Tenant: "t-acme", Actor: decision.Ref{ID: "user-42", Revision: 88}},
 		Checks: delegatedBatch("read").Checks}
-	if p, err := f.gate.Admit(context.Background(), own); err != nil || p.ID != "user-42" {
-		t.Fatalf("actor acting for itself: %+v, %v", p, err)
+	if adm, err := f.gate.Admit(context.Background(), own); err != nil || adm.Principal.ID != "user-42" {
+		t.Fatalf("actor acting for itself: %+v, %v", adm, err)
 	}
 }
 
