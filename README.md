@@ -46,7 +46,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 ### Known gaps (not done or not verified)
 
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
-- **D-08 (client key custody) is open.** `fga keys init` stores the recipient keyset in the clear in a mode-0600 file, for development only. The backup key (`fga-admin backup-key generate`) is likewise a plain file the operator must keep apart from the catalog and the backups.
+- **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.
 - **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.
 - **Audit export** goes to local files only. There is no external collector and no signing or hash-chaining of export files. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
 - **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).

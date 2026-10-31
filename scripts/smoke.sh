@@ -8,6 +8,7 @@
 # Needs a local PostgreSQL reachable as localhost (createdb, dropdb, psql).
 # Development keys and tokens only; nothing here is for production.
 set -euo pipefail
+check() { "$@" || { echo "SMOKE FAILED: $*"; exit 1; }; }
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 W=$(mkdir -p "$1" && cd "$1" && pwd)
 rm -rf "$W/run" && mkdir -p "$W/run" && cd "$W/run"
@@ -48,16 +49,18 @@ sleep 2
 curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && echo "roles ready"
 
 ADMIN="$B/fga-admin -db $URL -journal journal -blobs blobs"
-$ADMIN backup-key generate -out backup.key
+export FGA_BACKUP_KEY_PASSPHRASE="smoke backup passphrase"
+$ADMIN backup-key generate -encrypt -out backup.key
+grep -q '"format":"fga.keyfile/v1"' backup.key && echo "backup key is passphrase-protected"
 $ADMIN bucket create -tenant t-acme -name reports -project p1 >/dev/null
 for u in alice bob; do
   $ADMIN identity put -tenant t-acme -id $u -roles member -attrs '{"projects":["p1"]}'
   $ADMIN grant -tenant t-acme -actor $u -preset storage
-  $B/fga keys init -dir $u > $u.keys
+  if [ $u = alice ]; then FGA_KEY_PASSPHRASE="alice passphrase" $B/fga keys init -dir $u -encrypt > $u.keys; else $B/fga keys init -dir $u > $u.keys; fi
   $ADMIN signing-key add -tenant t-acme -principal $u -public-key "$(awk '/^signer/{print $3}' $u.keys)" >/dev/null
 done
 tok() { $B/fga dev-token -key issuer.key -key-id tok-1 -sub $1 -tenant t-acme -aud $2 -ttl 30m; }
-as() { export FGA_KEY_DIR=$1 FGA_TOKEN=$(tok $1 fga-storage) FGA_KEYS_TOKEN=$(tok $1 fga-keys)
+as() { export FGA_KEY_DIR=$1 FGA_TOKEN=$(tok $1 fga-storage) FGA_KEYS_TOKEN=$(tok $1 fga-keys) FGA_KEY_PASSPHRASE="$1 passphrase"
        export FGA_STORAGE_URL=http://127.0.0.1:18441 FGA_KEYS_URL=http://127.0.0.1:18442; }
 
 as alice; $B/fga keys enroll -tenant t-acme -principal alice
@@ -67,6 +70,11 @@ as alice; $B/fga trust add -recipient "$(awk '/^recipient/{print $3}' bob.keys)"
 as bob;   $B/fga trust add -signer "$(awk '/^signer/{print $3}' alice.keys)"
 
 head -c 3000000 /dev/urandom > plain.bin
+grep -q '"format":"fga.keyfile/v1"' alice/recipient.key && grep -q '"format":"fga.keyfile/v1"' alice/signing.key && echo "alice's private keys are passphrase-protected"
+as bob; check $B/fga keys protect; check grep -q fga.keyfile/v1 bob/signing.key; check $B/fga keys unprotect
+if grep -q fga.keyfile/v1 bob/signing.key bob/recipient.key; then echo "SMOKE FAILED: unprotect left a protected file"; exit 1; fi
+echo "bob's keys protected and unprotected"
+as alice; if FGA_KEY_PASSPHRASE=wrong $B/fga ls -bucket reports 2>err.txt; then echo "UNEXPECTED: wrong passphrase accepted"; exit 1; else echo "wrong passphrase: $(cat err.txt)"; fi
 as alice; $B/fga put -bucket reports -key q3/report.bin -in plain.bin -if-none-match
 as alice; $B/fga get -bucket reports -key q3/report.bin -out alice.out && cmp plain.bin alice.out && echo "alice round trip OK"
 as bob;   if $B/fga get -bucket reports -key q3/report.bin -out bob.out 2>err.txt; then echo "UNEXPECTED: bob read without an envelope"; exit 1; else echo "bob before sharing: $(cat err.txt)"; fi

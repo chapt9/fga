@@ -16,7 +16,12 @@
 //	recipient revoke   -tenant T -fingerprint FP             (journaled)
 //	delegation revoke  -tenant T -id ID                      (journaled)
 //	epoch raise        -tenant T -epoch N                    (journaled)
-//	backup-key generate -out FILE                   create a backup key (keep it apart from catalog and backups)
+//	backup-key generate -out FILE [-encrypt]        create a backup key (keep it apart from catalog and backups)
+//	key protect|unprotect -file FILE                encrypt a backup key file with a passphrase, or decrypt it
+//
+// A protected backup key is opened with the passphrase from
+// -passphrase-file or $FGA_BACKUP_KEY_PASSPHRASE (docs/design/key-files.md).
+//
 //	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
 //	restore            -backup-key FILE -from DIR
 //	reconcile
@@ -43,6 +48,7 @@ import (
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/journal"
+	"fga/internal/keyfile"
 	"fga/internal/recovery"
 )
 
@@ -126,6 +132,9 @@ func run(args []string) error {
 	epoch := fs.Uint64("epoch", 0, "policy epoch")
 	out := fs.String("out", "", "backup directory or key file to create")
 	backupKeyFile := fs.String("backup-key", "", "backup key file")
+	encrypt := fs.Bool("encrypt", false, "protect the new key file with a passphrase")
+	keyFile := fs.String("file", "", "key file to protect or unprotect")
+	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_BACKUP_KEY_PASSPHRASE)")
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
@@ -140,14 +149,16 @@ func run(args []string) error {
 		}
 		return nil
 	}
+	passphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_BACKUP_KEY_PASSPHRASE", *passphraseFile) }
 	backupKey := func() (*backupcrypt.Key, error) {
 		if *backupKeyFile == "" {
 			return nil, errors.New("backups are encrypted: -backup-key is required")
 		}
-		raw, err := os.ReadFile(*backupKeyFile)
+		raw, err := keyfile.Read(*backupKeyFile, passphrase)
 		if err != nil {
 			return nil, err
 		}
+		defer clear(raw)
 		return backupcrypt.Load(raw)
 	}
 	journaled := func(kind, subject string, change func() error) error {
@@ -244,19 +255,44 @@ func run(args []string) error {
 		if err := need(*out); err != nil {
 			return err
 		}
+		if _, err := os.Stat(*out); err == nil {
+			return fmt.Errorf("%s already exists", *out)
+		}
 		raw, err := backupcrypt.Generate()
 		if err != nil {
 			return err
 		}
-		f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		defer clear(raw)
+		if *encrypt {
+			p, err := passphrase()
+			if err != nil {
+				return err
+			}
+			if raw, err = keyfile.Seal(raw, p); err != nil {
+				return err
+			}
+		}
+		return keyfile.Write(*out, raw)
+	case "key protect", "key unprotect":
+		if err := need(*keyFile); err != nil {
+			return err
+		}
+		p, err := passphrase()
 		if err != nil {
 			return err
 		}
-		if _, err := f.Write(raw); err != nil {
-			f.Close()
+		defer clear(p)
+		data, err := keyfile.Read(*keyFile, func() ([]byte, error) { return p, nil })
+		if err != nil {
 			return err
 		}
-		return f.Close()
+		defer clear(data)
+		if cmd == "key protect" {
+			if data, err = keyfile.Seal(data, p); err != nil {
+				return err
+			}
+		}
+		return keyfile.Write(*keyFile, data)
 	case "backup":
 		blobs, err := e.blobs()
 		if err != nil || need(*out) != nil {

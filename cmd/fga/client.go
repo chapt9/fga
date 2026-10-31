@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fga/internal/cryptowire"
+	"fga/internal/keyfile"
 	"fga/sdk/go/client"
 	"fga/sdk/go/crypto"
 )
@@ -30,7 +31,13 @@ import (
 // Endpoints and tokens come from $FGA_STORAGE_URL, $FGA_KEYS_URL,
 // $FGA_TOKEN (storage audience) and $FGA_KEYS_TOKEN (keys audience).
 //
-//	fga keys init      [-dir D]          create the key directory and print its public keys
+// The two private-key files may be protected with a passphrase
+// (docs/design/key-files.md). The passphrase comes from -passphrase-file or
+// $FGA_KEY_PASSPHRASE and is used only when a protected key is opened.
+//
+//	fga keys init      [-dir D] [-encrypt]  create the key directory and print its public keys
+//	fga keys protect   [-dir D]          encrypt recipient.key and signing.key with a passphrase
+//	fga keys unprotect [-dir D]          write them back in the clear
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match]
@@ -96,7 +103,22 @@ func (tf trustFile) store() (fileTrust, error) {
 	return t, nil
 }
 
-func keysInit(dir string) error {
+// privateFiles are the key directory's private-key files.
+var privateFiles = []string{"recipient.key", "signing.key"}
+
+// writePrivate writes a private-key file, protected when passphrase is set.
+func writePrivate(path string, data, passphrase []byte) error {
+	if passphrase != nil {
+		sealed, err := keyfile.Seal(data, passphrase)
+		if err != nil {
+			return err
+		}
+		data = sealed
+	}
+	return keyfile.Write(path, data)
+}
+
+func keysInit(dir string, passphrase []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -111,14 +133,14 @@ func keysInit(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "recipient.key"), raw, 0o600); err != nil {
+	if err := writePrivate(filepath.Join(dir, "recipient.key"), raw, passphrase); err != nil {
 		return err
 	}
 	sk, err := crypto.NewSigningKey()
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "signing.key"), []byte(base64.StdEncoding.EncodeToString(sk.Private)+"\n"), 0o600); err != nil {
+	if err := writePrivate(filepath.Join(dir, "signing.key"), []byte(base64.StdEncoding.EncodeToString(sk.Private)+"\n"), passphrase); err != nil {
 		return err
 	}
 	pub := sk.Private.Public().(ed25519.PublicKey)
@@ -132,18 +154,24 @@ func keysInit(dir string) error {
 	return nil
 }
 
-func loadClient(dir string) (*client.Client, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, "recipient.key"))
+func loadClient(dir string, passphrase func() ([]byte, error)) (*client.Client, error) {
+	raw, err := keyfile.Read(filepath.Join(dir, "recipient.key"), passphrase)
 	if err != nil {
 		return nil, err
 	}
 	rk, err := crypto.ParseRecipientKeyInsecure(raw)
+	clear(raw)
 	if err != nil {
 		return nil, err
 	}
-	priv, err := readPrivateKey(filepath.Join(dir, "signing.key"))
+	signing, err := keyfile.Read(filepath.Join(dir, "signing.key"), passphrase)
 	if err != nil {
 		return nil, err
+	}
+	priv, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(signing)))
+	clear(signing)
+	if err != nil || len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("signing.key does not hold a base64 Ed25519 private key")
 	}
 	tf, err := readTrust(dir)
 	if err != nil {
@@ -179,14 +207,48 @@ func clientCommand(cmd string, args []string) error {
 	principal := fs.String("principal", "", "principal")
 	recipient := fs.String("recipient", "", "base64 recipient public key to pin")
 	signer := fs.String("signer", "", "base64 signer public key to trust")
+	encrypt := fs.Bool("encrypt", false, "protect the new private keys with a passphrase")
+	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_KEY_PASSPHRASE)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *dir == "" {
 		return errors.New("-dir or $FGA_KEY_DIR is required")
 	}
-	if cmd == "keys init" {
-		return keysInit(*dir)
+	passphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_KEY_PASSPHRASE", *passphraseFile) }
+	switch cmd {
+	case "keys init":
+		var p []byte
+		if *encrypt {
+			var err error
+			if p, err = passphrase(); err != nil {
+				return err
+			}
+		}
+		return keysInit(*dir, p)
+	case "keys protect", "keys unprotect":
+		p, err := passphrase()
+		if err != nil {
+			return err
+		}
+		defer clear(p)
+		for _, name := range privateFiles {
+			path := filepath.Join(*dir, name)
+			data, err := keyfile.Read(path, func() ([]byte, error) { return p, nil })
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			if cmd == "keys unprotect" {
+				err = keyfile.Write(path, data)
+			} else {
+				err = writePrivate(path, data, p)
+			}
+			clear(data)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if cmd == "trust add" {
 		tf, err := readTrust(*dir)
@@ -209,7 +271,7 @@ func clientCommand(cmd string, args []string) error {
 		}
 		return writeTrust(*dir, tf)
 	}
-	c, err := loadClient(*dir)
+	c, err := loadClient(*dir, passphrase)
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,7 @@
 | Field | Record |
 |---|---|
 | Module | `github.com/tink-crypto/tink-go/v2` v2.9.0, released 15 October 2026, pinned in `go.mod` and `go.sum` (`go mod verify` passes). Downloaded from proxy.golang.org with the owner's approval on 31 October 2026 (module zip 5,329,292 bytes). |
-| Owner | Client SDK (`sdk/go/crypto`), and backup encryption in `fga-admin` (`internal/backupcrypt`, streaming AEAD only). No server role may link it (MOD-004); the storage, keys and decision roles' import allowlists exclude it. |
+| Owner | Client SDK (`sdk/go/crypto`), backup encryption in `fga-admin` (`internal/backupcrypt`, streaming AEAD only), and passphrase-protected key files in `fga` and `fga-admin` (`internal/keyfile`, AES-256-GCM AEAD). No server role may link it (MOD-004); the storage, keys and decision roles' import allowlists exclude it. |
 | License | Apache-2.0, from the `LICENSE` file of the downloaded module. The module ships no `NOTICE` file. The license text is to be carried in `LICENSES/` before distribution. |
 | Why | CRY-002 and RCP-004 name Tink: streaming AEAD AES-256-GCM-HKDF with 1 MiB segments for payloads, and HPKE `DHKEM_X25519_HKDF_SHA256` / `HKDF_SHA256` / `AES_256_GCM` for recipient envelopes. The SDK frames and signs what Tink produces and implements no cipher. |
 | HPKE support | Verified on 31 October 2026: v2.9.0 has `hybrid/hpke` with KEM `DHKEM_X25519_HKDF_SHA256`, KDF `HKDFSHA256`, AEAD `AES256GCM` and variant `NO_PREFIX`, key objects from raw public key bytes (`hpke.NewPublicKey`), and `keyset.Manager.AddKey`. `sdk/go/crypto` tests encrypt and decrypt with it. This is a functional check against our own code only, not cryptographic interoperability evidence (RCP-007). |
