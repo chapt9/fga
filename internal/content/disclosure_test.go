@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"maps"
 	"strings"
 	"testing"
 
@@ -238,5 +239,61 @@ func TestOriginalFile(t *testing.T) {
 	}
 	if page, err := st.Content.ListUnits(ctx, bob.Caller, "reports", "hr.md", "", 10, ""); err != nil || len(page.Units) != 2 {
 		t.Fatalf("bob's subset = %+v, %v", page, err)
+	}
+}
+
+// TestQuarantinedUnitsStayGuarded is the regression test of review v3
+// finding F05: the manifest and the original file were authorized against
+// the version's LIVE units only, so with units quarantined after a restore
+// a caller got the whole manifest (with every unit quarantined, without
+// any decision) and the original's ciphertext without read on the
+// quarantined units. Whole-document disclosures now check every unit the
+// version lists.
+func TestQuarantinedUnitsStayGuarded(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["documents.json"] = strings.Replace(policies["documents.json"],
+		`{"id":"members-read-versions","effect":"allow","actions":["read-units","discover"]`,
+		`{"id":"members-read-versions","effect":"allow","actions":["read-units","raw-read","discover"]`, 1)
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	eve := st.Client("eve", []string{"member"}, "p2")
+	alice.Pin(bob)
+	up, err := alice.PrepareDocumentWithOriginal("reports", "doc", []string{"Public.", "Secret."}, []byte("Public. Secret."), alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	secret := up.Intent.Units[1]
+	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "doc", "", secret.Unit, "restricted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.ReadOriginal(ctx, bob.Caller, "reports", "doc", ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("bob reads the original without read on the restricted unit: %v", err)
+	}
+	quarantine := func(versions ...string) {
+		t.Helper()
+		for _, v := range versions {
+			if _, err := st.Pool.Exec(ctx, `UPDATE object_versions SET state = 'QUARANTINED' WHERE id::text = $1`, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	quarantine(secret.UnitVersion)
+	if _, _, err := st.Content.Manifest(ctx, bob.Caller, "reports", "doc", ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("bob's manifest with the restricted unit quarantined: %v", err)
+	}
+	if _, err := st.Content.ReadOriginal(ctx, bob.Caller, "reports", "doc", ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("bob's original with the restricted unit quarantined: %v", err)
+	}
+	quarantine(up.Intent.Units[0].UnitVersion)
+	if _, _, err := st.Content.Manifest(ctx, eve.Caller, "reports", "doc", ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("another project's manifest with every unit quarantined: %v", err)
+	}
+	if _, _, err := st.Content.Manifest(ctx, alice.Caller, "reports", "doc", ""); err != nil {
+		t.Fatalf("the owner's manifest: %v", err)
 	}
 }

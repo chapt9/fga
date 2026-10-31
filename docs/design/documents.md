@@ -45,6 +45,8 @@ Objects of kind `unit` and `original` never appear in object listings or the obj
 | Full manifest | `read-units` and `read` on every unit | The signed manifest, only when every entry may be disclosed |
 | Original file | `raw-read` on the document version and `read` on every unit (complete content) | The original's ciphertext and envelope; never inferred from unit reads (CNT-003, V-052, V-053) |
 
+"Every unit" for the full manifest and the original file means every unit the version lists, whatever its state: a unit quarantined after a restore is still named by the manifest and still in the original, so it is still checked. A check set is never empty; the version's own check is always decided (review v3 F05).
+
 Deliveries are audited with unit, version, recipient and digests, never plaintext (DSC-003).
 
 ## Export (Table "Compound operations", V-132 to V-136)

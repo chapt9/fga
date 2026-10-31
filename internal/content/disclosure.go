@@ -95,9 +95,25 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 // order: those after position after, at most n; or, with units, exactly
 // those units (in any order).
 func (s *Service) members(ctx context.Context, tenant string, dv cryptowire.UUID, after, n int, units []string) ([]member, error) {
+	return s.memberRows(ctx, tenant, dv, after, n, units, true)
+}
+
+// allMembers returns every unit a document version lists, whatever the
+// state of its unit version. A disclosure of the whole document (the
+// manifest, the original file) is authorized against them all: a unit
+// quarantined after a restore is still named by the manifest and still in
+// the original (review v3 F05).
+func (s *Service) allMembers(ctx context.Context, tenant string, dv cryptowire.UUID) ([]member, error) {
+	return s.memberRows(ctx, tenant, dv, -1, cryptowire.MaxUnits, nil, false)
+}
+
+func (s *Service) memberRows(ctx context.Context, tenant string, dv cryptowire.UUID, after, n int, units []string, live bool) ([]member, error) {
 	sql := `SELECT u.position, u.unit::text, u.unit_version::text, v.ciphertext_length, u.descriptor, coalesce(u.descriptor_signature, '')
 	          FROM document_units u JOIN object_versions v ON v.tenant = u.tenant AND v.id = u.unit_version
-	         WHERE u.tenant = $1 AND u.document_version = $2 AND v.state = 'LIVE'`
+	         WHERE u.tenant = $1 AND u.document_version = $2`
+	if live {
+		sql += ` AND v.state = 'LIVE'`
+	}
 	args := []any{tenant, dv}
 	if units != nil {
 		sql += ` AND u.unit::text = ANY($3) ORDER BY u.position`
@@ -135,9 +151,10 @@ func selectChecks(d docVersion, ms []member) []check {
 
 // allowed decides read-units on the version and read on every one of ms,
 // in batches, and reports whether all are allowed. Any other failure is
-// returned.
+// returned. It always decides at least the version's read-units: an empty
+// ms is never permission by itself (review v3 F05).
 func (s *Service) allowed(ctx context.Context, c Caller, op string, d docVersion, ms []member) (bool, error) {
-	for start := 0; start < len(ms); start += maxBatch - 1 {
+	for start := 0; start == 0 || start < len(ms); start += maxBatch - 1 {
 		_, rec, err := s.decide(ctx, c, op, Audience, false, selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)]))
 		if errors.Is(err, ErrNotFound) {
 			return false, nil
@@ -278,7 +295,7 @@ func (s *Service) Manifest(ctx context.Context, c Caller, bucketName, key, versi
 	if err != nil {
 		return nil, "", err
 	}
-	ms, err := s.members(ctx, c.Tenant, d.id, -1, cryptowire.MaxUnits, nil)
+	ms, err := s.allMembers(ctx, c.Tenant, d.id)
 	if err != nil {
 		return nil, "", err
 	}
@@ -474,13 +491,13 @@ func (s *Service) original(ctx context.Context, tenant string, d docVersion) (cr
 // Any denial is ErrNotFound. The decisions are for audience: the storage
 // role's own, or the keys role's when they go with an envelope release.
 func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, singleUse bool, audience string) ([]signing.Signed, []signing.Record, error) {
-	ms, err := s.members(ctx, c.Tenant, d.id, -1, cryptowire.MaxUnits, nil)
+	ms, err := s.allMembers(ctx, c.Tenant, d.id)
 	if err != nil {
 		return nil, nil, err
 	}
 	var signed []signing.Signed
 	var recs []signing.Record
-	for start := 0; start < len(ms); start += maxBatch - 1 {
+	for start := 0; start == 0 || start < len(ms); start += maxBatch - 1 {
 		checks := selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)])
 		checks[0].action = "raw-read"
 		sg, rec, err := s.decide(ctx, c, registry.OpDocRawRead, audience, singleUse, checks)
