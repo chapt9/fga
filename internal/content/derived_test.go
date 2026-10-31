@@ -185,3 +185,56 @@ func TestDerivedLeaseFollowsLineage(t *testing.T) {
 		t.Fatalf("stream after a source label change: %v, want %v", err, content.ErrLineageChanged)
 	}
 }
+
+// TestDerivedVersions covers new versions of a derived output: each needs
+// new-version on the output and carries its own lineage; delivery of a
+// version follows that version's lineage; a version raises the label to
+// its lineage maximum but never lowers it.
+func TestDerivedVersions(t *testing.T) {
+	st := r1test.New(t)
+	st.LabeledBucket("reports", "p1", "public")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	up, err := alice.PrepareDocumentSpecs(ctx, "reports", "src.md", []string{"u1", "u2"},
+		[]content.DocumentUnitSpec{{Label: "internal"}, {Label: "restricted"}}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	src := unitSources(up)
+	label := func(id string) string {
+		var l string
+		_ = st.Pool.QueryRow(ctx, `SELECT attributes->>'label' FROM resources WHERE id = $1`, id).Scan(&l)
+		return l
+	}
+	v1, err := alice.PutDerived("reports", "summary", []byte("v1"), src[:1], "")
+	if err != nil || label(v1.Object) != "internal" {
+		t.Fatalf("v1 = %+v, %v, label %s", v1, err, label(v1.Object))
+	}
+	v2, err := alice.PutDerived("reports", "summary", []byte("v2"), src[1:], "")
+	if err != nil || v2.Object != v1.Object || v2.Generation != 2 || label(v1.Object) != "restricted" {
+		t.Fatalf("v2 = %+v, %v, label %s", v2, err, label(v1.Object))
+	}
+	v3, err := alice.PutDerived("reports", "summary", []byte("v3"), src[:1], "")
+	if err != nil || label(v1.Object) != "restricted" {
+		t.Fatalf("v3 lowered the label implicitly: %+v, %v, label %s", v3, err, label(v1.Object))
+	}
+	if n := count(t, st, `SELECT count(*) FROM derived_versions WHERE derived::text = $1`, v1.Object); n != 3 {
+		t.Fatalf("derived versions = %d", n)
+	}
+	for _, v := range []content.Published{v1, v3} {
+		var lineage string
+		_ = st.Pool.QueryRow(ctx, `SELECT source_id FROM lineage WHERE derived_version::text = $1`, v.Version).Scan(&lineage)
+		if lineage != src[0].ID {
+			t.Fatalf("version %s lineage %s", v.Version, lineage)
+		}
+	}
+	if _, err := bob.PutDerived("reports", "summary", []byte("x"), src[:1], ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a member without new-version added a version: %v", err)
+	}
+	if _, err := alice.Put("reports", "summary", []byte("x")); err == nil {
+		t.Fatal("an object version was published over a derived key")
+	}
+}

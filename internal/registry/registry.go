@@ -82,7 +82,9 @@ var r1TypeDefs = []TypeDef{
 	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},
 	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
-	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve"}},
+	// new-version on derived outputs is our addition to the spec's table:
+	// a derived output gets new versions, each with its own lineage.
+	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve", "new-version"}},
 	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke", "discover"}},
 	// Content-signing keys are looked up for verification; under default
 	// deny (ruling 7) the lookup is a registered, policy-decided action.

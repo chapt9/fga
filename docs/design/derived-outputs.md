@@ -53,4 +53,10 @@ Package and ciphertext are for one of the caller's own keys. For a package, the 
 
 **Relabelling.** `PUT …/derived/label?key=`: raising is `label`, lowering (also below the lineage maximum) is `relabel`, never below the bucket floor (labels-and-approvals.md). `derived_versions.effective_label` keeps the label computed at publication; the resource's label is the current one.
 
-**Not yet.** New versions of a derived output, and a recipient-bound declassify record for managed clients beyond the decision itself (DRV-008's reported label).
+**Versions.** Begin with `"derived": true` on an existing derived key starts a new version.
+- `document.derived` gains `new-version`, our addition to the spec's action table. Begin and staging need it on the output (`derived.begin-version`, `derived.stage-version`), and so does finalize (`derived.publish-version`).
+- Each version carries its own signed lineage, recorded in `derived_versions` and `lineage`. Delivery of a version follows that version's transitive lineage.
+- The output's label is one resource label. A version raises it to the maximum of the bucket floor, the current label and the version's sources (and a higher proposal). It never lowers it; lowering is `relabel`.
+- An object or document key cannot take a derived version, nor a derived key an object version.
+
+**Not yet.** A recipient-bound declassify record for managed clients beyond the decision itself (DRV-008's reported label).

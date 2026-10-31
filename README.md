@@ -66,7 +66,6 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
 - **Approvals** cover finalize, delete, version delete and label changes of objects. Keys-role operations and document publication send no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
 - **Not built in R1-C:**
-  - new versions of a derived output;
   - export of whole objects (export covers document units).
 
   The CLI has no command to create or append to a text collection; the API and Go fixtures do.

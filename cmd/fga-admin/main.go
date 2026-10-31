@@ -68,7 +68,7 @@ var StoragePreset = map[string][]string{
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},
-	"document.derived":   {"deliver", "declassify", "label", "relabel"},
+	"document.derived":   {"deliver", "declassify", "label", "relabel", "new-version"},
 	"text.entry":         {"read", "use-in-model", "update"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},

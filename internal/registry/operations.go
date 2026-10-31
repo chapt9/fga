@@ -77,6 +77,9 @@ const (
 	OpDerivedDeclassify       = "derived.declassify"
 	OpDerivedShare            = "derived.share"
 	OpDerivedGetEnvelope      = "derived.get-envelope"
+	OpDerivedBeginVersion     = "derived.begin-version"
+	OpDerivedStageVersion     = "derived.stage-version"
+	OpDerivedPublishVersion   = "derived.publish-version"
 	// Export of document units to a target recipient (Table "Compound
 	// operations", V-132 to V-136) and metadata search (SRH-001 to
 	// SRH-004).
@@ -281,6 +284,14 @@ func baseOperations() []Operation {
 		one(OpDerivedBegin, RoleBucket, "storage.bucket", "create-object"),
 		{Name: OpDerivedPublish, Checks: []CheckSpec{
 			{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
+			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create", Repeated: true},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},
+		}},
+		one(OpDerivedBeginVersion, RoleOutput, "document.derived", "new-version"),
+		one(OpDerivedStageVersion, RoleOutput, "document.derived", "new-version"),
+		{Name: OpDerivedPublishVersion, Checks: []CheckSpec{
+			{Role: RoleOutput, ResourceType: "document.derived", Action: "new-version"},
 			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true},
 			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create", Repeated: true},
 			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},

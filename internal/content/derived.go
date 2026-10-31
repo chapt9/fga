@@ -179,8 +179,17 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 	if err != nil {
 		return Published{}, fmt.Errorf("%w: no label order is active", ErrInvalid)
 	}
-	floor, _ := in.attributes["label"].(string)
+	// The label is at least the bucket's floor, the lineage maximum and,
+	// for a new version, the output's current label: a version never
+	// lowers it implicitly (lowering is relabel).
+	var floor string
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT default_label FROM buckets WHERE tenant = $1 AND id = $2`, c.Tenant, in.bucket).Scan(&floor); err != nil {
+		return Published{}, err
+	}
 	effective, rank := floor, rankOf(order, floor)
+	if current, _ := in.attributes["label"].(string); !in.newObject && rankOf(order, current) > rank {
+		effective, rank = current, rankOf(order, current)
+	}
 	for _, src := range sources {
 		if r := rankOf(order, src.label); r > rank {
 			effective, rank = order[r], r
@@ -193,8 +202,12 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 
 	// Initial envelopes go to the caller's own keys only; others receive
 	// the output through ShareDerived, which checks their lineage.
-	ref := planned(registry.PlannedObject, in.IntentID.String())
+	op, ref, envelopeObject := registry.OpDerivedPublish, planned(registry.PlannedObject, in.IntentID.String()), "intent:"+in.IntentID.String()
 	checks := []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
+	if !in.newObject {
+		op, ref, envelopeObject = registry.OpDerivedPublishVersion, planned(registry.ChangeLabel, in.Object.String()+"|"+in.label), in.Object.String()
+		checks = []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", in.Object.String())}}
+	}
 	if raised {
 		checks = append(checks, check{id: "label", role: registry.RoleLabel, action: "label", ref: ref})
 	}
@@ -207,10 +220,10 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 		fp, n := e.ctx.Recipient.String(), strconv.Itoa(i)
 		checks = append(checks,
 			check{id: "envelope-" + n, role: registry.RoleEnvelope, action: "create",
-				ref: planned(registry.PlannedEnvelope, "intent:"+in.IntentID.String()+"|"+fp+"|"+e.id.String())},
+				ref: planned(registry.PlannedEnvelope, envelopeObject+"|"+fp+"|"+e.id.String())},
 			check{id: "recipient-key-" + n, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp})
 	}
-	_, base, err := s.decide(ctx, c, registry.OpDerivedPublish, Audience, true, checks)
+	_, base, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
 		return Published{}, err
 	}
@@ -255,15 +268,32 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 		}
 		ab, _ := json.Marshal(attrs)
 		now := s.d.Now()
-		if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.derived', $3, 1, 1, 1, $4)`, c.Tenant, in.Object.String(), in.scope, ab); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, $4, 'derived')`, c.Tenant, in.Object, in.bucket, in.key)
-		if isUnique(err) {
-			return fmt.Errorf("%w: the key was created concurrently", ErrConflict)
-		}
-		if err != nil {
-			return err
+		generation := uint64(1)
+		if in.newObject {
+			if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.derived', $3, 1, 1, 1, $4)`, c.Tenant, in.Object.String(), in.scope, ab); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, $4, 'derived')`, c.Tenant, in.Object, in.bucket, in.key)
+			if isUnique(err) {
+				return fmt.Errorf("%w: the key was created concurrently", ErrConflict)
+			}
+			if err != nil {
+				return err
+			}
+		} else {
+			// A raised label also advances the metadata revision (LAB-005).
+			err := tx.QueryRow(ctx, `
+				UPDATE resources SET generation = generation + 1, version = version + 1,
+				       metadata_revision = metadata_revision + CASE WHEN attributes->>'label' IS DISTINCT FROM $4 THEN 1 ELSE 0 END,
+				       attributes = attributes || jsonb_build_object('label', $4::text)
+				 WHERE tenant = $1 AND id = $2 AND generation = $3 RETURNING generation`,
+				c.Tenant, in.Object.String(), in.expectedGen, effective).Scan(&generation)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: the derived output changed since begin", ErrConflict)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
@@ -291,7 +321,7 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 				return err
 			}
 		}
-		result = Published{Object: in.Object.String(), Version: in.LogicalVersion.String(), ETag: ETag(in.LogicalVersion), Generation: 1}
+		result = Published{Object: in.Object.String(), Version: in.LogicalVersion.String(), ETag: ETag(in.LogicalVersion), Generation: generation}
 		stored, _ := json.Marshal(result)
 		if _, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'COMMITTED', result = $3 WHERE tenant = $1 AND id = $2`,
 			c.Tenant, in.IntentID, stored); err != nil {

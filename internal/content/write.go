@@ -148,17 +148,25 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	in.kind = "object"
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, r.Key)
 	if r.Derived {
-		// A derived output is a new key of its own kind; no key of any
-		// kind may exist.
-		var taken bool
-		if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM objects WHERE tenant = $1 AND bucket = $2 AND key = $3
-		                                               AND kind IN ('object', 'document', 'derived'))`, c.Tenant, b.ID, r.Key).Scan(&taken); err != nil {
-			return Intent{}, err
+		// A derived output is a key of its own kind: a new key, or a new
+		// version of an existing derived output.
+		in.kind = "derived"
+		var kind string
+		qerr := s.d.Catalog.Pool().QueryRow(ctx, `
+			SELECT o.kind, o.id, o.current_version, r.generation, r.metadata_revision, r.scope, r.attributes
+			  FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
+			 WHERE o.tenant = $1 AND o.bucket = $2 AND o.key = $3 AND o.kind IN ('object', 'document', 'derived')`, c.Tenant, b.ID, r.Key).
+			Scan(&kind, &o.ID, &o.Current, &o.Generation, &o.Meta, &o.Scope, &o.Attributes)
+		switch {
+		case errors.Is(qerr, pgx.ErrNoRows):
+			err = ErrNotFound
+		case qerr != nil:
+			return Intent{}, qerr
+		case kind != "derived" || r.IfMatch != "":
+			return Intent{}, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
+		default:
+			err = nil
 		}
-		if taken || r.IfMatch != "" {
-			return Intent{}, fmt.Errorf("%w: a derived output is a new key", ErrConflict)
-		}
-		err, in.kind = ErrNotFound, "derived"
 	}
 	var op string
 	var checks []check
@@ -185,6 +193,17 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		checks = []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", b.ID.String())}}
 	case err != nil:
 		return Intent{}, err
+	case r.Derived:
+		// A new version of a derived output; a proposed label may only
+		// raise its label.
+		if r.Label != "" {
+			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
+				return Intent{}, err
+			}
+		}
+		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
+		op = registry.OpDerivedBeginVersion
+		checks = []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", o.ID.String())}}
 	default:
 		if current, _ := o.Attributes["label"].(string); r.Label != "" && r.Label != current {
 			return Intent{}, fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
@@ -222,8 +241,17 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 // intentChecks are the checks that authorize an intent's upload: create on
 // the bucket for a new key, new-version on the object otherwise.
 func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
-	if in.kind == "derived" && create == registry.OpBeginCreate {
-		create = registry.OpDerivedBegin
+	if in.kind == "derived" {
+		if create == registry.OpBeginCreate {
+			create = registry.OpDerivedBegin
+		}
+		if !in.newObject {
+			op := registry.OpDerivedStageVersion
+			if version == registry.OpBeginVersion {
+				op = registry.OpDerivedBeginVersion
+			}
+			return op, []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", in.Object.String())}}
+		}
 	}
 	if in.kind == "unit" || in.kind == "original" {
 		if in.docNew {
