@@ -1,6 +1,6 @@
 // Package catalog is the PostgreSQL authority for the decision core. It
 // implements the read stores of the identity, delegation, registry, gate,
-// release and signing packages, and the audit outbox (specification 2.2,
+// release and signing packages, and the audit outbox (specification 2.5,
 // DAT-001 to DAT-004, DEC-011, AUD-002).
 //
 // Every query is scoped by tenant. Reads are plain consistent reads on the

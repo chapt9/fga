@@ -1,6 +1,6 @@
 // Package registry holds the canonical resource model: registered resource
 // types and actions, canonical resources reached through protocol aliases,
-// and operations mapped to the checks they need (specification 2.2,
+// and operations mapped to the checks they need (specification 2.5,
 // RES-001 to RES-008).
 package registry
 
@@ -63,7 +63,7 @@ func NewTypes(defs []TypeDef) (*Types, error) {
 	return t, nil
 }
 
-// R1Types returns the resource types of release R1 (specification Section 1.3).
+// R1Types returns the resource types of release R1 (specification, "Resources, actions and canonical identity").
 func R1Types() *Types {
 	t, err := NewTypes([]TypeDef{
 		{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure", "approve", "resolve", "write-off"}},

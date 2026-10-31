@@ -1,7 +1,8 @@
 // Package invocation is the durable state machine of tool invocations in
-// PostgreSQL (specification 2.2, INV-001 to INV-009, APR-003, AGT-003 step
+// PostgreSQL (specification 2.5, INV-001 to INV-009, APR-003, AGT-003 step
 // 6). States move PREPARED -> RESERVED -> DISPATCHING -> SUCCEEDED, FAILED or
-// UNKNOWN; UNKNOWN is closed only by a recorded resolution.
+// UNKNOWN; UNKNOWN is closed only by a recorded resolution. Part of the
+// optional R2 executor (feature executor).
 package invocation
 
 import (

@@ -1,8 +1,9 @@
 // Package reservation holds budget reservations for invocations in
-// PostgreSQL (specification 2.2, APR-004, APR-006, INV-007, INV-009,
+// PostgreSQL (specification 2.5, APR-004, APR-006, INV-007, INV-009,
 // DAT-005). Amounts are integer minor units; a reservation cannot exceed
 // its budget under any concurrency, because the budget row's own check
-// constraint and a single conditional update decide it.
+// constraint and a single conditional update decide it. Reservations are
+// R2 (APR-004); this package belongs to the optional executor.
 package reservation
 
 import (

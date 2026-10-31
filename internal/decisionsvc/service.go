@@ -1,7 +1,7 @@
 // Package decisionsvc is the decision service: it turns an adapter's
 // DecideBatch request into a decision, records it in the audit outbox and,
 // for an allow, returns a signed decision for the named audience
-// (specification 2.2, DEC-001 to DEC-010, AUD-002).
+// (specification 2.5, DEC-001 to DEC-010, AUD-002).
 //
 // Requests carry references (aliases) and identity revisions, never trusted
 // facts: resources, attributes, roles and the principal come from

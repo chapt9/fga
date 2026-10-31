@@ -1,5 +1,5 @@
 // Package decision decides a batch of checks by combining the platform gate,
-// the ceiling set and the business set (specification 2.1, POL-003, POL-007,
+// the ceiling set and the business set (specification 2.5, POL-003, POL-007,
 // DEC-002 to DEC-004).
 package decision
 
@@ -80,7 +80,7 @@ const (
 	ReasonReservationRequired Reason = "RESERVATION_REQUIRED"
 )
 
-// Check is one action on one resource (specification Section 1.3).
+// Check is one action on one resource (specification, "Resources, actions and canonical identity").
 type Check struct {
 	ID       string
 	Action   string

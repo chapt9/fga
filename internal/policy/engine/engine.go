@@ -1,5 +1,5 @@
 // Package engine evaluates policy bundles in the fga.policy/v1 format and
-// implements policy.Evaluator (specification 2.2, Section 1.4.2).
+// implements policy.Evaluator (specification 2.5, Section "Policy format").
 //
 // A matching deny always overrides an allow, across roles and scopes. The
 // ceiling set only objects. Any condition error denies, and an evaluation
@@ -161,7 +161,7 @@ func (e *Engine) Evaluate(ctx context.Context, req policy.Request) (policy.Resul
 	return out, nil
 }
 
-// evaluateAction applies the rules of Section 1.4.2 to one action.
+// evaluateAction applies the rules of Section "Policy format" to one action.
 func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars map[string]any, action string) (policy.ActionResult, error) {
 	var allowed, denied, errored bool
 	requires := map[string]bool{}

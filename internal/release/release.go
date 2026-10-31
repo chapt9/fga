@@ -1,6 +1,6 @@
 // Package release verifies, prepares and activates policy bundles, and
 // serves decisions only from a snapshot that meets the tenant's required
-// epoch (specification 2.2, REL-001 to REL-005).
+// epoch (specification 2.5, REL-001 to REL-005).
 package release
 
 import (

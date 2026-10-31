@@ -1,5 +1,6 @@
 // Package connector performs tool calls against registered HTTP
-// destinations (specification 2.2, AGT-005, AGT-006, INV-005).
+// destinations (specification 2.5, AGT-005, AGT-006, INV-005). Part of the
+// optional R2 executor (feature executor).
 //
 // The connector reaches a destination only at addresses inside its allowed
 // ranges, checked when connecting, so a DNS answer cannot redirect it. It

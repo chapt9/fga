@@ -1,6 +1,6 @@
 // Package signing signs allowed decisions so that another role can verify
 // that the sole policy authority made them, and consumes single-use
-// decisions exactly once (specification 2.2, DEC-008, DEC-011, DEC-012,
+// decisions exactly once (specification 2.5, DEC-008, DEC-011, DEC-012,
 // TRU-003, TRU-004).
 //
 // The record is JSON, signed exactly as transmitted, with a detached JWS

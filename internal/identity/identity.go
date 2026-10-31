@@ -1,5 +1,5 @@
 // Package identity holds verified identities as authoritative state: their
-// revision, status, roles and attributes (specification 2.2, ID-002 to
+// revision, status, roles and attributes (specification 2.5, ID-002 to
 // ID-004). Roles and attributes are never taken from a request.
 package identity
 

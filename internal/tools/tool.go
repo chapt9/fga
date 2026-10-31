@@ -1,7 +1,9 @@
 // Package tools holds the trusted tool registry: what a tool is, which
 // arguments it accepts, where it sends and which checks it needs
-// (specification 2.2, AGT-001, AGT-004, DAT-005). Tool descriptions from
+// (specification 2.5, AGT-001, AGT-004, DAT-005). Tool descriptions from
 // agents or MCP servers are never trusted; only these records are.
+//
+// Part of the optional R2 executor (feature executor). No R1 role links it.
 package tools
 
 import (

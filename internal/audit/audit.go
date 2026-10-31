@@ -1,5 +1,5 @@
 // Package audit records mandatory audit events in an outbox that an exporter
-// drains (specification 2.2, AUD-001 to AUD-003). An event that cannot be
+// drains (specification 2.5, AUD-001 to AUD-003). An event that cannot be
 // recorded stops the operation it describes; it is never dropped silently.
 package audit
 

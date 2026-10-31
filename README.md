@@ -1,17 +1,17 @@
 # fga: Fine-Grained Access Platform
 
-An implementation of the Fine-Grained Access Platform specification 2.2 (draft), which is kept in [docs/spec](docs/spec) together with its test vectors and consistency check. `fga` is a placeholder name (decision D-11).
+An implementation of the Fine-Grained Access Platform specification 2.5 (draft), which is kept in [docs/spec](docs/spec) together with its handoff, errata, test vectors and consistency check. `fga` is a placeholder name (decision D-11).
 
 The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)). Everything runs locally.
 
 ## Status
 
-Release R1, phase A (decision core) is implemented:
+Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accepted. Release R1, phase A (decision core) is implemented; phase B (encrypted object storage) is in progress. Nothing here is qualified (GATE-001).
 
 | Package | What it does | Specification |
 |---|---|---|
 | `internal/policy/format` | Policy format `fga.policy/v1`, strict parsing and bundle validation | POL-002, POL-007, POL-014 |
-| `internal/policy/engine` | CEL policy engine: deny overrides, deny-only ceiling set, strict errors, cost limit | Section 1.4.2, POL-005, POL-009 |
+| `internal/policy/engine` | CEL policy engine: deny overrides, deny-only ceiling set, strict errors, cost limit | "Policy format", POL-005, POL-009 |
 | `internal/decision` | Batch decision: gate, then ceiling, then business; only an explicit allow counts | POL-003, DEC-002 to DEC-004 |
 | `internal/gate` | Envelope checks, principal from authoritative state, admission and commit rechecks | ID-002, ID-004, DLG-*, DEC-005, DEC-006 |
 | `internal/delegation` | Delegation chains: narrowing, expiry, revocation, audience | DLG-001 to DLG-007 |
@@ -22,14 +22,15 @@ Release R1, phase A (decision core) is implemented:
 | `internal/audit` | Audit outbox that refuses rather than drops | AUD-001 to AUD-003 |
 | `internal/catalog` | PostgreSQL authority for all of the above | DAT-001 to DAT-004 |
 | `internal/decisionsvc` | DecideBatch service and HTTP/JSON API | DEC-001, DEC-007 |
+| `internal/approval` | Operation-bound approvals | APR-001 to APR-005 |
 | `cmd/fga-decision` | Decision role binary: strict config and import allowlist | MOD-003, MOD-004 |
 | `cmd/fga` | Key generation, and bundle validation and signing | REL-001 |
 
-**Not built yet:**
-- R1-B: tool executor, approvals, reservations, invocation state.
-- R1-C: content service, our single-node object store, documents, labels, disclosure, MCP.
-- R2: key custody. R3: S3 API and replication.
-- A control API for writing identities, delegations and resources. For now they are seeded with SQL.
+Optional R2 executor (feature `executor`, built for specification 2.2 and parked; no R1 role links it): `internal/tools`, `internal/toolstore`, `internal/tools/connector`, `internal/invocation`, `internal/reservation`.
+
+**Not built yet:** the R1-A catch-up list of [the handoff](docs/spec/HANDOFF.md) (section 5), and R1-B encrypted object storage, envelope service, client SDK, backup and restore. R1-C documents and text units, R2 MCP, R3 S3 and replication.
+
+Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decisions/rulings-2026-10-31.md](docs/decisions/rulings-2026-10-31.md).
 
 Supporting records:
 - Mechanism matrix (what was taken from MinIO and Cerbos): [docs/research/mechanism-matrix.md](docs/research/mechanism-matrix.md)

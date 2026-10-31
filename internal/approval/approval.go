@@ -1,5 +1,5 @@
 // Package approval stores approvals of prepared invocations in PostgreSQL
-// (specification 2.2, APR-001 to APR-005). An approval is bound to one exact
+// (specification 2.5, APR-001 to APR-005). An approval is bound to one exact
 // operation digest, cannot be given by the requester or the acting agent,
 // expires, and is consumed exactly once at the dispatch checkpoint.
 package approval

@@ -1,6 +1,6 @@
 // Package delegation resolves and checks delegation chains: an agent acting
 // for a user carries both identities, and a delegation can only narrow its
-// parent (specification 2.2, DLG-001 to DLG-007).
+// parent (specification 2.5, DLG-001 to DLG-007).
 package delegation
 
 import (

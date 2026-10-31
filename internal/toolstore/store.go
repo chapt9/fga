@@ -1,7 +1,8 @@
 // Package toolstore is the PostgreSQL store of the tools role: API keys,
-// tool records, destinations and budgets (specification 2.2, AGT-001,
+// tool records, destinations and budgets (specification 2.5, AGT-001,
 // APR-004). It is separate from the catalog so that the decision role does
-// not link tool code (MOD-004).
+// not link tool code (MOD-004). Part of the optional R2 executor (feature
+// executor).
 package toolstore
 
 import (

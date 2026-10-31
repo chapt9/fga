@@ -1,5 +1,5 @@
 // Package format defines policy documents in the project's own format,
-// fga.policy/v1, and validates them (specification 2.2, Section 1.4.2,
+// fga.policy/v1, and validates them (specification 2.5, Section "Policy format",
 // POL-002, POL-007, POL-014).
 package format
 
