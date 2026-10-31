@@ -5,6 +5,9 @@ fga/internal/audit
 # Reviewed 2026-10-31: first-hop token verification (go-jose only).
 fga/internal/authn
 fga/internal/catalog
+# Reviewed 2026-10-31: wire formats, digests, fingerprints and signature
+# checks only; no key handling, no Tink (MOD-004).
+fga/internal/cryptowire
 fga/internal/decision
 fga/internal/decisionsvc
 fga/internal/delegation

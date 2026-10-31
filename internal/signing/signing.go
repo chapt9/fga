@@ -264,6 +264,13 @@ func (v *Verifier) Verify(ctx context.Context, s Signed) (Record, error) {
 	return rec, nil
 }
 
+// Check verifies like Verify but consumes nothing. The caller must consume
+// a single-use decision itself, atomically with the protected transition
+// it authorizes (DEC-011): the authority fence does.
+func (v *Verifier) Check(s Signed) (Record, error) {
+	return v.check(s, true)
+}
+
 // Inspect checks a decision's signature, key, record and validity for any
 // audience and consumes nothing. The decision role uses it to recheck its
 // own decisions for the roles that will act on them.

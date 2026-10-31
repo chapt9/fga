@@ -14,6 +14,7 @@ const (
 	OpRead              = "storage.object.read"
 	OpReadHistory       = "storage.object.read-history"
 	OpListBucket        = "storage.bucket.list"
+	OpListVersions      = "storage.object.list-versions"
 	OpDiscover          = "storage.object.discover"
 	OpDiscoverHistory   = "storage.object.discover-history"
 	OpDelete            = "storage.object.delete"
@@ -76,6 +77,10 @@ func r1Operations() []Operation {
 		one(OpRead, RoleObject, "storage.object", "read"),
 		withHistory(OpReadHistory, "read", "read-history"),
 		one(OpListBucket, RoleBucket, "storage.bucket", "list"),
+		{Name: OpListVersions, Checks: []CheckSpec{
+			{Role: RoleBucket, ResourceType: "storage.bucket", Action: "list"},
+			{Role: RoleObject, ResourceType: "storage.object", Action: "discover"},
+		}},
 		{Name: OpDiscover, Checks: []CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "discover", Repeated: true}}},
 		withHistory(OpDiscoverHistory, "discover", "discover-history"),
 		one(OpDelete, RoleObject, "storage.object", "delete"),

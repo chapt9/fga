@@ -4,6 +4,7 @@ package pgtest
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"testing"
@@ -22,7 +23,10 @@ func Pool(t testing.TB, migrate func(context.Context, *pgxpool.Pool) error) *pgx
 		t.Skip("FGA_TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
+	// The clock alone can repeat across parallel test processes.
+	suffix := make([]byte, 6)
+	_, _ = rand.Read(suffix)
+	schema := fmt.Sprintf("test_%d_%x", time.Now().UnixNano(), suffix)
 	admin, err := pgx.Connect(ctx, url)
 	if err != nil {
 		t.Fatal(err)
