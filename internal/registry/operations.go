@@ -1,5 +1,7 @@
 package registry
 
+import "slices"
+
 // R1 operation names. Each maps to the exact checks it needs (RES-001,
 // RES-006, Table "Compound operations for encrypted content"); an adapter
 // names the operation and binds resources to its roles, and cannot choose
@@ -185,7 +187,22 @@ const (
 	RoleVersionRead = "version-read"
 	RoleUnitExport  = "unit-export"
 	RoleObjectRead  = "object-read"
+	// RoleGrantTarget is the resource a share grant names.
+	RoleGrantTarget = "target"
 )
+
+// Share grants (SHR-001): recording, removing and listing the grants of a
+// resource need share on it. Each grantable type has its own operations,
+// named "<type>.record-grant", "<type>.remove-grant" and
+// "<type>.list-grants".
+const (
+	GrantRecord = "record-grant"
+	GrantRemove = "remove-grant"
+	GrantList   = "list-grants"
+)
+
+// GrantOperation names the grant operation verb on resource type typ.
+func GrantOperation(typ, verb string) string { return typ + "." + verb }
 
 // envelopeChecks are the publisher and target-recipient checks every
 // envelope publication needs, once per envelope (KEY-012, RES-009).
@@ -201,6 +218,7 @@ func envelopeChecks(repeated bool) []CheckSpec {
 func r1Operations() []Operation {
 	ops := baseOperations()
 	ops = append(ops, entryTwins(ops)...)
+	ops = append(ops, grantOperations()...)
 	for i := range ops {
 		ops[i].Preparatory = preparatory[ops[i].Name]
 	}
@@ -240,6 +258,23 @@ func entryTwins(ops []Operation) []Operation {
 			twin.Checks = append(twin.Checks, c)
 		}
 		out = append(out, twin)
+	}
+	return out
+}
+
+// grantOperations are the share-grant operations of every grantable type.
+func grantOperations() []Operation {
+	types := make([]string, 0, len(GrantableActions))
+	for typ := range GrantableActions {
+		types = append(types, typ)
+	}
+	slices.Sort(types)
+	var out []Operation
+	for _, typ := range types {
+		for _, verb := range []string{GrantRecord, GrantRemove, GrantList} {
+			out = append(out, Operation{Name: GrantOperation(typ, verb),
+				Checks: []CheckSpec{{Role: RoleGrantTarget, ResourceType: typ, Action: "share"}}})
+		}
 	}
 	return out
 }

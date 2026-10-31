@@ -48,7 +48,8 @@ func run(args []string) error {
 		return errors.New(usage)
 	}
 	switch args[0] {
-	case "put", "put-document", "append", "get", "get-document", "get-original", "get-derived", "search", "ls", "rm", "share", "finalize", "label", "set-encryption", "propose-label", "approvals", "approve", "reject":
+	case "put", "put-document", "append", "get", "get-document", "get-original", "get-derived", "search", "ls", "rm", "share", "finalize", "label", "set-encryption", "propose-label", "approvals", "approve", "reject",
+		"grant", "ungrant", "grants":
 		return clientCommand(args[0], args[1:])
 	}
 	if len(args) < 2 {

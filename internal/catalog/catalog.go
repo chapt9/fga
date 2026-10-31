@@ -209,7 +209,15 @@ func (s *Store) GetResource(ctx context.Context, tenant, id string) (registry.Re
 	if errors.Is(err, pgx.ErrNoRows) {
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
-	return r, err
+	if err != nil {
+		return registry.Resource{}, err
+	}
+	if _, ok := registry.GrantableActions[r.Type]; ok {
+		if r.Grants, err = resourceGrants(ctx, s.pool, tenant, id); err != nil {
+			return registry.Resource{}, err
+		}
+	}
+	return r, nil
 }
 
 // Recipient implements gate.Recipients.

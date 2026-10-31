@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"fga/internal/decision"
 	"fga/internal/policy"
@@ -75,7 +76,7 @@ var r1TypeDefs = []TypeDef{
 	// raises or sets a label, relabel lowers it (LAB-004); propose-label
 	// stores an advisory classifier proposal (LAB-002), which under default
 	// deny is an action like any other (ruling 7).
-	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve"}},
+	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve", "share"}},
 	// export on storage objects is our addition to the spec's table: the
 	// compound export operation names "export on the document version (or
 	// object)".
@@ -84,10 +85,10 @@ var r1TypeDefs = []TypeDef{
 		ActionAliases: map[string]string{"storage.object.read": "read"}},
 	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},
-	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
+	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update", "share"}},
 	// new-version on derived outputs is our addition to the spec's table:
 	// a derived output gets new versions, each with its own lineage.
-	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve", "new-version"}},
+	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"}},
 	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke", "discover"}},
 	// Content-signing keys are looked up for verification; under default
 	// deny (ruling 7) the lookup is a registered, policy-decided action.
@@ -149,6 +150,30 @@ type Resource struct {
 	Generation       uint64
 	MetadataRevision uint64
 	Attributes       map[string]any
+	// Grants are the resource's share grants that were not removed,
+	// expired ones included; the decision role shows the unexpired ones
+	// to policy as shared_with (SHR-002).
+	Grants []Grant
+}
+
+// Grant is a share grant: a grantee principal of the resource's tenant
+// may be allowed actions from the resource type's read set until
+// ExpiresAt, where a rule honors it (SHR-001, SHR-002).
+type Grant struct {
+	Grantee   string
+	Actions   []string
+	ExpiresAt time.Time
+}
+
+// GrantableActions are the actions a share grant on each resource type
+// may name: the type's read set (SHR-001, specification 2.6.1).
+var GrantableActions = map[string][]string{
+	"storage.bucket":     {"list"},
+	"storage.object":     {"read", "stat", "discover"},
+	"document.version":   {"read-units", "discover"},
+	"document.text_unit": {"read"},
+	"text.entry":         {"read"},
+	"document.derived":   {"deliver"},
 }
 
 // PolicyResource returns the resource as the policy engine sees it.
@@ -210,6 +235,12 @@ const ChangeLabel = "change.label"
 // ChangeEncryption: "<bucket ID>|<new mode>". The bucket gains
 // new_encryption (ENC-001).
 const ChangeEncryption = "change.encryption"
+
+// ChangeGrant: "<resource ID>|<grantee>|<action>,...|<expiry, RFC 3339>".
+// The resource gains grantee, grantee_attributes (empty for an unknown
+// principal, which the commit then rejects), grant_actions and
+// grant_expires_at (SHR-001).
+const ChangeGrant = "change.grant"
 
 // Changer resolves proposed changes from authoritative state.
 type Changer interface {

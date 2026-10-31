@@ -40,7 +40,7 @@ cat > keys.json <<J
  "kek_file":"keks"}
 J
 cat > storage.json <<J
-{"version":1,"profile":"development","listen":"127.0.0.1:18441",$COMMON,"blob_dir":"blobs",
+{"version":1,"profile":"development","listen":"127.0.0.1:18441",$COMMON,"blob_dir":"blobs","journal_dir":"journal",
  "keys":{"url":"http://127.0.0.1:18442"},"token_key_file":"token.key","outbox_capacity":100000}
 J
 $B/fga-decision -config decision.json > decision.log 2>&1 & echo $! > pids
@@ -221,6 +221,20 @@ SHARED_SRC=$(echo "$SHARED_OUT" | awk '{print "storage.object:" $4 ":" $6}')
 as alice; check $B/fga put -bucket shared -key q4/plan-summary.txt -in summary.txt -sources $SHARED_SRC
 as bob;   check $B/fga get-derived -bucket shared -key q4/plan-summary.txt -out bob-summary.out; check cmp summary.txt bob-summary.out
 echo "server-mode derived output: bob reads it through his own read of the source"
+# Share grants (S5): carl, of another project, may not read alice's
+# server-mode object until she grants him read and stat; the example
+# bundle's rules honor grants on objects. Removing the grant, which is
+# journaled, ends his access.
+$ADMIN identity put -tenant t-acme -id carl -roles member -attrs '{"projects":["p2"]}'
+$ADMIN grant -tenant t-acme -actor carl -preset storage
+$B/fga keys init -dir carl > carl.keys
+as carl;  if $B/fga get -bucket shared -key q4/plan.bin -out x.out 2>err.txt; then echo "UNEXPECTED: carl read without a grant"; exit 1; fi
+as alice; check $B/fga grant -bucket shared -key q4/plan.bin -grantee carl -actions read,stat -expires 1h
+as alice; check $B/fga grants -bucket shared -key q4/plan.bin
+as carl;  check $B/fga get -bucket shared -key q4/plan.bin -out carl-shared.out; check cmp shared.bin carl-shared.out
+as alice; check $B/fga ungrant -bucket shared -key q4/plan.bin -grantee carl
+as carl;  if $B/fga get -bucket shared -key q4/plan.bin -out x.out 2>err.txt; then echo "UNEXPECTED: carl read after the grant was removed"; exit 1; fi
+echo "share grant: carl reads alice's object only while granted; afterwards: $(cat err.txt)"
 
 
 $ADMIN audit export -dir audit

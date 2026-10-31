@@ -225,3 +225,54 @@ func TestReclaim(t *testing.T) {
 		t.Fatalf("second run = %+v, want nothing", again)
 	}
 }
+
+// TestRestoreKeepsGrantRemoval covers AVL-008 for share grants (SHR-002):
+// a grant removed after the backup is restored with it but removed again
+// by reconcile from the security journal, so a restore does not give
+// access back.
+func TestRestoreKeepsGrantRemoval(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.Client("bob", []string{"member"}, "p2")
+	if _, err := alice.Put("reports", "doc", []byte("payroll")); err != nil {
+		t.Fatal(err)
+	}
+	target := content.GrantTarget{Bucket: "reports", Key: "doc"}
+	if _, err := st.Content.RecordGrant(ctx, alice.Caller, target, content.GrantRequest{Grantee: "bob", Actions: []string{"read"},
+		ExpiresAt: st.Clock.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := st.Content.RemoveGrant(ctx, alice.Caller, target, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	active := func() int {
+		var n int
+		if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM share_grants WHERE removed_at IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := active(); n != 1 {
+		t.Fatalf("%d active grants after the restore; the test needs the backup's grant", n)
+	}
+	rep, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal)
+	if err != nil || rep.Replayed != 1 {
+		t.Fatalf("reconcile = %+v, %v", rep, err)
+	}
+	var by string
+	if err := st.Pool.QueryRow(ctx, `SELECT removed_by FROM share_grants WHERE id::text = $1`, removed.Grant.ID).Scan(&by); err != nil || by != "recovery" {
+		t.Fatalf("the grant after reconcile: removed by %q, %v", by, err)
+	}
+	if n := active(); n != 0 {
+		t.Fatalf("%d active grants after reconcile", n)
+	}
+}

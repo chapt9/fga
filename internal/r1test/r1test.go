@@ -74,7 +74,7 @@ var Policies = map[string]string{
 	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
-	  {"id":"leads-manage-buckets","effect":"allow","actions":["manage"],"roles":["lead"],
+	  {"id":"leads-manage-buckets","effect":"allow","actions":["manage","share"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"objects.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
 	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label","export"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
@@ -121,14 +121,14 @@ var Policies = map[string]string{
 	   "when":"resource.attributes.owner == principal.id"},
 	  {"id":"leads-approve-derived","effect":"allow","actions":["approve"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
-	  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label","new-version"],"roles":["*"],
+	  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label","new-version","share"],"roles":["*"],
 	   "when":"resource.attributes.owner == principal.id"},
 	  {"id":"members-receive-derived","effect":"allow","actions":["deliver"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"leads-receive-declassified","effect":"allow","actions":["declassify"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"entries.json": `{"format":"fga.policy/v1","set":"business","resource":"text.entry","scope":"","rules":[
-  {"id":"owner-entries","effect":"allow","actions":["read","update","use-in-model"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+  {"id":"owner-entries","effect":"allow","actions":["read","update","use-in-model","share"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
   {"id":"members-read-entries","effect":"allow","actions":["read"],"roles":["member"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
@@ -138,14 +138,14 @@ var Policies = map[string]string{
 
 // UserActions are the capabilities every fixture user gets (DLG-004).
 var UserActions = map[string][]string{
-	"storage.bucket": {"create-object", "list", "manage", "approve"},
+	"storage.bucket": {"create-object", "list", "manage", "approve", "share"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
 		"label", "relabel", "propose-label", "export", "approve"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},
-	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve", "new-version"},
-	"text.entry":         {"read", "use-in-model", "update"},
+	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve", "new-version", "share"},
+	"text.entry":         {"read", "use-in-model", "update", "share"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
 }
@@ -323,7 +323,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide}, Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id, extra...)
-		}), DataKeys: dataKeys{st}, TokenKey: tokenKey, Limits: limits(), Now: now})
+		}), DataKeys: dataKeys{st}, Journal: st.Journal, TokenKey: tokenKey, Limits: limits(), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

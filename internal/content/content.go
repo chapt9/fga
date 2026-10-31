@@ -133,6 +133,10 @@ type Deps struct {
 	// DataKeys serves server mode; without it a server-mode upload or read
 	// is unavailable.
 	DataKeys DataKeys
+	// Journal records removed share grants before they are committed, so
+	// a restore from an older backup does not bring them back (AVL-008).
+	// Without it, grants cannot be removed or replaced.
+	Journal Journal
 	// TokenKey seals listing continuation tokens (32 bytes, AES-256-GCM).
 	TokenKey []byte
 	Limits   Limits

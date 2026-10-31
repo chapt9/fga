@@ -25,6 +25,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/content"
 	"fga/internal/fence"
+	"fga/internal/journal"
 	"fga/internal/nativeapi"
 	"fga/internal/roleconfig"
 	"fga/internal/rpc"
@@ -41,13 +42,16 @@ type Config struct {
 	TokenKeyFile       string `json:"token_key_file"`
 	MaxCiphertextBytes int64  `json:"max_ciphertext_bytes,omitempty"`
 	OutboxCapacity     int    `json:"outbox_capacity"`
+	// JournalDir is the security journal, shared with the keys role: the
+	// storage role journals removed share grants (AVL-008).
+	JournalDir string `json:"journal_dir"`
 }
 
 // Validate reports every configuration problem.
 func (c Config) Validate() error {
 	errs := c.Common.Validate()
-	if c.BlobDir == "" || c.Keys.URL == "" || c.TokenKeyFile == "" || c.OutboxCapacity <= 0 {
-		errs = append(errs, errors.New("blob_dir, keys.url, token_key_file and outbox_capacity are required"))
+	if c.BlobDir == "" || c.Keys.URL == "" || c.TokenKeyFile == "" || c.OutboxCapacity <= 0 || c.JournalDir == "" {
+		errs = append(errs, errors.New("blob_dir, keys.url, token_key_file, outbox_capacity and journal_dir are required"))
 	}
 	if c.Profile == roleconfig.Production && (!strings.HasPrefix(c.Keys.URL, "https://") || c.Keys.CertFile == "") {
 		errs = append(errs, errors.New("production calls the keys role over mutual TLS"))
@@ -116,10 +120,14 @@ func run(path string) error {
 	if cfg.MaxCiphertextBytes > 0 {
 		limits.MaxCiphertext = cfg.MaxCiphertextBytes
 	}
+	j, err := journal.Open(cfg.JournalDir, time.Now)
+	if err != nil {
+		return err
+	}
 	svc, err := content.New(content.Deps{Catalog: store, Blobs: blobs, Fence: fence.New(pool, time.Second, time.Now),
 		Decider: rpc.DecisionClient{BaseURL: cfg.Decision.URL, HTTP: decisionHTTP}, Verifier: verifier,
 		Keys: rpc.KeysClient{BaseURL: cfg.Keys.URL, HTTP: keysHTTP}, DataKeys: rpc.KeysClient{BaseURL: cfg.Keys.URL, HTTP: keysHTTP},
-		TokenKey: tokenKey, Limits: limits, Now: time.Now})
+		Journal: j, TokenKey: tokenKey, Limits: limits, Now: time.Now})
 	if err != nil {
 		return err
 	}

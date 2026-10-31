@@ -9,4 +9,10 @@
   {"id":"members-read","effect":"allow","actions":["read","stat","discover"],"roles":["member"],
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"auditors-history","effect":"allow","actions":["read-history","discover-history"],"roles":["auditor"]},
-  {"id":"contractors-never-read","effect":"deny","actions":["read"],"roles":["contractor"]}]}
+  {"id":"contractors-never-read","effect":"deny","actions":["read"],"roles":["contractor"]},
+  {"id":"grantees-read","effect":"allow","actions":["read"],"roles":["*"],
+   "when":"has(resource.attributes.shared_with) && principal.id in resource.attributes.shared_with.read"},
+  {"id":"grantees-stat","effect":"allow","actions":["stat"],"roles":["*"],
+   "when":"has(resource.attributes.shared_with) && principal.id in resource.attributes.shared_with.stat"},
+  {"id":"grantees-discover","effect":"allow","actions":["discover"],"roles":["*"],
+   "when":"has(resource.attributes.shared_with) && principal.id in resource.attributes.shared_with.discover"}]}

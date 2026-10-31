@@ -117,10 +117,14 @@ var _ registry.Changer = resourceView{}
 // Changed implements registry.Changer: a proposed label for an existing
 // object, document unit or derived output resolves to it as it is, with
 // new_label and floor added; a proposed encryption mode for a bucket
-// resolves to the bucket with new_encryption added.
+// resolves to the bucket with new_encryption added; a proposed share grant
+// resolves to its resource with the grant added.
 func (v resourceView) Changed(ctx context.Context, tenant string, alias registry.Alias) (registry.Resource, error) {
 	if alias.Namespace == registry.ChangeEncryption {
 		return v.changedEncryption(ctx, tenant, alias)
+	}
+	if alias.Namespace == registry.ChangeGrant {
+		return v.changedGrant(ctx, tenant, alias)
 	}
 	if alias.Namespace != registry.ChangeLabel {
 		return registry.Resource{}, registry.ErrUnknownAlias

@@ -50,6 +50,9 @@ fga/internal/fence
 fga/internal/httpapi
 fga/internal/gate
 fga/internal/identity
+# Reviewed 2026-10-31: the security journal (AVL-008); the storage role
+# journals removed share grants (SHR-002).
+fga/internal/journal
 fga/internal/keysapi
 # Reviewed 2026-10-31: label order arithmetic only (D-06).
 fga/internal/labels

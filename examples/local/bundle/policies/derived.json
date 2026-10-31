@@ -3,7 +3,7 @@
    "when":"resource.attributes.owner == principal.id"},
   {"id":"leads-approve-derived","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"},
-  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label","new-version"],"roles":["*"],
+  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label","new-version","share"],"roles":["*"],
    "when":"resource.attributes.owner == principal.id"},
   {"id":"members-receive-derived","effect":"allow","actions":["deliver"],"roles":["member"],
    "when":"resource.attributes.project in principal.attributes.projects"},

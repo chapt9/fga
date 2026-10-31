@@ -3,5 +3,5 @@
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"},
-  {"id":"leads-manage-buckets","effect":"allow","actions":["manage"],"roles":["lead"],
+  {"id":"leads-manage-buckets","effect":"allow","actions":["manage","share"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}

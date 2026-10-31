@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,12 @@ func deploy(t *testing.T) *deployment { return deployWith(t, admission.DefaultLi
 
 func deployWith(t *testing.T, limits admission.Limits) *deployment {
 	t.Helper()
-	st := r1test.New(t)
+	return deployFull(t, limits, r1test.Options{})
+}
+
+func deployFull(t *testing.T, limits admission.Limits, opts r1test.Options) *deployment {
+	t.Helper()
+	st := r1test.NewWith(t, opts)
 	workloadOf := func(r *http.Request) (string, error) { return r.Header.Get("X-Test-Workload"), nil }
 	keys := httptest.NewServer(keysapi.Keys(st.Envelopes, st.Tokens, workloadOf, r1test.StorageAdapter, func() bool { return true },
 		admission.New(admission.DefaultLimits), datakeysapi.Register(st.DataKeys, workloadOf, r1test.StorageAdapter)))
@@ -410,5 +416,56 @@ func TestServerDerivedHTTP(t *testing.T) {
 	}
 	if _, err := alice.GetDerived(ctx, "vault", "summary.txt", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Code != "ENCRYPTION_MODE" {
 		t.Fatalf("a server-mode output through the client route: %v", err)
+	}
+}
+
+// TestGrantsHTTP covers the share-grant routes and SDK (SHR-001 to
+// SHR-003): a grant a rule honors lets another member read a server-mode
+// object; the grantee may not list or remove it; removal ends access; an
+// action outside the read set is refused.
+func TestGrantsHTTP(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["objects.json"] = strings.TrimSuffix(policies["objects.json"], "]}") + `,
+	  {"id":"grantees-read","effect":"allow","actions":["read"],"roles":["*"],"when":"principal.id in resource.attributes.shared_with.read"}]}`
+	d := deployFull(t, admission.DefaultLimits, r1test.Options{Policies: policies})
+	ctx := context.Background()
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	b := d.st.Client("bob", []string{"member"}, "p2")
+	alice, bob := d.client(t, a), d.client(t, b)
+	if _, err := alice.PutPlain(ctx, "vault", "plan.txt", strings.NewReader("the plan"), 8, client.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var apiErr *client.Error
+	if _, err := bob.GetPlain(ctx, "vault", "plan.txt", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob before a grant: %v", err)
+	}
+	target := client.GrantTarget{Key: "plan.txt"}
+	expires := d.st.Clock.Add(time.Hour)
+	if _, err := alice.RecordGrant(ctx, "vault", target, "bob", []string{"delete"}, expires); !errors.As(err, &apiErr) || apiErr.Status != 400 {
+		t.Fatalf("a grant of delete: %v", err)
+	}
+	o, err := alice.RecordGrant(ctx, "vault", target, "bob", []string{"read"}, expires)
+	if err != nil || o.Grant.Grantee != "bob" || o.Grant.ResourceType != "storage.object" {
+		t.Fatalf("grant: %+v %v", o, err)
+	}
+	var out bytes.Buffer
+	if _, err := bob.GetPlain(ctx, "vault", "plan.txt", "", &out); err != nil || out.String() != "the plan" {
+		t.Fatalf("bob with the grant: %q %v", out.String(), err)
+	}
+	if gs, err := alice.Grants(ctx, "vault", target); err != nil || len(gs) != 1 || !gs[0].ExpiresAt.Equal(expires.Truncate(time.Microsecond)) {
+		t.Fatalf("alice lists the grants: %+v %v", gs, err)
+	}
+	if _, err := bob.Grants(ctx, "vault", target); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob lists the grants: %v", err)
+	}
+	if _, err := bob.RemoveGrant(ctx, "vault", target, "bob"); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob removes his grant: %v", err)
+	}
+	if _, err := alice.RemoveGrant(ctx, "vault", target, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bob.GetPlain(ctx, "vault", "plan.txt", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob after the removal: %v", err)
 	}
 }

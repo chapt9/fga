@@ -58,6 +58,11 @@ import (
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
 //	fga label          -bucket B -key K -label L [-unit U | -derived] [-approval A]
 //	fga set-encryption -bucket B -encryption server|client [-approval A]   for uploads begun afterwards
+//	fga grant          -bucket B [-key K [-version V | -unit U]] -grantee P -actions A,... -expires 24h [-approval A]
+//	                   a share grant on the bucket, object, document version, unit or derived output; it takes
+//	                   effect only where a policy rule honors resource.attributes.shared_with
+//	fga ungrant        -bucket B [-key K [-version V | -unit U]] -grantee P [-approval A]
+//	fga grants         -bucket B [-key K [-version V | -unit U]]   the unexpired grants (needs share)
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
@@ -242,9 +247,12 @@ func clientCommand(cmd string, args []string) error {
 	collection := fs.Bool("collection", false, "put-document: create a text collection, one entry per paragraph")
 	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
 	project := fs.String("project", "", "search: project")
-	unit := fs.String("unit", "", "label: a unit of the document at -key")
+	unit := fs.String("unit", "", "label, grant: a unit or entry of the document at -key")
 	derivedOut := fs.Bool("derived", false, "label: the derived output at -key")
 	documentKey := fs.Bool("document", false, "rm: the document at -key (with -version, withdraw that document version); finalize: a document intent")
+	grantee := fs.String("grantee", "", "grant, ungrant: the principal the grant names")
+	actions := fs.String("actions", "", "grant: actions from the resource type's read set, comma-separated")
+	expires := fs.Duration("expires", 0, "grant: how long the grant lasts, such as 24h")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -590,6 +598,37 @@ func clientCommand(cmd string, args []string) error {
 			return approvalHint(err)
 		}
 		fmt.Printf("bucket encryption %s (was %s), metadata revision %d\n", o.Encryption, o.Previous, o.MetadataRevision)
+		return nil
+	case "grant":
+		if *grantee == "" || *actions == "" || *expires <= 0 {
+			return errors.New("grant needs -grantee, -actions and -expires")
+		}
+		o, err := c.RecordGrant(ctx, *bucket, client.GrantTarget{Key: *key, Version: *version, Unit: *unit}, *grantee, split(*actions),
+			time.Now().Add(*expires))
+		if err != nil {
+			return approvalHint(err)
+		}
+		fmt.Printf("grant %s: %s may %s on %s %s until %s (effective only where a policy rule honors it)\n", o.Grant.ID, o.Grant.Grantee,
+			strings.Join(o.Grant.Actions, ","), o.Grant.ResourceType, o.Grant.ResourceID, o.Grant.ExpiresAt.Format(time.RFC3339))
+		return nil
+	case "ungrant":
+		if *grantee == "" {
+			return errors.New("ungrant needs -grantee")
+		}
+		o, err := c.RemoveGrant(ctx, *bucket, client.GrantTarget{Key: *key, Version: *version, Unit: *unit}, *grantee)
+		if err != nil {
+			return approvalHint(err)
+		}
+		fmt.Printf("removed grant %s of %s on %s %s\n", o.Grant.ID, o.Grant.Grantee, o.Grant.ResourceType, o.Grant.ResourceID)
+		return nil
+	case "grants":
+		gs, err := c.Grants(ctx, *bucket, client.GrantTarget{Key: *key, Version: *version, Unit: *unit})
+		if err != nil {
+			return err
+		}
+		for _, g := range gs {
+			fmt.Printf("%s\t%s\t%s\t%s\n", g.Grantee, strings.Join(g.Actions, ","), g.ExpiresAt.UTC().Format(time.RFC3339), g.Grantor)
+		}
 		return nil
 	case "propose-label":
 		p, err := c.ProposeLabel(ctx, *bucket, *key, *label, *classifier)

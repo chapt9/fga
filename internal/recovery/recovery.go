@@ -41,7 +41,7 @@ import (
 // server-mode KEK versions exist, never a key: the keys live in the keys
 // role's ring and are recovered apart from backups (SSE-006).
 var Tables = []string{
-	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases",
+	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases", "share_grants",
 	"recipient_keys", "signing_keys", "kek_versions", "buckets", "objects", "object_versions", "document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox",
@@ -493,6 +493,11 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 			                   WHERE tenant = $1 AND fingerprint = $2 AND status <> 'COMPROMISED' RETURNING fingerprint)
 			       UPDATE resources SET generation = generation + 1, attributes = attributes || '{"status":"COMPROMISED"}'
 			        WHERE tenant = $1 AND type = 'crypto.signing-key' AND id IN (SELECT fingerprint FROM k)`
+		case journal.GrantRemoved:
+			sql = `WITH g AS (UPDATE share_grants SET removed_at = now(), removed_by = 'recovery'
+			                   WHERE tenant = $1 AND id::text = $2 AND removed_at IS NULL RETURNING resource_id)
+			       UPDATE resources SET metadata_revision = metadata_revision + 1
+			        WHERE tenant = $1 AND id IN (SELECT resource_id FROM g)`
 		case journal.EpochRaised:
 			sql = `INSERT INTO tenant_epochs VALUES ($1, $2::bigint) ON CONFLICT (tenant) DO UPDATE SET required_epoch = excluded.required_epoch
 			        WHERE tenant_epochs.required_epoch < excluded.required_epoch`

@@ -1,7 +1,7 @@
 // Package journal is the security journal of docs/design/storage-r1b.md
 // (specification 2.5, AVL-008, KEY-017): a separately stored, append-only
-// record of security-critical changes (revocations, compromised signers,
-// raised epochs, recovery incarnations). Each change is written here
+// record of security-critical changes (revocations, removed share grants,
+// compromised signers, raised epochs, recovery incarnations). Each change is written here
 // durably before it is committed to the catalog, so a restore from an older
 // backup can replay it. Every entry is restrictive, so replaying an entry
 // whose catalog change never committed only removes access.
@@ -30,9 +30,12 @@ const (
 	SignerCompromised = "signer-compromised"
 	EpochRaised       = "epoch-raised"
 	Incarnation       = "incarnation"
+	// GrantRemoved names a share grant that was removed or replaced
+	// (SHR-002); its subject is the grant ID.
+	GrantRemoved = "grant-removed"
 )
 
-var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation}
+var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved}
 
 // Entry is one journaled change. Subject names what changed: an identity,
 // delegation or key, an epoch or an incarnation number.

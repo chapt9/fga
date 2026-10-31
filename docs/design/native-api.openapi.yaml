@@ -230,6 +230,50 @@ paths:
         "200": { description: Mode set, content: { application/json: { schema: { $ref: "#/components/schemas/EncryptionOutcome" } } } }
         "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/grants:
+    parameters:
+      - { $ref: "#/components/parameters/bucket" }
+      - { name: key, in: query, description: The object, document or derived output; none for the bucket itself, schema: { type: string } }
+      - { name: version, in: query, description: A document version (default the current one), schema: { type: string, format: uuid } }
+      - { name: unit, in: query, description: A unit or collection entry of the document version, schema: { type: string, format: uuid } }
+    post:
+      operationId: recordGrant
+      description: Records a share grant (SHR-001); needs share on the resource. It takes effect only where a policy rule honors resource.attributes.shared_with (SHR-002). A grant to the same grantee replaces the earlier one.
+      parameters: [{ $ref: "#/components/parameters/approval" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [grantee, actions, expires_at]
+              properties:
+                grantee: { type: string, maxLength: 256 }
+                actions: { type: array, minItems: 1, items: { type: string, description: "From the resource type's read set" } }
+                expires_at: { type: string, format: date-time }
+      responses:
+        "200": { description: Recorded, content: { application/json: { schema: { $ref: "#/components/schemas/GrantOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listGrants
+      description: The unexpired grants on the resource; needs share on it.
+      responses:
+        "200":
+          description: Grants
+          content: { application/json: { schema: { type: object, properties: { grants: { type: array, items: { $ref: "#/components/schemas/ShareGrant" } } } } } }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: removeGrant
+      description: Removes the grantee's grant; needs share on the resource. The removal is journaled before it commits (AVL-008).
+      parameters:
+        - { $ref: "#/components/parameters/approval" }
+        - { name: grantee, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Removed, content: { application/json: { schema: { $ref: "#/components/schemas/GrantOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/object/label:
     put:
       operationId: setLabel
@@ -650,6 +694,22 @@ components:
         descriptor: { $ref: "#/components/schemas/Base64" }
         descriptor_signature: { type: string }
         envelopes: { type: array, minItems: 1, maxItems: 16, items: { $ref: "#/components/schemas/Envelope" } }
+    ShareGrant:
+      type: object
+      properties:
+        grant_id: { type: string, format: uuid }
+        resource_type: { type: string, enum: [storage.bucket, storage.object, document.version, document.text_unit, text.entry, document.derived] }
+        resource_id: { type: string }
+        grantee: { type: string }
+        actions: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time }
+        grantor: { type: string }
+        created_at: { type: string, format: date-time }
+    GrantOutcome:
+      type: object
+      properties:
+        grant: { $ref: "#/components/schemas/ShareGrant" }
+        metadata_revision: { type: integer, format: int64 }
     ServerFinalizeRequest:
       description: 'Finalizes a staged server-mode upload: {} for an object, {"sources": [...]} for a derived output, with the lineage it was uploaded with.'
       type: object

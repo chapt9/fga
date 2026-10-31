@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -298,6 +299,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	resp.BundleDigest, resp.PolicyEpoch = snap.Digest, snap.Epoch
 
 	checks := make([]decision.Check, 0, len(req.Checks))
+	var grantsUntil time.Time
 	for _, c := range req.Checks {
 		res, err := s.resolve(ctx, req.Tenant, c.Resource)
 		switch {
@@ -308,6 +310,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		case err != nil:
 			return fail(ReasonCatalogUnavailable)
 		}
+		res = sharedWith(res, s.d.Now(), &grantsUntil)
 		action, ok := s.d.Types.CanonicalAction(res.Type, c.Action)
 		if !ok {
 			return deny(ReasonUnknownAction)
@@ -371,10 +374,13 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return fail(ReasonCatalogUnavailable)
 	}
 	// A time condition bounds validity (POL-008, DEC-005), and so does the
-	// expiry of an approval the decision relies on. A bound that has
-	// already arrived leaves nothing to sign.
+	// expiry of an approval the decision relies on or of a share grant it
+	// saw. A bound that has already arrived leaves nothing to sign.
 	if !d.NextChange.IsZero() && d.NextChange.Before(binding.ValidUntil) {
 		binding.ValidUntil = d.NextChange
+	}
+	if !grantsUntil.IsZero() && grantsUntil.Before(binding.ValidUntil) {
+		binding.ValidUntil = grantsUntil
 	}
 	if used != nil && used.ExpiresAt.Before(binding.ValidUntil) {
 		binding.ValidUntil = used.ExpiresAt
@@ -484,6 +490,45 @@ func kindOf(k string) decision.CheckKind {
 var errBadReference = errors.New("a resource is referenced by alias or by type and ID")
 
 // resolve resolves a check's resource reference.
+// sharedWith shows a resource's unexpired share grants to policy as
+// resource.attributes.shared_with: a map from each grantable action of its
+// type to the grantee IDs, present with empty lists when there are none,
+// so a rule may test it on any resource of the type (SHR-002). until is
+// lowered to the earliest expiry among those grants: a decision that saw a
+// grant ends when the grant does, whichever rule allowed it (DEC-005).
+func sharedWith(res registry.Resource, now time.Time, until *time.Time) registry.Resource {
+	actions, ok := registry.GrantableActions[res.Type]
+	if !ok {
+		return res
+	}
+	lists := make(map[string][]any, len(actions))
+	for _, a := range actions {
+		lists[a] = []any{}
+	}
+	for _, g := range res.Grants {
+		if !now.Before(g.ExpiresAt) {
+			continue
+		}
+		for _, a := range g.Actions {
+			if l, ok := lists[a]; ok {
+				lists[a] = append(l, g.Grantee)
+			}
+		}
+		if until.IsZero() || g.ExpiresAt.Before(*until) {
+			*until = g.ExpiresAt
+		}
+	}
+	shared := make(map[string]any, len(lists))
+	for a, l := range lists {
+		shared[a] = l
+	}
+	attrs := make(map[string]any, len(res.Attributes)+1)
+	maps.Copy(attrs, res.Attributes)
+	attrs["shared_with"] = shared
+	res.Attributes = attrs
+	return res
+}
+
 func (s *Service) resolve(ctx context.Context, tenant string, ref Alias) (registry.Resource, error) {
 	switch byAlias, byID := ref.Namespace != "" || ref.Name != "", ref.Type != "" || ref.ID != ""; {
 	case byAlias && !byID && ref.Namespace != "" && ref.Name != "":

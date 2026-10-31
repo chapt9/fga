@@ -67,14 +67,14 @@ func main() {
 
 // StoragePreset is the capability set of an ordinary storage user (DLG-004).
 var StoragePreset = map[string][]string{
-	"storage.bucket": {"create-object", "list"},
+	"storage.bucket": {"create-object", "list", "share"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
 		"label", "relabel", "propose-label", "export"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},
-	"document.derived":   {"deliver", "declassify", "label", "relabel", "new-version"},
-	"text.entry":         {"read", "use-in-model", "update"},
+	"document.derived":   {"deliver", "declassify", "label", "relabel", "new-version", "share"},
+	"text.entry":         {"read", "use-in-model", "update", "share"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
 }

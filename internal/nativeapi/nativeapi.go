@@ -460,6 +460,59 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		httpapi.WriteJSON(w, http.StatusOK, out)
 	}))
+	// Share grants (SHR-001): the bucket itself without key; with key, the
+	// object or derived output, or for a document its version (version)
+	// or one of its units or entries (unit).
+	grantTarget := func(r *http.Request) (content.GrantTarget, bool) {
+		q := r.URL.Query()
+		if len(q["key"]) > 1 || len(q["version"]) > 1 || len(q["unit"]) > 1 || q.Has("key") && !content.ValidKey(q.Get("key")) {
+			return content.GrantTarget{}, false
+		}
+		return content.GrantTarget{Bucket: r.PathValue("bucket"), Key: q.Get("key"), Version: q.Get("version"), Unit: q.Get("unit")}, true
+	}
+	mux.HandleFunc("POST /v1/buckets/{bucket}/grants", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		t, ok := grantTarget(r)
+		var body content.GrantRequest
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		out, err := svc.RecordGrant(r.Context(), c, t, body)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/grants", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		t, ok := grantTarget(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		grants, err := svc.ListGrants(r.Context(), c, t)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"grants": grants})
+	}))
+	mux.HandleFunc("DELETE /v1/buckets/{bucket}/grants", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		t, ok := grantTarget(r)
+		if !ok || len(r.URL.Query()["grantee"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		out, err := svc.RemoveGrant(r.Context(), c, t, r.URL.Query().Get("grantee"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/object/label", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		var body labelBody
