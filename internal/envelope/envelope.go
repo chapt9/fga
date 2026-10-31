@@ -81,6 +81,16 @@ type Delivered struct {
 	ReceiptSignature string
 }
 
+// DataKey is a server-mode data key that the keys role sealed for an
+// upload or released for a read (internal/datakeys, SSE-003). It travels
+// only from the keys role to the storage role, which clears Key after one
+// stream (SSE-004). This package holds no key-encryption code.
+type DataKey struct {
+	Key        []byte
+	Sealed     []byte
+	KEKVersion uint32
+}
+
 // EnvelopeIn is one recipient envelope as a client sends it.
 type EnvelopeIn struct {
 	Context    []byte

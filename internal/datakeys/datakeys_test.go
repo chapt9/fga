@@ -26,8 +26,9 @@ import (
 
 var ctx = context.Background()
 
-// fixture is a stack with a server-mode bucket "vault", a tenant KEK
-// version 1 in ring and the catalog, and the data-key service. Server-mode
+// fixture is a stack with a server-mode bucket "vault"; the stack's ring
+// and catalog hold the tenant's KEK version 1, and its data-key service is
+// the keys role's. Server-mode
 // uploads and reads are built in stretch S3, so the tests play the storage
 // role: they write server-mode intents and versions and ask for decisions.
 type fixture struct {
@@ -41,20 +42,14 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{st: r1test.New(t), ring: kek.NewRing()}
+	st := r1test.New(t)
+	f := &fixture{st: st, ring: st.KEKs, svc: st.DataKeys}
 	f.st.ModeBucket("vault", "p1", "internal", "server")
 	f.alice = f.st.Client("alice", []string{"member"}, "p1")
 	if err := f.st.Pool.QueryRow(ctx, `SELECT b.id::text, t.id FROM buckets b JOIN tenants t ON t.name = b.tenant WHERE b.name = 'vault'`).
 		Scan(&f.vault, &f.tenant); err != nil {
 		t.Fatal(err)
 	}
-	f.rotate(t, 0)
-	svc, err := datakeys.New(datakeys.Deps{Catalog: f.st.Catalog, Fence: f.st.Fence, Verifier: f.st.Verifier(enforce.KeysAudience),
-		KEKs: f.ring, Now: func() time.Time { return *f.st.Clock }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.svc = svc
 	return f
 }
 
@@ -154,8 +149,8 @@ func (f *fixture) version(t *testing.T, object cryptowire.UUID, key string) (str
 	}
 	if _, err := f.st.Pool.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
-		                             created_at, published_at, encryption, sealed_key, kek_version)
-		VALUES ($1, $2, $3, $4, $5, 'LIVE', 10, $6, 1, 1, now(), now(), 'server', $7, 1)`,
+		                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
+		VALUES ($1, $2, $3, $4, $5, 'LIVE', 10, $6, 1, 2, now(), now(), 'server', $7, 1, 0)`,
 		r1test.Tenant, b.Version, b.Object, b.CryptoVersion, b.Blob, "sha256:"+strings.Repeat("0", 64), sealed); err != nil {
 		t.Fatal(err)
 	}

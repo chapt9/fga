@@ -12,7 +12,7 @@ import (
 // and the allowlist admits no client decryption, MCP or executor package.
 func TestImportAllowlist(t *testing.T) {
 	depcheck.Check(t)
-	depcheck.CheckForbidden(t)
+	depcheck.CheckForbidden(t, append(depcheck.PayloadCipher, depcheck.KeyEncryption...)...)
 }
 
 // TestAllowlistCatchesForbiddenImports covers V-101 and V-137 with

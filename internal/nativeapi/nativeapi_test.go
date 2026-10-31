@@ -5,13 +5,17 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"fga/internal/admission"
+	"fga/internal/datakeysapi"
 	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
 	"fga/internal/r1test"
@@ -31,12 +35,14 @@ func deploy(t *testing.T) *deployment { return deployWith(t, admission.DefaultLi
 func deployWith(t *testing.T, limits admission.Limits) *deployment {
 	t.Helper()
 	st := r1test.New(t)
-	keys := httptest.NewServer(keysapi.Keys(st.Envelopes, st.Tokens, func(r *http.Request) (string, error) {
-		return r.Header.Get("X-Test-Workload"), nil
-	}, r1test.StorageAdapter, func() bool { return true }, admission.New(admission.DefaultLimits)))
+	workloadOf := func(r *http.Request) (string, error) { return r.Header.Get("X-Test-Workload"), nil }
+	keys := httptest.NewServer(keysapi.Keys(st.Envelopes, st.Tokens, workloadOf, r1test.StorageAdapter, func() bool { return true },
+		admission.New(admission.DefaultLimits), datakeysapi.Register(st.DataKeys, workloadOf, r1test.StorageAdapter)))
 	t.Cleanup(keys.Close)
-	// The storage role reaches the keys role over HTTP as its workload.
-	st.Keys = rpc.KeysClient{BaseURL: keys.URL, HTTP: &http.Client{Transport: workload{r1test.StorageAdapter}}}
+	// The storage role reaches the keys role over HTTP as its workload,
+	// for envelopes and for server-mode data keys.
+	keysClient := rpc.KeysClient{BaseURL: keys.URL, HTTP: &http.Client{Transport: workload{r1test.StorageAdapter}}}
+	st.Keys, st.DataKeysVia = keysClient, keysClient
 	storage := httptest.NewServer(nativeapi.Storage(st.Content, st.Tokens, func() bool { return true }, admission.New(limits)))
 	t.Cleanup(storage.Close)
 	return &deployment{st: st, storage: storage, keys: keys}
@@ -206,4 +212,63 @@ func TestTenantStreamLimit(t *testing.T) {
 		t.Fatalf("second stream of the tenant: %d", second.StatusCode)
 	}
 	first.Body.Close()
+}
+
+// TestServerModeHTTP covers the server-mode routes over HTTP with the SDK
+// (D-12, S3): the client learns the bucket's mode, uploads plaintext the
+// storage role encrypts under a data key the keys role seals over its
+// internal route, and another member reads it by policy alone; the client
+// route refuses the bucket; a corrupted blob aborts the stream instead of
+// completing it (SSE-005).
+func TestServerModeHTTP(t *testing.T) {
+	d := deploy(t)
+	ctx := context.Background()
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	b := d.st.Client("bob", []string{"member"}, "p1")
+	alice, bob := d.client(t, a), d.client(t, b)
+	if mode, err := bob.BucketEncryption(ctx, "vault"); err != nil || mode != "server" {
+		t.Fatalf("mode = %q, %v", mode, err)
+	}
+	plaintext := bytes.Repeat([]byte("server mode "), 200_000)
+	pub, err := alice.PutPlain(ctx, "vault", "q3/report.bin", bytes.NewReader(plaintext), int64(len(plaintext)), client.PutOptions{IfNoneMatch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if v, err := bob.GetPlain(ctx, "vault", "q3/report.bin", "", &out); err != nil || v != pub.Version || !bytes.Equal(out.Bytes(), plaintext) {
+		t.Fatalf("bob reads by policy: %v (%d bytes)", err, out.Len())
+	}
+	if info, err := bob.Stat(ctx, "vault", "q3/report.bin", ""); err != nil || info.Encryption != "server" || info.Length != int64(len(plaintext)) {
+		t.Fatalf("stat = %+v, %v", info, err)
+	}
+	var apiErr *client.Error
+	_, err = alice.Put(ctx, "vault", "other.bin", strings.NewReader("x"),
+		[]crypto.Recipient{{Fingerprint: a.Recipient.Fingerprint(), KeyVersion: a.KeyVersion}}, client.PutOptions{})
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 || apiErr.Code != "ENCRYPTION_MODE" {
+		t.Fatalf("client upload to a server-mode bucket: %v", err)
+	}
+	var blobID string
+	if err := d.st.Pool.QueryRow(ctx, `SELECT blob::text FROM object_versions WHERE id::text = $1`, pub.Version).Scan(&blobID); err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	_ = filepath.WalkDir(d.st.BlobDir, func(p string, e fs.DirEntry, err error) error {
+		if err == nil && !e.IsDir() && e.Name() == blobID {
+			path = p
+		}
+		return nil
+	})
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-5] ^= 1
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if _, err := bob.GetPlain(ctx, "vault", "q3/report.bin", "", &out); err == nil {
+		t.Fatalf("a corrupted payload completed with %d bytes", out.Len())
+	}
 }

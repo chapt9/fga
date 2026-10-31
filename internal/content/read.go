@@ -29,11 +29,16 @@ type VersionInfo struct {
 	Suite            uint16    `json:"suite"`
 	Format           uint16    `json:"format"`
 	CreatedAt        time.Time `json:"created_at"`
+	// Encryption is the version's mode (ENC-002); a server-mode version
+	// also has its plaintext Length, which a reader receives.
+	Encryption string `json:"encryption"`
+	Length     int64  `json:"length,omitempty"`
 }
 
 func info(v version, current bool) VersionInfo {
 	return VersionInfo{Version: v.ID.String(), ETag: ETag(v.ID), Current: current, CiphertextLength: v.Length,
-		CiphertextSHA256: v.SHA256, Suite: v.Suite, Format: v.Format, CreatedAt: v.CreatedAt.UTC()}
+		CiphertextSHA256: v.SHA256, Suite: v.Suite, Format: v.Format, CreatedAt: v.CreatedAt.UTC(), Encryption: v.Encryption,
+		Length: v.PlaintextLength}
 }
 
 // readChecks are the checks of a read-like operation on one exact version:
@@ -156,13 +161,42 @@ func (s *Service) ReadCiphertext(ctx context.Context, c Caller, bucketName, key,
 		return nil, err
 	}
 	op, checks := readChecks(o, v, current, "read", "read-history", registry.OpRead, registry.OpReadHistory)
-	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
+	rec, tenantID, err := s.admitRead(ctx, c, o, v, current, op, checks, "client")
 	if err != nil {
 		return nil, err
 	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		r.Close()
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return &Stream{ReadCloser: s.lease(r, b), Version: info(v, current)}, nil
+}
+
+// admitRead decides a read-like operation op with checks on one exact
+// version for the storage role and admits it under the fence, recording
+// the admission (CNT-008, DEC-006). The version must be in mode; another
+// mode is ErrEncryptionMode, after authorization (ENC-002).
+func (s *Service) admitRead(ctx context.Context, c Caller, o object, v version, current bool, op string, checks []check,
+	mode string) (signing.Record, cryptowire.UUID, error) {
+	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
+	if err != nil {
+		return rec, cryptowire.UUID{}, err
+	}
+	if v.Encryption != mode {
+		return rec, cryptowire.UUID{}, ErrEncryptionMode
+	}
 	tenantID, err := s.tenantID(ctx, c.Tenant)
 	if err != nil {
-		return nil, err
+		return rec, tenantID, err
 	}
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
 		if err := s.headHolds(ctx, tx, c.Tenant, o, v, current, rec, true); err != nil {
@@ -182,26 +216,7 @@ func (s *Service) ReadCiphertext(ctx context.Context, c Caller, bucketName, key,
 		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindReadAdmission, rec, "ADMITTED",
 			audit.Target{Type: "storage.object", ID: o.ID.String(), Version: v.ID.String(), Digest: v.SHA256}))
 	})
-	if err != nil {
-		return nil, err
-	}
-	if err := clientMode(v.Encryption); err != nil {
-		return nil, err
-	}
-	digest, err := cryptowire.ParseDigest(v.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
-	}
-	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
-	if err != nil {
-		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
-	}
-	b, err := fence.FromRecord(rec)
-	if err != nil {
-		r.Close()
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	return &Stream{ReadCloser: s.lease(r, b), Version: info(v, current)}, nil
+	return rec, tenantID, err
 }
 
 // ErrLease aborts a stream whose authority changed, whose recheck is

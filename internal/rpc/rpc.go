@@ -47,23 +47,16 @@ type KeysClient struct {
 	HTTP    *http.Client
 }
 
-// DataKey is a server-mode data key from the keys role. The caller owns Key
-// and clears it after use (SSE-004).
-type DataKey struct {
-	Key        []byte
-	Sealed     []byte
-	KEKVersion uint32
-}
-
 // SealDataKey asks the keys role for a server-mode upload intent's data key
 // against a decision for storage.key.seal-create or seal-version (SSE-003).
-func (c KeysClient) SealDataKey(ctx context.Context, d signing.Signed, intentID string) (DataKey, error) {
+// The caller owns the key and clears it after use (SSE-004).
+func (c KeysClient) SealDataKey(ctx context.Context, d signing.Signed, intentID string) (envelope.DataKey, error) {
 	var out keysapi.DataKeyBody
 	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/seal",
 		keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, IntentID: intentID}, &out); err != nil {
-		return DataKey{}, keysError(err)
+		return envelope.DataKey{}, keysError(err)
 	}
-	return DataKey{Key: out.Key, Sealed: out.Sealed, KEKVersion: out.KEKVersion}, nil
+	return envelope.DataKey{Key: out.Key, Sealed: out.Sealed, KEKVersion: out.KEKVersion}, nil
 }
 
 // ReleaseDataKey asks the keys role for a server-mode version's data key

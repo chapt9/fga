@@ -166,20 +166,38 @@ as bob;   check $B/fga get-document -bucket reports -key q3/chat.log -out bob-ch
 as bob;   if $B/fga append -bucket reports -key q3/chat.log -in chat2.txt 2>err.txt; then echo "UNEXPECTED: bob appended"; exit 1; fi
 echo "collection appended by its owner and read back by bob; bob's append: $(cat err.txt)"
 
-# Encryption modes (specification 2.6, D-12): a new bucket is in server mode
-# by default. Server-mode uploads come with stretch S3, so the client routes
-# refuse a server-mode bucket, but only to a caller allowed to use it. A
-# project lead may change the mode, for uploads begun afterwards.
+# Encryption modes (specification 2.6, D-12): a new bucket is in server
+# mode by default, and takes no recipients. A project lead may change the
+# mode, for uploads begun afterwards; earlier versions keep theirs, and
+# fga get reads each version through its own mode's route.
 $ADMIN bucket create -tenant t-acme -name vault -project p1 >/dev/null
 $ADMIN grant -tenant t-acme -actor lena -type storage.bucket -actions manage
-as alice; if $B/fga put -bucket vault -key a.bin -in plain.bin 2>err.txt; then echo "UNEXPECTED: client upload to a server-mode bucket"; exit 1; fi
-check grep -q ENCRYPTION_MODE err.txt
-echo "client upload to a server-mode bucket: $(cat err.txt)"
+as alice; check $B/fga put -bucket vault -key a.bin -in plain.bin
+as alice; if $B/fga put -bucket vault -key b.bin -in plain.bin -to $BOBFP 2>err.txt; then echo "UNEXPECTED: recipients in server mode"; exit 1; fi
+echo "recipients for a server-mode bucket: $(cat err.txt)"
 as bob;   if $B/fga set-encryption -bucket vault -encryption client 2>err.txt; then echo "UNEXPECTED: bob changed the mode"; exit 1; fi
 echo "bob changes the mode: $(cat err.txt)"
 as lena;  check $B/fga set-encryption -bucket vault -encryption client
-as alice; check $B/fga put -bucket vault -key a.bin -in plain.bin
-echo "alice uploads once the lead has switched the bucket to client mode"
+as alice; check $B/fga put -bucket vault -key b.bin -in plain.bin
+as alice; check $B/fga get -bucket vault -key a.bin -out vault-a.out; check cmp plain.bin vault-a.out
+as alice; check $B/fga get -bucket vault -key b.bin -out vault-b.out; check cmp plain.bin vault-b.out
+echo "after the lead switched the bucket to client mode, both versions read through their own modes"
+
+# Server-mode objects (D-12, S3): in a bucket left in the default server
+# mode, the storage role encrypts under a data key the keys role seals for
+# the upload, and bob reads alice's object by policy alone: no recipient
+# key, envelope or sharing step. No blob holds plaintext.
+$ADMIN bucket create -tenant t-acme -name shared -project p1 >/dev/null
+head -c 2500000 /dev/urandom > shared.bin
+as alice; check $B/fga put -bucket shared -key q4/plan.bin -in shared.bin
+as bob;   check $B/fga get -bucket shared -key q4/plan.bin -out bob-shared.out; check cmp shared.bin bob-shared.out
+echo "server mode: bob reads alice's object by policy alone"
+python3 -I -c '
+import glob
+p=open("shared.bin","rb").read()
+blobs=[open(f,"rb").read() for f in glob.glob("blobs/blobs/*/*/*")]
+assert blobs and all(p[i:i+32] not in b for b in blobs for i in range(0,len(p),65536)), "server-mode plaintext found in a blob"
+print("no blob holds a sample of the server-mode plaintext")'
 
 
 $ADMIN audit export -dir audit

@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,12 +20,14 @@ import (
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/content"
+	"fga/internal/datakeys"
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/gate"
 	"fga/internal/journal"
+	"fga/internal/kek"
 	"fga/internal/pgtest"
 	"fga/internal/policy/engine"
 	"fga/internal/registry"
@@ -165,6 +168,14 @@ type Stack struct {
 	Envelopes  *envelope.Service
 	Keys       content.EnvelopeDelivery
 	ReceiptKey ed25519.PublicKey
+	// KEKs is the keys role's ring, holding KEK version 1 of Tenant, and
+	// DataKeys its server-mode data-key service, which the content service
+	// calls in process (D-12).
+	KEKs     *kek.Ring
+	DataKeys *datakeys.Service
+	// DataKeysVia, if set, is called instead of DataKeys, for instance
+	// the storage role's HTTP client of the keys role.
+	DataKeysVia content.DataKeys
 	// BeforeDecide, if set, runs before each decision the storage and keys
 	// roles request (see Decider.Before).
 	BeforeDecide func(decisionsvc.Request)
@@ -312,7 +323,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide}, Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id, extra...)
-		}), TokenKey: tokenKey, Limits: limits(), Now: now})
+		}), DataKeys: dataKeys{st}, TokenKey: tokenKey, Limits: limits(), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +335,45 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		t.Fatal(err)
 	}
 	st.Keys = st.Envelopes
+	st.KEKs = kek.NewRing()
+	v, err := st.KEKs.Add(Tenant, now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Catalog.RotateKEK(ctx, Tenant, v, now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if st.DataKeys, err = datakeys.New(datakeys.Deps{Catalog: st.Catalog, Fence: st.Fence, Verifier: st.Verifier(content.KeysAudience),
+		KEKs: st.KEKs, Now: now}); err != nil {
+		t.Fatal(err)
+	}
 	return st
+}
+
+// dataKeys calls the stack's keys role in process, as rpc.KeysClient does
+// over HTTP, with the same mapping of not-found.
+type dataKeys struct{ st *Stack }
+
+func (d dataKeys) SealDataKey(ctx context.Context, decision signing.Signed, intentID string) (content.DataKey, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.SealDataKey(ctx, decision, intentID)
+	}
+	k, err := d.st.DataKeys.Seal(ctx, decision, intentID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return content.DataKey{}, content.ErrNotFound
+	}
+	return content.DataKey{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion}, err
+}
+
+func (d dataKeys) ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.ReleaseDataKey(ctx, decision, versionID)
+	}
+	k, err := d.st.DataKeys.Release(ctx, decision, versionID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return nil, content.ErrNotFound
+	}
+	return k, err
 }
 
 // Verifier returns a decision verifier for audience.

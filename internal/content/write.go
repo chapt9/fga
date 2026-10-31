@@ -26,6 +26,7 @@ import (
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/opplan"
+	"fga/internal/payload"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -79,8 +80,12 @@ type Intent struct {
 	result           []byte
 	label            string
 	// encryption is the mode the upload began under and its version is
-	// published under (ENC-001, ENC-002).
-	encryption string
+	// published under (ENC-001, ENC-002). A server-mode upload has its
+	// sealed data key once the keys role sealed it, and the plaintext
+	// length once staged (SSE-005).
+	encryption      string
+	sealed          bool
+	plaintextLength int64
 	// A unit intent (kind "unit") belongs to a document intent; its upload
 	// is authorized like its document's.
 	kind      string
@@ -112,36 +117,46 @@ func (r BeginRequest) digest() string {
 // It allocates fresh object (new keys only), version, crypto-version, blob
 // and attempt IDs and assigns the protected attributes the version will be
 // published with; the client cannot set them. An identical retry under the
-// same idempotency key returns the same intent.
+// same idempotency key returns the same intent. Begin serves client-mode
+// buckets; PutObject begins server-mode uploads (ENC-002).
 func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, error) {
+	in, err := s.begin(ctx, c, r, "client")
+	return in.Intent, err
+}
+
+// begin is Begin for a bucket in mode; it returns the stored intent.
+func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode string) (storedIntent, error) {
 	if !ValidKey(r.Key) || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 || (r.IfMatch != "" && r.IfNoneMatch) || len(r.Label) > 64 {
-		return Intent{}, ErrInvalid
+		return storedIntent{}, ErrInvalid
 	}
 	if in, err := s.intentByIdempotency(ctx, c, r.IdempotencyKey); err == nil {
 		if in.state == "ABORTED" || in.requestDigest != r.digest() {
-			return Intent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
+			return storedIntent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
+		}
+		if in.encryption != mode {
+			return storedIntent{}, ErrEncryptionMode
 		}
 		// Default deny: a retry is answered only while the same begin
 		// would still be allowed (ruling 7).
 		op, checks := s.intentChecks(in, registry.OpBeginCreate, registry.OpBeginVersion)
 		_, rec, err := s.decide(ctx, c, op, Audience, false, checks)
 		if err != nil {
-			return Intent{}, err
+			return storedIntent{}, err
 		}
 		if err := s.checked(ctx, rec); err != nil {
-			return Intent{}, err
+			return storedIntent{}, err
 		}
-		return in.Intent, nil
+		return in, nil
 	} else if !errors.Is(err, ErrNotFound) {
-		return Intent{}, err
+		return storedIntent{}, err
 	}
 	tenantID, err := s.tenantID(ctx, c.Tenant)
 	if err != nil {
-		return Intent{}, err
+		return storedIntent{}, err
 	}
 	b, err := s.bucketByName(ctx, c.Tenant, r.Bucket)
 	if err != nil {
-		return Intent{}, err
+		return storedIntent{}, err
 	}
 	in := Intent{IntentID: cryptowire.NewUUID(), Tenant: tenantID, LogicalVersion: cryptowire.NewUUID(), CryptoVersion: cryptowire.NewUUID(),
 		Blob: cryptowire.NewUUID(), Attempt: cryptowire.NewUUID(), Suite: cryptowire.Suite1, Format: cryptowire.Format1,
@@ -165,9 +180,9 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		case errors.Is(qerr, pgx.ErrNoRows):
 			err = ErrNotFound
 		case qerr != nil:
-			return Intent{}, qerr
+			return storedIntent{}, qerr
 		case kind != "derived" || r.IfMatch != "":
-			return Intent{}, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
+			return storedIntent{}, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
 		default:
 			err = nil
 		}
@@ -185,7 +200,7 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		}
 		if r.Label != "" {
 			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
-				return Intent{}, err
+				return storedIntent{}, err
 			}
 			if !r.Derived {
 				in.attributes["label"] = r.Label
@@ -197,13 +212,13 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		}
 		checks = []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", b.ID.String())}}
 	case err != nil:
-		return Intent{}, err
+		return storedIntent{}, err
 	case r.Derived:
 		// A new version of a derived output; a proposed label may only
 		// raise its label.
 		if r.Label != "" {
 			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
-				return Intent{}, err
+				return storedIntent{}, err
 			}
 		}
 		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
@@ -211,7 +226,7 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		checks = []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", o.ID.String())}}
 	default:
 		if current, _ := o.Attributes["label"].(string); r.Label != "" && r.Label != current {
-			return Intent{}, fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
+			return storedIntent{}, fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
 		}
 		in.label = ""
 		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
@@ -220,11 +235,11 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	}
 	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
-		return Intent{}, err
+		return storedIntent{}, err
 	}
-	// This route uploads client-encrypted content only (ENC-002).
-	if err := clientMode(b.Encryption); err != nil {
-		return Intent{}, err
+	// Each route uploads in its own mode only (ENC-002).
+	if b.Encryption != mode {
+		return storedIntent{}, ErrEncryptionMode
 	}
 	attrs, _ := json.Marshal(in.attributes)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
@@ -245,9 +260,10 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		return err
 	})
 	if err != nil {
-		return Intent{}, err
+		return storedIntent{}, err
 	}
-	return in, nil
+	in.state = "RESERVED"
+	return storedIntent{Intent: in, requestDigest: r.digest()}, nil
 }
 
 // intentChecks are the checks that authorize an intent's upload: create on
@@ -307,7 +323,8 @@ func (s *Service) intent(ctx context.Context, q interface {
 	sql := `SELECT i.id, t.id, i.object, i.version, i.crypto_version, i.blob, i.attempt, i.expires_at, i.state, i.new_object, i.bucket,
 	               i.key, i.expected_generation, i.if_match, i.if_none_match, i.planned_scope, i.planned_attributes, i.principal,
 	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label,
-	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object), i.encryption
+	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object), i.encryption,
+	               i.sealed_key IS NOT NULL, coalesce(i.plaintext_length, 0)
 	          FROM upload_intents i JOIN tenants t ON t.name = i.tenant
 	          LEFT JOIN document_intents d ON d.tenant = i.tenant AND d.id = i.document_intent
 	         WHERE i.tenant = $1 AND i.id = $2 AND i.principal = $3`
@@ -318,7 +335,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Object, &in.LogicalVersion, &in.CryptoVersion,
 		&in.Blob, &in.Attempt, &in.ExpiresAt, &in.state, &in.newObject, &in.bucket, &in.key, &in.expectedGen, &in.ifMatch, &in.ifNoneMatch,
 		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label,
-		&in.kind, &in.docIntent, &in.docNew, &in.docObject, &in.encryption)
+		&in.kind, &in.docIntent, &in.docNew, &in.docObject, &in.encryption, &in.sealed, &in.plaintextLength)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -519,8 +536,8 @@ func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r Fina
 		// A unit is published only with its document.
 		return Prepared{}, ErrNotFound
 	}
-	if err := clientMode(in.encryption); err != nil {
-		return Prepared{}, err
+	if in.encryption == "server" {
+		return s.prepareServer(ctx, c, in, r)
 	}
 	if in.state != "STAGED" {
 		return Prepared{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
@@ -596,9 +613,13 @@ func (s *Service) CommitPublish(ctx context.Context, p Prepared) (Published, err
 	c, in, desc, r, envs, rec := p.c, p.in, p.desc, p.req, p.envs, p.rec
 	var result Published
 	mutate := []string{in.Object.String()}
+	server := in.encryption == "server"
 	err := s.fenced(ctx, rec, mutate, func(ctx context.Context, tx pgx.Tx) error {
-		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, desc.Signer); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		// A server-mode version has no client signature (ENC-002).
+		if !server {
+			if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, desc.Signer); err != nil {
+				return fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
 		}
 		if in.label != "" {
 			// The label was checked against the order the decision was
@@ -613,6 +634,9 @@ func (s *Service) CommitPublish(ctx context.Context, p Prepared) (Published, err
 			return err
 		}
 		targets := []audit.Target{{Type: "storage.object", ID: result.Object, Version: result.Version, Signer: desc.Signer, Digest: desc.CiphertextSHA256}}
+		if server {
+			targets[0].Digest = in.ciphertextSHA256
+		}
 		for _, e := range envs {
 			targets = append(targets, audit.Target{Type: "crypto.envelope", ID: result.Object, Version: result.Version,
 				Recipient: e.ctx.Recipient.String(), Envelope: e.id.String(), Generation: e.ctx.Generation, Signer: desc.Signer, Digest: e.digest.String()})
@@ -747,7 +771,20 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 			return Published{}, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `
+	if in.encryption == "server" {
+		// The sealed data key moves from the intent to the version; the
+		// version has no client signature or descriptor (SSE-002).
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+			                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
+			SELECT $1, $2, $3, $4, $5, 'LIVE', i.ciphertext_length, i.ciphertext_sha256, $6, $7, $8, $8, 'server', i.sealed_key, i.kek_version,
+			       i.plaintext_length
+			  FROM upload_intents i WHERE i.tenant = $1 AND i.id = $9 AND i.sealed_key IS NOT NULL AND i.plaintext_length IS NOT NULL`,
+			c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int(payload.Suite), int(payload.Format), now,
+			in.IntentID); err != nil {
+			return Published{}, err
+		}
+	} else if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
 		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
 		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,

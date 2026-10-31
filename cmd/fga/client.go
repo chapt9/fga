@@ -42,6 +42,7 @@ import (
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
+//	                   in a server-mode bucket the server encrypts; -to does not apply, policy decides who reads
 //	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage, for the caller only
 //	fga get-derived    -bucket B -key K -out FILE [-version V]
 //	fga search         -bucket B [-prefix P] [-project P] [-label MAX]   documents the caller may discover, by metadata
@@ -50,7 +51,7 @@ import (
 //	fga append         -bucket B -key K -in FILE [-to FP,...]   append paragraphs to a text collection; needs read on
 //	                   every entry, whose keys come from the caller's own envelopes
 //	fga get-original   -bucket B -key K -out FILE [-version V]   needs raw-read and read on every unit
-//	fga get            -bucket B -key K -out FILE [-version V]
+//	fga get            -bucket B -key K -out FILE [-version V]   either mode; the version's mode picks the route
 //	fga get-document   -bucket B -key K -out FILE [-version V]   the units the caller may read
 //	fga ls             -bucket B [-prefix P]
 //	fga rm             -bucket B -key K [-version V] [-document] [-approval A]
@@ -60,7 +61,7 @@ import (
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
-//	fga finalize       -intent I -request FILE -approval A   finish a put that needed an approval
+//	fga finalize       -intent I [-request FILE] -approval A   finish a put that needed an approval (no -request in server mode)
 //
 // An operation that needs an approval prints the approval's ID; once an
 // approver has approved it, repeat the command with -approval ID. A put
@@ -326,6 +327,26 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		defer f.Close()
+		if serverMode(ctx, c, *bucket) {
+			if *to != "" || *sources != "" {
+				return errors.New("a server-mode bucket takes no recipients or lineage: policy decides who reads")
+			}
+			st, err := f.Stat()
+			if err != nil {
+				return err
+			}
+			p, err := c.PutPlain(ctx, *bucket, *key, f, st.Size(), client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label})
+			var need *client.ApprovalRequired
+			if errors.As(err, &need) {
+				fmt.Printf("approval required: %s\nafter approval: fga finalize -intent %s -approval %s\n", need.ID, need.Intent, need.ID)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Printf("published %s object %s version %s etag %s (server-encrypted)\n", *key, p.Object, p.Version, p.ETag)
+			return nil
+		}
 		recipients := []crypto.Recipient{{Fingerprint: c.Recipient.Fingerprint(), KeyVersion: c.KeyVersion}}
 		for _, fp := range split(*to) {
 			d, err := cryptowire.ParseDigest(fp)
@@ -466,15 +487,21 @@ func clientCommand(cmd string, args []string) error {
 		fmt.Printf("verified and decrypted %d permitted units\n", n)
 		return os.Rename(tmp, *out)
 	case "finalize":
-		body, err := os.ReadFile(*request)
-		if err != nil {
-			return err
+		var body []byte
+		if *request != "" {
+			var err error
+			if body, err = os.ReadFile(*request); err != nil {
+				return err
+			}
 		}
 		p, err := c.FinalizeUpload(ctx, *intent, body)
 		if err != nil {
 			return approvalHint(err)
 		}
 		fmt.Printf("published version %s etag %s\n", p.Version, p.ETag)
+		if *request == "" {
+			return nil
+		}
 		return os.Remove(*request)
 	case "label":
 		var o client.LabelOutcome
@@ -536,6 +563,18 @@ func clientCommand(cmd string, args []string) error {
 		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
+		}
+		if serverVersion(ctx, c, *bucket, *key, *version) {
+			v, err := c.GetPlain(ctx, *bucket, *key, *version, f)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
+				os.Remove(tmp)
+				return err
+			}
+			fmt.Printf("read version %s (server-encrypted)\n", v)
+			return os.Rename(tmp, *out)
 		}
 		v, err := c.Get(ctx, *bucket, *key, *version, f)
 		if cerr := f.Close(); err == nil {
@@ -599,4 +638,21 @@ func split(s string) []string {
 		}
 	}
 	return out
+}
+
+// serverMode reports whether bucket is in server mode (D-12). A caller
+// who may not list the bucket is answered as for client mode; the storage
+// role still refuses a route of the other mode (ENC-002).
+func serverMode(ctx context.Context, c *client.Client, bucket string) bool {
+	mode, err := c.BucketEncryption(ctx, bucket)
+	return err == nil && mode == "server"
+}
+
+// serverVersion reports whether a version is in server mode, which picks
+// its read route: a bucket's versions keep the mode they were published
+// under when the bucket's mode changes (ENC-002). A caller who may not
+// stat it is answered as for client mode, whose route then refuses it.
+func serverVersion(ctx context.Context, c *client.Client, bucket, key, version string) bool {
+	info, err := c.Stat(ctx, bucket, key, version)
+	return err == nil && info.Encryption == "server"
 }

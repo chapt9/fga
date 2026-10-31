@@ -12,6 +12,29 @@ fga/internal/blob
 fga/internal/catalog
 fga/internal/content
 fga/internal/cryptowire
+# Reviewed 2026-10-31 (D-12, SSE-001, SSE-005): server-mode payloads. The
+# storage role encrypts and decrypts them with Tink's streaming AEAD
+# AES-256-GCM-HKDF under a data key the keys role released for one stream.
+# It links no key-encryption code and no HPKE (hybrid); CheckForbidden
+# proves it.
+fga/internal/payload
+github.com/tink-crypto/tink-go/v2/aead
+github.com/tink-crypto/tink-go/v2/core
+github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess
+github.com/tink-crypto/tink-go/v2/internal
+github.com/tink-crypto/tink-go/v2/key
+github.com/tink-crypto/tink-go/v2/keyset
+github.com/tink-crypto/tink-go/v2/monitoring
+github.com/tink-crypto/tink-go/v2/proto
+github.com/tink-crypto/tink-go/v2/secretdata
+github.com/tink-crypto/tink-go/v2/streamingaead
+github.com/tink-crypto/tink-go/v2/subtle
+github.com/tink-crypto/tink-go/v2/tink
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/
 fga/internal/decision
 fga/internal/decisionsvc
 fga/internal/delegation

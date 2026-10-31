@@ -66,10 +66,9 @@ func Check(t testing.TB) {
 }
 
 // Forbidden are packages no server role may link: client decryption and
-// key unwrapping, MCP, and the optional tool executor (MOD-004).
+// envelope unwrapping, MCP, and the optional tool executor (MOD-004).
 var Forbidden = []string{
 	"github.com/tink-crypto/tink-go/v2/hybrid",
-	"github.com/tink-crypto/tink-go/v2/streamingaead",
 	"fga/sdk/go/crypto",
 	"github.com/modelcontextprotocol/go-sdk/mcp",
 	"fga/internal/tools",
@@ -77,12 +76,29 @@ var Forbidden = []string{
 	"fga/internal/invocation",
 }
 
+// PayloadCipher is the server-mode payload cipher (specification 2.6,
+// SSE-001): only the storage role, which encrypts and decrypts server-mode
+// payloads, may link it; every other server role passes it to
+// CheckForbidden (MOD-004).
+var PayloadCipher = []string{
+	"github.com/tink-crypto/tink-go/v2/streamingaead",
+	"fga/internal/payload",
+}
+
+// KeyEncryption is the server-mode key-encryption code: only the keys role
+// may link it (SSE-002).
+var KeyEncryption = []string{
+	"fga/internal/kek",
+	"fga/internal/datakeys",
+	"fga/internal/datakeysapi",
+}
+
 // CheckForbidden fails t if the allowlist would admit a forbidden package,
-// so the check is known to fail when it should.
-func CheckForbidden(t testing.TB) {
+// or one of also, so the check is known to fail when it should.
+func CheckForbidden(t testing.TB, also ...string) {
 	t.Helper()
 	allow := Allowlist(t, "allowed-imports.txt")
-	for _, dep := range Forbidden {
+	for _, dep := range append(slices.Clone(Forbidden), also...) {
 		if bad := Disallowed([]string{dep}, allow); len(bad) != 1 {
 			t.Errorf("allowed-imports.txt admits %s", dep)
 		}

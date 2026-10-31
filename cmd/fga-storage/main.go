@@ -118,7 +118,8 @@ func run(path string) error {
 	}
 	svc, err := content.New(content.Deps{Catalog: store, Blobs: blobs, Fence: fence.New(pool, time.Second, time.Now),
 		Decider: rpc.DecisionClient{BaseURL: cfg.Decision.URL, HTTP: decisionHTTP}, Verifier: verifier,
-		Keys: rpc.KeysClient{BaseURL: cfg.Keys.URL, HTTP: keysHTTP}, TokenKey: tokenKey, Limits: limits, Now: time.Now})
+		Keys: rpc.KeysClient{BaseURL: cfg.Keys.URL, HTTP: keysHTTP}, DataKeys: rpc.KeysClient{BaseURL: cfg.Keys.URL, HTTP: keysHTTP},
+		TokenKey: tokenKey, Limits: limits, Now: time.Now})
 	if err != nil {
 		return err
 	}

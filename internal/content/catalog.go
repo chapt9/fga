@@ -49,8 +49,10 @@ type version struct {
 	DescriptorSig string
 	CreatedAt     time.Time
 	// Encryption is the mode the version was published under; a delete
-	// marker has none (ENC-002).
-	Encryption string
+	// marker has none (ENC-002). A server-mode version has its plaintext
+	// length.
+	Encryption      string
+	PlaintextLength int64
 }
 
 func (s *Service) tenantID(ctx context.Context, tenant string) (cryptowire.UUID, error) {
@@ -116,13 +118,14 @@ func (s *Service) versionByID(ctx context.Context, q catalog.Querier, tenant str
 	sql := `SELECT id, object, delete_marker, coalesce(crypto_version, '00000000-0000-0000-0000-000000000000'),
 	               coalesce(blob, '00000000-0000-0000-0000-000000000000'), state, coalesce(ciphertext_length, 0),
 	               coalesce(ciphertext_sha256, ''), coalesce(suite, 0), coalesce(format, 0), coalesce(signer, ''),
-	               coalesce(descriptor, ''), coalesce(descriptor_signature, ''), created_at, coalesce(encryption, '')
+	               coalesce(descriptor, ''), coalesce(descriptor_signature, ''), created_at, coalesce(encryption, ''),
+	               coalesce(plaintext_length, 0)
 	          FROM object_versions WHERE tenant = $1 AND id = $2`
 	if lock {
 		sql += ` FOR UPDATE`
 	}
 	err := q.QueryRow(ctx, sql, tenant, id).Scan(&v.ID, &v.Object, &v.DeleteMarker, &v.CryptoVersion, &v.Blob, &v.State,
-		&v.Length, &v.SHA256, &v.Suite, &v.Format, &v.Signer, &v.Descriptor, &v.DescriptorSig, &v.CreatedAt, &v.Encryption)
+		&v.Length, &v.SHA256, &v.Suite, &v.Format, &v.Signer, &v.Descriptor, &v.DescriptorSig, &v.CreatedAt, &v.Encryption, &v.PlaintextLength)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrNotFound
 	}

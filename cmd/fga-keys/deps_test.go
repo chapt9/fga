@@ -11,7 +11,7 @@ import (
 // MCP or executor code.
 func TestImportAllowlist(t *testing.T) {
 	depcheck.Check(t)
-	depcheck.CheckForbidden(t)
+	depcheck.CheckForbidden(t, depcheck.PayloadCipher...)
 }
 
 // TestNoStorageCode: the keys role links neither the blob store nor the

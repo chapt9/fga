@@ -78,6 +78,18 @@ type EnvelopeDelivery interface {
 	Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error)
 }
 
+// DataKey is a server-mode data key from the keys role.
+type DataKey = envelope.DataKey
+
+// DataKeys is the keys role's server-mode data-key service (SSE-003): it
+// seals a data key for an upload intent and releases a version's data key,
+// each against a single-use decision for the keys role. The storage role
+// clears every key after one stream (SSE-004).
+type DataKeys interface {
+	SealDataKey(ctx context.Context, decision signing.Signed, intentID string) (DataKey, error)
+	ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error)
+}
+
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are
 // configuration values.
 type Limits struct {
@@ -108,6 +120,9 @@ type Deps struct {
 	Decider  Decider
 	Verifier *signing.Verifier
 	Keys     EnvelopeDelivery
+	// DataKeys serves server mode; without it a server-mode upload or read
+	// is unavailable.
+	DataKeys DataKeys
 	// TokenKey seals listing continuation tokens (32 bytes, AES-256-GCM).
 	TokenKey []byte
 	Limits   Limits

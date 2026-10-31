@@ -1,6 +1,6 @@
 # Server-mode keys: KEKs and data-key release (D-12, stretch S2)
 
-In server mode (specification 2.6, [D-12](../decisions/D-12-encryption-modes.md)) the storage role encrypts each version under a fresh data key. Stretch S2 builds the keys role's part: it holds each tenant's key-encryption keys (KEKs), seals a data key for an upload, and releases a version's data key for a read. Each step happens only against a decision for that exact upload or version (SSE-001 to SSE-004). The storage role's part, which encrypts and decrypts payloads with the data key, is stretch S3. Until then no server-mode version exists outside the tests.
+In server mode (specification 2.6, [D-12](../decisions/D-12-encryption-modes.md)) the storage role encrypts each version under a fresh data key. Stretch S2 builds the keys role's part: it holds each tenant's key-encryption keys (KEKs), seals a data key for an upload, and releases a version's data key for a read. Each step happens only against a decision for that exact upload or version (SSE-001 to SSE-004). The storage role's part, which encrypts and decrypts payloads with the data key, is stretch S3 ([server-objects.md](server-objects.md)).
 
 ## Who holds what
 

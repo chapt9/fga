@@ -108,9 +108,10 @@ func (c *Client) do(ctx context.Context, method, url, token string, body io.Read
 		defer resp.Body.Close()
 		var a struct {
 			ApprovalID string `json:"approval_id"`
+			IntentID   string `json:"intent_id"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&a)
-		return nil, &ApprovalRequired{ID: a.ApprovalID}
+		return nil, &ApprovalRequired{ID: a.ApprovalID, Intent: a.IntentID}
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
@@ -262,7 +263,12 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 
 // FinalizeUpload sends a finalize request for a staged upload, such as one
 // an ApprovalRequired error kept.
+//
+// A server-mode upload has no finalize request; pass nil.
 func (c *Client) FinalizeUpload(ctx context.Context, intent string, request []byte) (Published, error) {
+	if request == nil {
+		request = []byte("{}")
+	}
 	var out Published
 	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/uploads/"+url.PathEscape(intent)+"/finalize", c.StorageToken,
 		bytes.NewReader(request), int64(len(request)), map[string]string{"Content-Type": "application/json"}, &out)
@@ -279,6 +285,74 @@ type VersionInfo struct {
 	Suite            uint16    `json:"suite"`
 	Format           uint16    `json:"format"`
 	CreatedAt        time.Time `json:"created_at"`
+	// Encryption is the version's mode; a server-mode version has its
+	// plaintext Length.
+	Encryption string `json:"encryption"`
+	Length     int64  `json:"length,omitempty"`
+}
+
+// BucketEncryption returns a bucket's encryption mode, "server" or
+// "client" (ENC-001); it needs list on the bucket.
+func (c *Client) BucketEncryption(ctx context.Context, bucket string) (string, error) {
+	var out struct {
+		Encryption string `json:"encryption"`
+	}
+	_, err := c.do(ctx, http.MethodGet, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/encryption", c.StorageToken, nil, -1, nil, &out)
+	return out.Encryption, err
+}
+
+// PutPlain uploads length bytes of plaintext from src to a server-mode
+// bucket (D-12, SSE-005): the storage role encrypts it under a data key
+// the keys role seals for the upload; no recipient key is involved. When
+// the publication needs an approval, the ApprovalRequired error names the
+// staged upload's Intent; repeat with FinalizeUpload(Intent, nil) once it
+// is given.
+func (c *Client) PutPlain(ctx context.Context, bucket, key string, src io.Reader, length int64, opts PutOptions) (Published, error) {
+	if opts.Lineage != nil {
+		return Published{}, errors.New("fga: derived outputs in server mode are not supported yet")
+	}
+	h := map[string]string{"Content-Type": "application/octet-stream", "Idempotency-Key": opts.IdempotencyKey}
+	if h["Idempotency-Key"] == "" {
+		h["Idempotency-Key"] = cryptowire.NewUUID().String()
+	}
+	if opts.IfMatch != "" {
+		h["If-Match"] = opts.IfMatch
+	}
+	if opts.IfNoneMatch {
+		h["If-None-Match"] = "*"
+	}
+	if opts.Label != "" {
+		h["Fga-Label"] = opts.Label
+	}
+	var out Published
+	_, err := c.do(ctx, http.MethodPut, objectURL(c.StorageURL, bucket, "", key, "", nil), c.StorageToken, src, length, h, &out)
+	return out, err
+}
+
+// GetPlain writes a server-mode version's plaintext (the current one when
+// version is "") to dst. A stream the server aborts, or one shorter than
+// the length announced, is an error; what dst received must then be
+// discarded.
+func (c *Client) GetPlain(ctx context.Context, bucket, key, version string, dst io.Writer) (string, error) {
+	return c.plain(ctx, objectURL(c.StorageURL, bucket, "/content", key, version, nil), dst)
+}
+
+// ExportPlain is GetPlain under the export permission.
+func (c *Client) ExportPlain(ctx context.Context, bucket, key, version string, dst io.Writer) (string, error) {
+	return c.plain(ctx, objectURL(c.StorageURL, bucket, "/export", key, version, nil), dst)
+}
+
+func (c *Client) plain(ctx context.Context, target string, dst io.Writer) (string, error) {
+	resp, err := c.do(ctx, http.MethodGet, target, c.StorageToken, nil, -1, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	n, err := io.Copy(dst, resp.Body)
+	if err != nil || resp.ContentLength < 0 || n != resp.ContentLength {
+		return "", fmt.Errorf("fga: incomplete transfer: %v", err)
+	}
+	return resp.Header.Get("Fga-Version-Id"), nil
 }
 
 // Stat returns a version's metadata.

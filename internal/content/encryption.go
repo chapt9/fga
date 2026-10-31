@@ -79,3 +79,21 @@ func (s *Service) SetBucketEncryption(ctx context.Context, c Caller, bucketName,
 	}
 	return out, nil
 }
+
+// BucketEncryption returns a bucket's encryption mode to a caller who may
+// list it (bucket list), so a client can pick the bucket's routes.
+func (s *Service) BucketEncryption(ctx context.Context, c Caller, bucketName string) (string, error) {
+	b, err := s.bucketByName(ctx, c.Tenant, bucketName)
+	if err != nil {
+		return "", err
+	}
+	_, rec, err := s.decide(ctx, c, registry.OpListBucket, Audience, false,
+		[]check{{id: "bucket", role: registry.RoleBucket, action: "list", ref: canonical("storage.bucket", b.ID.String())}})
+	if err != nil {
+		return "", err
+	}
+	if err := s.checked(ctx, rec); err != nil {
+		return "", err
+	}
+	return b.Encryption, nil
+}

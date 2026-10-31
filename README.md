@@ -1,6 +1,6 @@
 # fga: Fine-Grained Access Platform
 
-An implementation of the Fine-Grained Access Platform specification 2.6 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 adds encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)); the code so far has bucket modes but serves client mode only (see Known gaps). `fga` is a placeholder name (decision D-11).
+An implementation of the Fine-Grained Access Platform specification 2.6 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 adds encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)); server mode covers objects so far (see Known gaps). `fga` is a placeholder name (decision D-11).
 
 The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)); the [mechanism matrix](docs/research/mechanism-matrix.md) records what was taken and what was rejected. Everything runs locally.
 
@@ -57,7 +57,12 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 
 ### Known gaps (not done or not verified)
 
-- **Server mode (specification 2.6, D-12) is not built yet.** Buckets have an encryption mode, server by default, which policy can see and a project lead can change ([encryption-modes.md](docs/design/encryption-modes.md), stretch S1). The keys role holds each tenant's key-encryption keys and seals and releases data keys under exact decisions ([server-keys.md](docs/design/server-keys.md), stretch S2). But every content route still serves client mode only, so a server-mode bucket answers `409 ENCRYPTION_MODE` until server-mode objects (S3) exist. KEKs are kept in a development ring file, which production refuses. Server-mode documents (S4), share grants (S5) and server-mode recovery (S6) follow. KEK custody (D-13) is open.
+- **Server mode (specification 2.6, D-12) covers objects only.**
+  - **Bucket modes:** buckets have an encryption mode, server by default, which policy can see and a project lead can change ([encryption-modes.md](docs/design/encryption-modes.md), S1).
+  - **Keys role:** it holds each tenant's key-encryption keys and seals and releases data keys under exact decisions ([server-keys.md](docs/design/server-keys.md), S2).
+  - **Objects:** in a server-mode bucket, objects are uploaded and read as plaintext, which the storage role encrypts and decrypts, and policy alone decides who reads ([server-objects.md](docs/design/server-objects.md), S3).
+  - **Not yet:** documents, units, collections and derived outputs in server mode (S4), share grants (S5) and server-mode recovery (S6). Their routes answer `409 ENCRYPTION_MODE` in a server-mode bucket.
+  - **Key custody:** KEKs are kept in a development ring file, which production refuses; KEK custody (D-13) is open.
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
 - **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.
 - **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.

@@ -11,7 +11,7 @@ import (
 // MCP or executor code.
 func TestImportAllowlist(t *testing.T) {
 	depcheck.Check(t)
-	depcheck.CheckForbidden(t)
+	depcheck.CheckForbidden(t, depcheck.KeyEncryption...)
 }
 
 // TestNoKeyEncryptionKeys covers SSE-002 and MOD-004: the storage role

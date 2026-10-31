@@ -53,6 +53,11 @@ const (
 	OpKeySealVersion    = "storage.key.seal-version"
 	OpKeyRelease        = "storage.key.release"
 	OpKeyReleaseHistory = "storage.key.release-history"
+	// Server-mode publication (SSE-005): the write's checks without
+	// envelopes, since no recipient key is involved.
+	OpPublishServerCreate        = "storage.object.publish-server-create"
+	OpPublishServerCreateLabeled = "storage.object.publish-server-create-labeled"
+	OpPublishServerVersion       = "storage.object.publish-server-version"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -272,6 +277,10 @@ func baseOperations() []Operation {
 		one(OpKeyRelease, RoleObject, "storage.object", "read"),
 		{Name: OpKeyReleaseHistory, Checks: []CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "read"},
 			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history"}}},
+		one(OpPublishServerCreate, RoleBucket, "storage.bucket", "create-object"),
+		{Name: OpPublishServerCreateLabeled, Checks: []CheckSpec{{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
+			{Role: RoleLabel, ResourceType: "storage.object", Action: "label"}}},
+		one(OpPublishServerVersion, RoleObject, "storage.object", "new-version"),
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),

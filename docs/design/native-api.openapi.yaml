@@ -56,6 +56,24 @@ paths:
         "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/object:
+    put:
+      operationId: putServerObject
+      description: Uploads plaintext to a server-mode bucket (D-12, SSE-005). The storage role encrypts it under a data key the keys role seals for the upload; the body length must be known. A client-mode bucket answers 409 ENCRYPTION_MODE.
+      parameters:
+        - { $ref: "#/components/parameters/bucket" }
+        - { $ref: "#/components/parameters/key" }
+        - { $ref: "#/components/parameters/approval" }
+        - { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 128 } }
+        - { name: If-Match, in: header, schema: { type: string } }
+        - { name: If-None-Match, in: header, schema: { type: string, enum: ["*"] } }
+        - { name: Fga-Label, in: header, description: Explicit label of a new key, schema: { type: string, maxLength: 64 } }
+      requestBody:
+        required: true
+        content: { application/octet-stream: { schema: { type: string, format: binary } } }
+      responses:
+        "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Published" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
     get:
       operationId: statObject
       parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
@@ -71,7 +89,30 @@ paths:
         "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/DeleteOutcome" } } } }
         "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/content:
+    get:
+      operationId: readServerObject
+      description: The plaintext of a server-mode version, decrypted under the data key the keys role releases for this read (SSE-003). A failed stream is aborted, never completed short.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: Plaintext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/export:
+    get:
+      operationId: exportServerObject
+      description: The plaintext of a server-mode version under the export permission.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: Plaintext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/encryption:
+    get:
+      operationId: getBucketEncryption
+      description: The bucket's encryption mode, for a caller who may list the bucket.
+      parameters: [{ $ref: "#/components/parameters/bucket" }]
+      responses:
+        "200": { description: Mode, content: { application/json: { schema: { $ref: "#/components/schemas/EncryptionRequest" } } } }
+        default: { $ref: "#/components/responses/Error" }
     put:
       operationId: setBucketEncryption
       description: Changes the bucket's encryption mode (server or client) for uploads begun afterwards (ENC-001). Needs manage on the bucket; a policy may require an approval. Open uploads and existing versions keep their mode.
@@ -443,6 +484,7 @@ components:
             properties:
               status: { type: string, enum: [APPROVAL_REQUIRED] }
               approval_id: { type: string }
+              intent_id: { type: string, format: uuid, description: The staged server-mode upload to finalize once approved }
     Error:
       description: Redacted error
       content:
@@ -521,6 +563,8 @@ components:
         suite: { type: integer }
         format: { type: integer }
         created_at: { type: string, format: date-time }
+        encryption: { type: string, enum: [server, client] }
+        length: { type: integer, description: Plaintext length of a server-mode version }
     Package:
       type: object
       properties:

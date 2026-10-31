@@ -63,6 +63,9 @@ type (
 	approvalRequiredBody struct {
 		Status     string `json:"status"`
 		ApprovalID string `json:"approval_id"`
+		// IntentID names a staged server-mode upload to finalize once the
+		// approval is given.
+		IntentID string `json:"intent_id,omitempty"`
 	}
 	encryptionBody struct {
 		Encryption string `json:"encryption"`
@@ -253,6 +256,71 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		return r.PathValue("bucket"), q.Get("key"), q.Get("version"), true
 	}
+	// Server mode (D-12, S3): plaintext in and out over TLS; the storage
+	// role encrypts and decrypts (SSE-005).
+	mux.HandleFunc("GET /v1/buckets/{bucket}/encryption", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		mode, err := svc.BucketEncryption(r.Context(), c, r.PathValue("bucket"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, encryptionBody{Encryption: mode})
+	}))
+	mux.HandleFunc("PUT /v1/buckets/{bucket}/object", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		h := r.Header
+		ifNoneMatch := h.Get("If-None-Match")
+		if !ok || v != "" || r.ContentLength < 0 || ifNoneMatch != "" && ifNoneMatch != "*" || len(h.Get("Idempotency-Key")) > 128 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		idem := h.Get("Idempotency-Key")
+		if idem == "" {
+			idem = cryptowire.NewUUID().String()
+		}
+		p, err := svc.PutObject(r.Context(), c, content.BeginRequest{Bucket: b, Key: k, IdempotencyKey: idem, IfMatch: h.Get("If-Match"),
+			IfNoneMatch: ifNoneMatch == "*", Label: h.Get("Fga-Label")}, r.ContentLength, http.MaxBytesReader(w, r.Body, r.ContentLength))
+		var staged *content.StagedApproval
+		if errors.As(err, &staged) {
+			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,
+				IntentID: staged.Intent})
+			return
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		w.Header().Set("ETag", p.ETag)
+		httpapi.WriteJSON(w, http.StatusOK, p)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/object/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		s, err := svc.ReadObject(r.Context(), c, b, k, v)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer s.Close()
+		plainBody(w, s)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/object/export", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		s, err := svc.ExportObjectPlain(r.Context(), c, b, k, v)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer s.Close()
+		plainBody(w, s)
+	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/object", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok {
@@ -749,6 +817,20 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			Receipt:  x.Envelope.Receipt, ReceiptSignature: x.Envelope.ReceiptSignature}, x.Ciphertext})
 	}))
 	return mux
+}
+
+// plainBody writes an admitted server-mode plaintext stream. A failed
+// authentication, truncation or lease aborts the response rather than
+// completing a shorter body (SSE-005).
+func plainBody(w http.ResponseWriter, s *content.Stream) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(s.Version.Length, 10))
+	w.Header().Set("Fga-Version-Id", s.Version.Version)
+	w.Header().Set("ETag", s.Version.ETag)
+	w.WriteHeader(http.StatusOK)
+	if n, err := io.Copy(w, s); err != nil || n != s.Version.Length {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // streamBody writes an admitted ciphertext stream. A stream that ends
