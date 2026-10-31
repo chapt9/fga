@@ -1,3 +1,19 @@
+Specification 2.6.1 document validation - 31 October 2026
+
+Version 2.6.1 changes the Part 1 resource type table, SHR-001, the V-177 note and the
+version markers (ERRATA-2.6-to-2.6.1.md). For this revision:
+Structural checker: PASS, 289 requirements, 24 test families, 139 cases (unchanged).
+Checker regression tests: passed.
+Standalone source: expanded from main.tex, no unresolved local input directives.
+Tectonic standalone compilation: PASS, 110 pages; no overfull or underfull boxes, no
+undefined references. All 289 requirement markers present in the extracted PDF text.
+Pages 1 (title), 13 (resource type table), 43 (share grants) and 96 (review appendix,
+2.6.1 section) were inspected as rendered images.
+The qualification-mode counts below were not rerun: no case was added, removed or given a
+new expectation.
+
+The validation of 2.6 follows.
+
 Specification 2.6 document validation - 31 October 2026
 
 Structural checker: PASS, 289 requirements, 24 test families, 139 cases.

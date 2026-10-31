@@ -54,6 +54,7 @@
   - Unexpired grantees appear to policy as `resource.attributes.shared_with`.
 - A grant does nothing by itself (default deny). It takes effect only where a rule honors it, for example `principal.id in resource.attributes.shared_with`. Ceilings and clearance still apply.
 - Grants work in both modes. In client mode, the honored grant is what lets the recipient-read check pass before the client publishes an envelope.
+- Specification 2.6.1 (31 October 2026, approved by the owner before S5) gives buckets, collection entries and derived outputs the `share` action, and takes a grant's actions from its target type's read set (`read`, `stat` and `discover` on an object; `read-units` and `discover` on a document version; `read` on a unit or entry; `deliver` on a derived output; `list` on a bucket).
 
 ## 5. What changes in the threat model
 

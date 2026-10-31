@@ -2478,7 +2478,7 @@
         "Alice records a grant on her object to a principal of another tenant, or for the action delete"
       ],
       "expect": "REJECTED",
-      "note": "Grantees are principals of the same tenant, and only read, stat and discover can be granted.",
+      "note": "Grantees are principals of the same tenant, and only the target type's read set (read, stat and discover on an object) can be granted.",
       "min_phase": "R1-B",
       "features": [
         "core"

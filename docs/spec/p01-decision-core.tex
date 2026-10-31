@@ -24,12 +24,12 @@ The \term{actor} is the executing workload or user. The \term{subject} is the us
 A \term{check} is one action on one resource binding. A compound operation is several checks evaluated in one batch, all of which must succeed (\rr{RES-006}).
 \begin{longtable}{@{}P{0.25\textwidth}P{0.25\textwidth}P{0.31\textwidth}P{0.08\textwidth}@{}}
 \toprule Resource type & Example actions & Protected facts & Phase\\\midrule\endhead
-\code{storage.bucket} & create-object, list, manage & Retention and encryption requirements, namespace restrictions & R1-B\\
+\code{storage.bucket} & create-object, list, manage, share & Retention and encryption requirements, namespace restrictions & R1-B\\
 \code{storage.object} & read, stat, discover; read-history, discover-history; new-version, delete, delete-version, share & Tenant, owner, project, label, immutable version, publication state & R1-B\\
 \code{document.version} & read-units, raw-read, discover, share, export & Canonical document and version, immutable manifest, full-content coverage & R1-C\\
 \code{document.text_unit} & read, share, use-in-model, export-key & Canonical unit and object version, label, lineage & R1-C\\
-\code{text.entry} & read, use-in-model, update & Versioned text unit, parent collection & R1-C\\
-\code{document.derived} & deliver, declassify, relabel & Lineage, effective label, intended recipient & R1-C\\
+\code{text.entry} & read, share, use-in-model, update & Versioned text unit, parent collection & R1-C\\
+\code{document.derived} & deliver, declassify, relabel, share & Lineage, effective label, intended recipient & R1-C\\
 \code{crypto.recipient} & enroll, activate, receive-key, revoke & Principal or workload binding, immutable key fingerprint, purpose, status & R1-B\\
 \code{crypto.envelope} & create, release, retire & Object, tenant, version, recipient fingerprint, encrypted-envelope digest, status & R1-B\\
 \code{platform.policy} & propose, test, approve, activate & Bundle digest, reviewer, tenant scope, activation generation & R1-A\\

@@ -1,7 +1,8 @@
-Object Storage and Fine-Grained Access Control - Specification 2.6
+Object Storage and Fine-Grained Access Control - Specification 2.6.1
 31 October 2026
 
-Revised design specification. Version 2.6 is 2.5 with the project owner's decision D-12:
+Revised design specification. Version 2.6.1 corrects the grant targets and grantable
+actions of share grants in 2.6; see ERRATA-2.6-to-2.6.1.md. Version 2.6 is 2.5 with the project owner's decision D-12:
 every payload is encrypted, by the platform under decision-bound keys by default (server
 mode) or by the client in buckets that opt into client mode, and share grants let a user
 name a reader where policy honors them. See ERRATA-2.5-to-2.6.md. Version 2.5 reconciled
@@ -10,17 +11,18 @@ Security boundaries and acceptance invariants remain at the paper's existing lev
 fixture mechanics and evidence formats remain in the companion files.
 
 Main deliverables:
-  fine-grained-access-spec-v2.6.tex - standalone expanded LaTeX
-  fine-grained-access-spec-v2.6.pdf - compiled document
+  fine-grained-access-spec-v2.6.1.tex - standalone expanded LaTeX
+  fine-grained-access-spec-v2.6.1.pdf - compiled document
 
 Compile the standalone source with Tectonic 0.17.0 or a compatible LaTeX engine:
-  tectonic --keep-logs fine-grained-access-spec-v2.6.tex
+  tectonic --keep-logs fine-grained-access-spec-v2.6.1.tex
 
 Modular source:
   main.tex, p00..p06-*.tex, appendix-*.tex, references-body.tex
   mapping.csv, vectors/ (including test-families.json), tools/, generated/
   crypto-format-profile.tex - supplementary byte layout, not part of main paper
   engineering-notes.tex - supplementary research/code organization notes
+  ERRATA-2.6-to-2.6.1.md - what changed from 2.6 (share-grant targets)
   ERRATA-2.5-to-2.6.md - what changed from 2.5 (encryption modes, D-12)
   ERRATA-2.4-to-2.5.md - what changed from 2.4 and what was left for the owner
   HANDOFF.md - brief for the session that implements against this specification

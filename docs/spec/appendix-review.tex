@@ -1,4 +1,7 @@
 \section{Revision decisions and review response}\label{app:review}
+\subsection{Version 2.6.1: share-grant targets}
+Version 2.6.1 corrects 2.6 without adding or removing a requirement. \rr{SHR-001} names buckets, collection entries and derived outputs as grant targets and requires \code{share} on them, but the resource type table gave those types no \code{share} action, and its grantable actions (\code{read}, \code{stat}, \code{discover}) fit objects only. The table now lists \code{share} for \code{storage.bucket}, \code{text.entry} and \code{document.derived}, and a grant's actions come from its target type's read set: \code{read}, \code{stat} and \code{discover} on an object; \code{read-units} and \code{discover} on a document version; \code{read} on a unit or entry; \code{deliver} on a derived output; \code{list} on a bucket.
+
 \subsection{Version 2.6: encryption modes}
 Version 2.6 records decision D-12. Client-side encryption is no longer mandatory: every payload is still encrypted, but by default the platform encrypts it and decrypts it for authorized readers, and a bucket can opt into client mode, which keeps the 2.5 custody model unchanged. Twelve requirement identifiers are added (ENC-001 to ENC-003, SSE-001 to SSE-006, SHR-001 to SHR-003) with test families T-23 and T-24 and cases V-155 to V-178; none is removed.
 

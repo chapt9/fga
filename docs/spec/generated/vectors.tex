@@ -225,7 +225,7 @@ V-173 & As in V-172, but the grant expired before Bob's request\newline\textit{O
 V-174 & As in V-172, Bob is streaming the object when Alice removes the grant\newline\textit{Removing the grant advances the access revision; the stream lease aborts at its next check.} & \code{ABORT_STREAM} & \rr{SHR-002}\\
 V-175 & As in V-172, the object's label is above Bob's clearance and a ceiling denies reads above clearance\newline\textit{An honored grant does not lift a ceiling.} & \code{DENY} & \rr{SHR-002}\\
 V-176 & Carol, who may read but not share Alice's object, records a grant to Bob\newline\textit{Recording a grant needs share on the resource.} & \code{DENY} & \rr{SHR-001}\\
-V-177 & Alice records a grant on her object to a principal of another tenant, or for the action delete\newline\textit{Grantees are principals of the same tenant, and only read, stat and discover can be granted.} & \code{REJECTED} & \rr{SHR-001}\\
+V-177 & Alice records a grant on her object to a principal of another tenant, or for the action delete\newline\textit{Grantees are principals of the same tenant, and only the target type's read set (read, stat and discover on an object) can be granted.} & \code{REJECTED} & \rr{SHR-001}\\
 V-178 & A rule honors grants; Alice grants read on a client-mode object to Bob but publishes no envelope for Bob; Bob asks for his recipient envelope\newline\textit{In client mode a grant makes Bob eligible but supplies no key; no envelope exists to deliver.} & \code{DENY} & \rr{SHR-003}\\
 \bottomrule
 \end{longtable}
