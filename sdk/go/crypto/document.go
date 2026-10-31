@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tink-crypto/tink-go/v2/hybrid"
 	"golang.org/x/text/unicode/norm"
 
 	"fga/internal/cryptowire"
@@ -308,4 +310,55 @@ func unitContextMatches(c cryptowire.EnvelopeContext, d cryptowire.UnitDescripto
 		c.CryptoVersion.String() == d.CryptoVersionID && c.Suite == d.Suite && c.Format == d.Format &&
 		c.CiphertextSHA256.String() == d.CiphertextSHA256 && c.CiphertextLength == d.CiphertextLength &&
 		c.Document.String() == d.DocumentID && c.DocumentVersion.String() == d.DocumentVersionID && c.ManifestDigest.String() == d.ManifestDigest
+}
+
+// UnitFromPackage recovers a unit's key from the caller's own envelope so
+// that the unit can be reused in a new document version (DOC-002): it
+// verifies the descriptor and envelope as DecryptUnit does and checks the
+// key package's binding, without the ciphertext. The returned unit holds
+// the key package in memory until Close.
+func UnitFromPackage(pkg UnitPackage, key *RecipientKey, trust TrustStore) (*SealedUnit, error) {
+	keyFor := trustedSigner(trust)
+	if _, err := cryptowire.Verify(cryptowire.TypeUnitDescriptor, pkg.DescriptorSignature, pkg.Descriptor, keyFor); err != nil {
+		return nil, err
+	}
+	d, err := cryptowire.ParseUnitDescriptor(pkg.Descriptor)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, pkg.Envelope.Signature,
+		cryptowire.EnvelopeSigningInput(pkg.Envelope.Context, pkg.Envelope.Ciphertext), keyFor); err != nil {
+		return nil, err
+	}
+	ctx, err := cryptowire.ParseEnvelopeContext(pkg.Envelope.Context)
+	if err != nil {
+		return nil, err
+	}
+	if !unitContextMatches(ctx, d) || ctx.Recipient != key.fingerprint {
+		return nil, ErrBinding
+	}
+	dec, err := hybrid.NewHybridDecrypt(key.handle)
+	if err != nil {
+		return nil, err
+	}
+	keyPackage, err := dec.Decrypt(pkg.Envelope.Ciphertext, cryptowire.HPKEInfo(pkg.Envelope.Context))
+	if err != nil {
+		return nil, ErrBinding
+	}
+	binding, ks, err := cryptowire.DecodeKeyPackage(keyPackage)
+	if err != nil {
+		clear(keyPackage)
+		return nil, ErrKeyset
+	}
+	if !bytes.Equal(binding, cryptowire.PayloadAAD(ctx.Tenant, ctx.Object, ctx.CryptoVersion, ctx.Suite, ctx.Format)) {
+		clear(keyPackage)
+		return nil, ErrBinding
+	}
+	if _, err := payloadAEAD(ks); err != nil {
+		clear(keyPackage)
+		return nil, err
+	}
+	blob, _ := cryptowire.ParseUUID(d.BlobID)
+	return &SealedUnit{Params: UnitParams{Unit: ctx.Object, UnitVersion: ctx.LogicalVersion, CryptoVersion: ctx.CryptoVersion, Blob: blob},
+		CiphertextSHA256: ctx.CiphertextSHA256, CiphertextLength: ctx.CiphertextLength, tenant: ctx.Tenant, pkg: keyPackage}, nil
 }

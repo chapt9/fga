@@ -146,6 +146,17 @@ as bob;   $B/fga search -bucket reports -prefix q3/ > search.txt; check grep -q 
 echo "metadata search finds $(wc -l < search.txt | tr -d ' ') documents for bob"
 as bob; if $B/fga get -bucket reports -key q3/notes.md -out x.out 2>err.txt; then echo "UNEXPECTED: a document read through the object API"; exit 1; fi
 echo "object API on a document key: $(cat err.txt)"
+# Text collections (DOC-005): one text entry per paragraph. An append is a
+# new version that keeps every entry, re-sealed with keys from the
+# appender's own envelopes; bob may read the entries but not append.
+printf 'hello\n\nhow are you?\n' > chat1.txt
+printf 'fine, thanks\n' > chat2.txt
+as alice; check $B/fga put-document -bucket reports -key q3/chat.log -in chat1.txt -to $BOBFP -collection
+as alice; check $B/fga append -bucket reports -key q3/chat.log -in chat2.txt -to $BOBFP
+printf 'hello\n\nhow are you?\n\nfine, thanks' > chat.expected
+as bob;   check $B/fga get-document -bucket reports -key q3/chat.log -out bob-chat.txt; check cmp chat.expected bob-chat.txt
+as bob;   if $B/fga append -bucket reports -key q3/chat.log -in chat2.txt 2>err.txt; then echo "UNEXPECTED: bob appended"; exit 1; fi
+echo "collection appended by its owner and read back by bob; bob's append: $(cat err.txt)"
 
 
 $ADMIN audit export -dir audit

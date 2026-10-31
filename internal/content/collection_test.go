@@ -57,6 +57,43 @@ func TestTextCollection(t *testing.T) {
 	if _, err := st.Content.UnitPackage(ctx, bob.Caller, "reports", "chat", "", up2.Intent.Units[2].Unit, bob.Recipient.Fingerprint().String()); err != nil {
 		t.Fatalf("entry package for bob: %v", err)
 	}
+	// Append without the first upload's keys (the SDK's AppendCollection):
+	// each kept entry's key comes from the caller's own envelope, and only
+	// that recipient's key opens it.
+	kept := map[int]*crypto.SealedUnit{}
+	for i, u := range up2.Intent.Units {
+		p, err := st.Content.UnitPackage(ctx, alice.Caller, "reports", "chat", "", u.Unit, alice.Recipient.Fingerprint().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkg := crypto.UnitPackage{Descriptor: p.Unit.Descriptor, DescriptorSignature: p.Unit.DescriptorSignature,
+			Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}}
+		if _, err := crypto.UnitFromPackage(pkg, bob.Recipient, bob.Trust); err == nil {
+			t.Fatal("alice's envelope opened with bob's key")
+		}
+		if kept[i], err = crypto.UnitFromPackage(pkg, alice.Recipient, alice.Trust); err != nil {
+			t.Fatal(err)
+		}
+		if kept[i].Params.Unit.String() != u.Unit || kept[i].Params.UnitVersion.String() != u.UnitVersion {
+			t.Fatalf("recovered entry %d = %+v", i, kept[i].Params)
+		}
+	}
+	up3, err := alice.PrepareCollection("reports", "chat", []string{"", "", "", "and you?"}, kept, alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v3, err := alice.FinalizeDocument(up3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v3.Generation != 3 || v3.Units != 4 {
+		t.Fatalf("version appended from recovered keys = %+v", v3)
+	}
+	for i, want := range []string{"hello", "how are you?", "fine, thanks", "and you?"} {
+		if got, err := readUnit(t, st, bob, v3.DocumentVersion, i); err != nil || got != want {
+			t.Fatalf("bob reads entry %d of the third version: %q, %v", i, got, err)
+		}
+	}
 	// A key keeps its kind; entries are not units.
 	if _, err := alice.PrepareDocument("reports", "chat", []string{"x"}, nil, alice); !errors.Is(err, content.ErrInvalid) {
 		t.Fatalf("an ordinary version of a collection: %v", err)

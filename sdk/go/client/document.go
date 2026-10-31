@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,9 +43,97 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	specs := make([]map[string]string, len(paragraphs))
-	for i := range specs {
-		specs[i] = map[string]string{}
+	return c.putDocument(ctx, bucket, key, nil, paragraphs, original, recipients, false)
+}
+
+// PutCollection creates a text collection at bucket/key (DOC-005) whose
+// entries are the paragraphs of text.
+func (c *Client) PutCollection(ctx context.Context, bucket, key string, text []byte, recipients []crypto.Recipient) (DocumentPublished, error) {
+	paragraphs, err := crypto.SplitText(text)
+	if err != nil {
+		return DocumentPublished{}, err
+	}
+	return c.putDocument(ctx, bucket, key, nil, paragraphs, nil, recipients, true)
+}
+
+// AppendCollection appends the paragraphs of text to the text collection
+// at bucket/key: a new version that keeps every current entry and adds
+// the new ones. It needs the full manifest, which the server returns only
+// to a caller who may read every entry, so no entry is dropped silently;
+// each kept entry's key is recovered from the caller's own envelope and
+// sealed again for the recipients.
+func (c *Client) AppendCollection(ctx context.Context, bucket, key string, text []byte, recipients []crypto.Recipient) (DocumentPublished, error) {
+	paragraphs, err := crypto.SplitText(text)
+	if err != nil {
+		return DocumentPublished{}, err
+	}
+	var m struct {
+		Manifest          []byte `json:"manifest"`
+		ManifestSignature string `json:"manifest_signature"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/manifest", key, "", nil), c.StorageToken, nil, -1, nil, &m); err != nil {
+		return DocumentPublished{}, err
+	}
+	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
+	if _, err := cryptowire.Verify(cryptowire.TypeManifest, m.ManifestSignature, m.Manifest, func(kid string) (ed25519.PublicKey, error) {
+		fp, err := cryptowire.ParseDigest(kid)
+		if err != nil {
+			return nil, err
+		}
+		pub, ok := trust.Signer(fp)
+		if !ok {
+			return nil, crypto.ErrUntrusted
+		}
+		return pub, nil
+	}); err != nil {
+		return DocumentPublished{}, err
+	}
+	manifest, err := cryptowire.ParseManifest(m.Manifest)
+	if err != nil {
+		return DocumentPublished{}, err
+	}
+	var kept []*crypto.SealedUnit
+	defer func() {
+		for _, u := range kept {
+			u.Close()
+		}
+	}()
+	for _, e := range manifest.Units {
+		var p struct {
+			Unit     UnitEntry    `json:"unit"`
+			Envelope envelopeJSON `json:"envelope"`
+		}
+		extra := url.Values{"unit": {e.UnitID}, "recipient": {c.Recipient.Fingerprint().String()}}
+		if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/unit/package", key, manifest.DocumentVersionID, extra),
+			c.StorageToken, nil, -1, nil, &p); err != nil {
+			return DocumentPublished{}, err
+		}
+		u, err := crypto.UnitFromPackage(crypto.UnitPackage{Descriptor: p.Unit.Descriptor, DescriptorSignature: p.Unit.DescriptorSignature,
+			Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}}, c.Recipient, trust)
+		if err != nil {
+			return DocumentPublished{}, err
+		}
+		if u.Params.Unit.String() != e.UnitID || u.Params.UnitVersion.String() != e.UnitVersionID {
+			u.Close()
+			return DocumentPublished{}, ErrIdentity
+		}
+		kept = append(kept, u)
+	}
+	return c.putDocument(ctx, bucket, key, kept, paragraphs, nil, recipients, true)
+}
+
+// putDocument publishes a document or collection version whose units are
+// the kept units, reused as they are, followed by new units for the
+// paragraphs.
+func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*crypto.SealedUnit, paragraphs []string, original io.Reader,
+	recipients []crypto.Recipient, collection bool) (DocumentPublished, error) {
+	var err error
+	specs := make([]map[string]string, 0, len(kept)+len(paragraphs))
+	for _, u := range kept {
+		specs = append(specs, map[string]string{"reuse_unit": u.Params.Unit.String(), "reuse_version": u.Params.UnitVersion.String()})
+	}
+	for range paragraphs {
+		specs = append(specs, map[string]string{})
 	}
 	var in struct {
 		IntentID        string           `json:"intent_id"`
@@ -58,12 +147,15 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 	if original != nil {
 		begin["original"] = true
 	}
+	if collection {
+		begin["collection"] = true
+	}
 	body, n := jsonBody(begin)
 	if _, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/documents", c.StorageToken, body, n,
 		map[string]string{"Content-Type": "application/json"}, &in); err != nil {
 		return DocumentPublished{}, err
 	}
-	if len(in.Units) != len(paragraphs) {
+	if len(in.Units) != len(specs) {
 		return DocumentPublished{}, &Error{Status: http.StatusBadGateway, Code: "UNEXPECTED_RESPONSE"}
 	}
 	var p crypto.DocumentParams
@@ -77,13 +169,20 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 		}
 	}
 	p.NormalizationVersion = crypto.NormalizationVersion
-	var units []*crypto.SealedUnit
+	var units, fresh []*crypto.SealedUnit
 	defer func() {
-		for _, u := range units {
+		for _, u := range fresh {
 			u.Close()
 		}
 	}()
 	for i, u := range in.Units {
+		if i < len(kept) {
+			if !u.Reused || u.Unit != kept[i].Params.Unit.String() {
+				return DocumentPublished{}, &Error{Status: http.StatusBadGateway, Code: "UNEXPECTED_RESPONSE"}
+			}
+			units = append(units, kept[i])
+			continue
+		}
 		var up crypto.UnitParams
 		for _, f := range []struct {
 			dst *cryptowire.UUID
@@ -94,11 +193,11 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 			}
 		}
 		var ct bytes.Buffer
-		sealed, err := crypto.EncryptUnit(&ct, bytes.NewReader([]byte(paragraphs[i])), p.Tenant, up)
+		sealed, err := crypto.EncryptUnit(&ct, bytes.NewReader([]byte(paragraphs[i-len(kept)])), p.Tenant, up)
 		if err != nil {
 			return DocumentPublished{}, err
 		}
-		units = append(units, sealed)
+		units, fresh = append(units, sealed), append(fresh, sealed)
 		if _, err := c.do(ctx, http.MethodPut, c.StorageURL+"/v1/uploads/"+url.PathEscape(u.IntentID)+"/ciphertext", c.StorageToken,
 			bytes.NewReader(ct.Bytes()), int64(ct.Len()), map[string]string{"Content-Type": "application/octet-stream",
 				"Fga-Ciphertext-Sha256": sealed.CiphertextSHA256.String()}, &map[string]any{}); err != nil {
@@ -173,6 +272,7 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 }
 
 type unitIntentJSON struct {
+	Reused        bool   `json:"reused"`
 	IntentID      string `json:"intent_id"`
 	Unit          string `json:"unit_id"`
 	UnitVersion   string `json:"unit_version_id"`

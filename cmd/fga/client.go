@@ -45,7 +45,10 @@ import (
 //	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage, for the caller only
 //	fga get-derived    -bucket B -key K -out FILE [-version V]
 //	fga search         -bucket B [-prefix P] [-project P] [-label MAX]   documents the caller may discover, by metadata
-//	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE]   UTF-8 text, one unit per paragraph
+//	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE | -collection]   UTF-8 text, one unit
+//	                   (with -collection, one text entry) per paragraph
+//	fga append         -bucket B -key K -in FILE [-to FP,...]   append paragraphs to a text collection; needs read on
+//	                   every entry, whose keys come from the caller's own envelopes
 //	fga get-original   -bucket B -key K -out FILE [-version V]   needs raw-read and read on every unit
 //	fga get            -bucket B -key K -out FILE [-version V]
 //	fga get-document   -bucket B -key K -out FILE [-version V]   the units the caller may read
@@ -232,6 +235,7 @@ func clientCommand(cmd string, args []string) error {
 	intent := fs.String("intent", "", "upload intent to finalize")
 	request := fs.String("request", "", "file holding a kept finalize request")
 	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
+	collection := fs.Bool("collection", false, "put-document: create a text collection, one entry per paragraph")
 	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
 	project := fs.String("project", "", "search: project")
 	unit := fs.String("unit", "", "label: a unit of the document at -key")
@@ -383,7 +387,7 @@ func clientCommand(cmd string, args []string) error {
 		}
 		fmt.Printf("verified and decrypted derived version %s\n", v.Version)
 		return os.Rename(tmp, *out)
-	case "put-document":
+	case "put-document", "append":
 		text, err := os.ReadFile(*in)
 		if err != nil {
 			return err
@@ -396,6 +400,22 @@ func clientCommand(cmd string, args []string) error {
 			}
 			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
 		}
+		var p client.DocumentPublished
+		switch {
+		case cmd == "append":
+			p, err = c.AppendCollection(ctx, *bucket, *key, text, recipients)
+		case *collection && *originalFile != "":
+			return errors.New("a text collection has no original file")
+		case *collection:
+			p, err = c.PutCollection(ctx, *bucket, *key, text, recipients)
+		}
+		if err != nil {
+			return err
+		}
+		if cmd == "append" || *collection {
+			fmt.Printf("published collection %s version %s: %d entries, manifest %s\n", *key, p.DocumentVersion, p.Units, p.ManifestDigest)
+			return nil
+		}
 		var original io.Reader
 		if *originalFile != "" {
 			f, err := os.Open(*originalFile)
@@ -405,7 +425,7 @@ func clientCommand(cmd string, args []string) error {
 			defer f.Close()
 			original = f
 		}
-		p, err := c.PutDocumentWithOriginal(ctx, *bucket, *key, text, original, recipients)
+		p, err = c.PutDocumentWithOriginal(ctx, *bucket, *key, text, original, recipients)
 		if err != nil {
 			return err
 		}
