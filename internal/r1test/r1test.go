@@ -85,7 +85,8 @@ var Policies = map[string]string{
 	  {"id":"create-for-sharers","effect":"allow","actions":["create"],"roles":["*"]},
 	  {"id":"release-to-recipient","effect":"allow","actions":["release"],"roles":["*"],
 	   "when":"resource.attributes.recipient_principal == principal.id"},
-	  {"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"when":"resource.attributes.owner == principal.id"}]}`,
+	  {"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-releases-for-export","effect":"allow","actions":["release"],"roles":["*"],"when":"resource.attributes.owner == principal.id"}]}`,
 	"recipients.json": `{"format":"fga.policy/v1","set":"business","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"own-key","effect":"allow","actions":["enroll","activate","receive-key","revoke","discover"],"roles":["*"],"when":"resource.attributes.principal == principal.id"},
   {"id":"members-find-keys","effect":"allow","actions":["discover"],"roles":["member"]}]}`,

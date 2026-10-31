@@ -106,6 +106,23 @@ type (
 		Receipt          []byte               `json:"receipt"`
 		ReceiptSignature string               `json:"receipt_signature"`
 	}
+	exportBody struct {
+		Units     []string `json:"unit_ids"`
+		Recipient string   `json:"recipient"`
+	}
+	exportUnitBody struct {
+		Unit             content.UnitEntry    `json:"unit"`
+		Ciphertext       []byte               `json:"ciphertext"`
+		EnvelopeID       string               `json:"envelope_id"`
+		Envelope         httpapi.EnvelopeBody `json:"envelope"`
+		Receipt          []byte               `json:"receipt"`
+		ReceiptSignature string               `json:"receipt_signature"`
+	}
+	exportOutBody struct {
+		DocumentVersion string           `json:"document_version_id"`
+		Recipient       string           `json:"recipient"`
+		Units           []exportUnitBody `json:"units"`
+	}
 	approvalsBody struct {
 		Approvals []content.ApprovalView `json:"approvals"`
 		Next      string                 `json:"next,omitempty"`
@@ -593,6 +610,48 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, ref)
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/document/export", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		var body exportBody
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		x, err := svc.ExportUnits(r.Context(), c, b, k, v, body.Units, body.Recipient)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		out := exportOutBody{DocumentVersion: x.DocumentVersion, Recipient: x.Recipient, Units: []exportUnitBody{}}
+		for _, u := range x.Units {
+			out.Units = append(out.Units, exportUnitBody{Unit: u.Unit, Ciphertext: u.Ciphertext, EnvelopeID: u.Envelope.EnvelopeID,
+				Envelope: httpapi.EnvelopeBody{Context: u.Envelope.Context, Ciphertext: u.Envelope.Ciphertext, Signature: u.Envelope.Signature},
+				Receipt:  u.Envelope.Receipt, ReceiptSignature: u.Envelope.ReceiptSignature})
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/documents/search", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		q := r.URL.Query()
+		limit := 0
+		if l := q.Get("limit"); l != "" {
+			n, err := strconv.Atoi(l)
+			if err != nil {
+				httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+				return
+			}
+			limit = n
+		}
+		page, err := svc.SearchDocuments(r.Context(), c, r.PathValue("bucket"),
+			content.SearchQuery{Prefix: q.Get("prefix"), Project: q.Get("project"), MaxLabel: q.Get("max_label")}, limit, q.Get("continuation"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, page)
 	}))
 	return mux
 }

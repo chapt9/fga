@@ -142,6 +142,8 @@ as alice; check $B/fga put-document -bucket reports -key q3/report.md -in notes.
 as alice; check $B/fga get-original -bucket reports -key q3/report.md -out original.out; check cmp plain.bin original.out
 as bob;   if $B/fga get-original -bucket reports -key q3/report.md -out x.out 2>err.txt; then echo "UNEXPECTED: bob read the original"; exit 1; fi
 echo "original file: owner reads it; bob without raw-read: $(cat err.txt)"
+as bob;   $B/fga search -bucket reports -prefix q3/ > search.txt; check grep -q 'q3/notes.md' search.txt; check grep -q 'q3/report.md' search.txt
+echo "metadata search finds $(wc -l < search.txt | tr -d ' ') documents for bob"
 as bob; if $B/fga get -bucket reports -key q3/notes.md -out x.out 2>err.txt; then echo "UNEXPECTED: a document read through the object API"; exit 1; fi
 echo "object API on a document key: $(cat err.txt)"
 

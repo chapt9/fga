@@ -193,7 +193,8 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // role's checks and the release is seen (review finding 3).
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
-	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope, rec.Operation == registry.OpDocGetOriginalEnvelope
+	exported := rec.Operation == registry.OpDocExportEnvelope
+	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope || exported, rec.Operation == registry.OpDocGetOriginalEnvelope
 	derived := rec.Operation == registry.OpDerivedGetEnvelope
 	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived) ||
 		!s.exactly(rec) {
@@ -227,6 +228,12 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			ok = unit && c.ResourceID == e.DocumentVersion.String() && holder
 		case "document.version raw-read":
 			ok = original && c.ResourceID == e.DocumentVersion.String() && holder
+		case "document.version export":
+			// Export: the caller's export on the version and export-key on
+			// the unit, besides the full envelope check set (V-132 to V-136).
+			ok = exported && c.ResourceID == e.DocumentVersion.String() && c.Kind == string(registry.KindOperation)
+		case "document.text_unit export-key":
+			ok = exported && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && c.Kind == string(registry.KindOperation)
 		case "document.derived deliver":
 			ok = derived && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
 		case "crypto.recipient receive-key":

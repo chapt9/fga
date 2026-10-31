@@ -44,6 +44,7 @@ import (
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
 //	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage, for the caller only
 //	fga get-derived    -bucket B -key K -out FILE [-version V]
+//	fga search         -bucket B [-prefix P] [-project P] [-label MAX]   documents the caller may discover, by metadata
 //	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE]   UTF-8 text, one unit per paragraph
 //	fga get-original   -bucket B -key K -out FILE [-version V]   needs raw-read and read on every unit
 //	fga get            -bucket B -key K -out FILE [-version V]
@@ -232,6 +233,7 @@ func clientCommand(cmd string, args []string) error {
 	request := fs.String("request", "", "file holding a kept finalize request")
 	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
 	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
+	project := fs.String("project", "", "search: project")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -352,6 +354,15 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		fmt.Printf("published %s object %s version %s etag %s\n", *key, p.Object, p.Version, p.ETag)
+		return nil
+	case "search":
+		results, err := c.SearchDocuments(ctx, *bucket, *prefix, *project, *label)
+		if err != nil {
+			return err
+		}
+		for _, r := range results {
+			fmt.Printf("%s\t%s\t%s\n", r.Key, r.DocumentVersion, r.CreatedAt.Format(time.RFC3339))
+		}
 		return nil
 	case "get-derived":
 		tmp := *out + ".partial"

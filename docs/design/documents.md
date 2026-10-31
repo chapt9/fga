@@ -137,3 +137,15 @@ The original is an `objects` row of kind `original` without a key or a resource 
 - `receive-key`.
 
 The keys role delivers it only if the envelope is that version's original, and never a unit envelope under this operation. For the package, the complete-content decisions are issued for the keys role and sent with the release. The keys role checks that they are single-use `document.raw-read` decisions of the same actor on this version and that together they name every unit version exactly once. It admits them in the same fence as the release, so a unit change between the storage role's checks and the release blocks it (review finding 3). A member who may read some units but not all, or who lacks `raw-read`, gets no original (V-052, V-053) and can still read the units it may. `client.GetOriginal`, `fga put-document -original` and `fga get-original` use these routes.
+
+## Implementation (step 6: export and metadata search)
+
+**Export.** `POST /v1/buckets/{b}/document/export?key=&version=` with `unit_ids` (at most 100, distinct) and the target `recipient`.
+- The storage role decides `document.export` in batches: `export` and `read-units` on the version, `read` and `export-key` on each unit.
+- For each unit, the keys role releases the target's existing envelope against `document.export-envelope`. That decision carries the same caller checks plus the envelope's `release` and the target's `read-units`, `read` and `receive-key`.
+- The keys role accepts only that exact check set, bound to the envelope's document version, unit, version and recipient. A decision of any other operation, or one lacking a check such as `receive-key`, is refused (V-136).
+- The ciphertext is admitted under the fence over all storage decisions and returned inline, at most 32 MiB per package.
+- The target must already have an envelope: the server never creates or rewraps one. Any denial, or a missing envelope, is a generic `404` (V-132 to V-135).
+- Releasing someone else's envelope needs a `release` rule. The fixture and example policies let an owner release envelopes of its own content for export.
+
+**Metadata search.** `GET /v1/buckets/{b}/documents/search?prefix=&project=&max_label=&limit=&continuation=` needs `list` on the bucket. It considers documents with a LIVE current version that match the key prefix and project; the label filter uses the stored label's rank. Each candidate's current version gets a `discover` decision (`document.search`, one batch, then one per candidate if the batch is denied). Results are in key order with a sealed continuation bound to the caller, its identity revision, the policy epoch, the incarnation and the query. There are no totals, scores or plaintext (SRH-001 to SRH-004, V-070). `fga search` and `client.SearchDocuments` use it; `client.Export` fetches an export package.

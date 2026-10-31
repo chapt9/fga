@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"fga/internal/cryptowire"
 	"fga/sdk/go/crypto"
@@ -381,4 +382,62 @@ func (c *Client) GetDerived(ctx context.Context, bucket, key, version string, ds
 		Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
 		c.Recipient, trust)
 	return p.Version, err
+}
+
+// SearchResult is one discoverable document.
+type SearchResult struct {
+	Key             string    `json:"key"`
+	Document        string    `json:"document_id"`
+	DocumentVersion string    `json:"document_version_id"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// SearchDocuments lists the documents of a bucket the caller may discover
+// that match catalog metadata only (key prefix, project, highest label);
+// the server searches no plaintext (SRH-001).
+func (c *Client) SearchDocuments(ctx context.Context, bucket, prefix, project, maxLabel string) ([]SearchResult, error) {
+	var all []SearchResult
+	cont := ""
+	for {
+		q := url.Values{"prefix": {prefix}, "project": {project}, "max_label": {maxLabel}, "limit": {"100"}}
+		if cont != "" {
+			q.Set("continuation", cont)
+		}
+		var page struct {
+			Results      []SearchResult `json:"results"`
+			Continuation string         `json:"continuation"`
+		}
+		if _, err := c.do(ctx, http.MethodGet, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/documents/search?"+q.Encode(),
+			c.StorageToken, nil, -1, nil, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Results...)
+		if page.Continuation == "" {
+			return all, nil
+		}
+		cont = page.Continuation
+	}
+}
+
+// ExportedUnit is one unit of an export package for a target recipient.
+type ExportedUnit struct {
+	Unit             UnitEntry    `json:"unit"`
+	Ciphertext       []byte       `json:"ciphertext"`
+	EnvelopeID       string       `json:"envelope_id"`
+	Envelope         envelopeJSON `json:"envelope"`
+	Receipt          []byte       `json:"receipt"`
+	ReceiptSignature string       `json:"receipt_signature"`
+}
+
+// Export fetches an encrypted export package of the named units for the
+// target recipient key: ciphertext and the target's existing envelopes,
+// which only the target can open (crypto.DecryptUnit).
+func (c *Client) Export(ctx context.Context, bucket, key, version string, units []string, recipient cryptowire.Digest) ([]ExportedUnit, error) {
+	var out struct {
+		Units []ExportedUnit `json:"units"`
+	}
+	body, n := jsonBody(map[string]any{"unit_ids": units, "recipient": recipient.String()})
+	_, err := c.do(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out.Units, err
 }

@@ -265,6 +265,38 @@ paths:
       responses:
         "201": { description: Shared, content: { application/json: { schema: { $ref: "#/components/schemas/EnvelopeRef" } } } }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/export:
+    post:
+      operationId: exportUnits
+      description: Encrypted export of units for a target recipient that already has envelopes; generic NOT_FOUND on any denial.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [unit_ids, recipient]
+              properties:
+                unit_ids: { type: array, minItems: 1, maxItems: 100, items: { type: string, format: uuid } }
+                recipient: { $ref: "#/components/schemas/Digest" }
+      responses:
+        "200": { description: Export package (descriptors, ciphertext, the target's envelopes and receipts), content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/documents/search:
+    get:
+      operationId: searchDocuments
+      parameters:
+        - { $ref: "#/components/parameters/bucket" }
+        - { name: prefix, in: query, schema: { type: string } }
+        - { name: project, in: query, schema: { type: string } }
+        - { name: max_label, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/continuation" }
+      responses:
+        "200": { description: Discoverable documents in key order; no totals, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/approvals:
     get:
       operationId: listApprovals

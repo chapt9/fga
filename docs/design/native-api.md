@@ -40,6 +40,8 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Disclose units | `POST …/document/units/select`, `GET …/document/units`, `GET …/document/manifest`, `GET …/document/unit/package`, `GET …/document/unit/ciphertext` | See documents.md, "Implementation (step 4)" |
 | Original file | `GET …/document/original/package`, `GET …/document/original/ciphertext` | `raw-read` on the version and `read` on every unit; the keys role releases the envelope against `raw-read` for caller and recipient (CNT-003) |
 | Derived outputs | Begin with `"derived": true`, finalize with `lineage` and `lineage_signature`; `GET …/derived/package`, `GET …/derived/ciphertext`, `POST …/derived/envelopes` | See derived-outputs.md, "Implementation" |
+| Export units | `POST /v1/buckets/{bucket}/document/export?key=&version=` | `document.export`, then per unit `document.export-envelope` at the keys role (documents.md, step 6) |
+| Search documents | `GET /v1/buckets/{bucket}/documents/search?prefix=&project=&max_label=` | Bucket `list`, then `discover` per candidate version (`document.search`) |
 | Share | `POST /v1/envelopes` | `PublishRecipientEnvelope`: publisher `share`, envelope `create`, recipient `read`, `receive-key` |
 | Retire envelope | `DELETE /v1/envelopes/{id}` | envelope `retire` |
 

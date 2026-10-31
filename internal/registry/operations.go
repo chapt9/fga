@@ -77,6 +77,12 @@ const (
 	OpDerivedDeclassify       = "derived.declassify"
 	OpDerivedShare            = "derived.share"
 	OpDerivedGetEnvelope      = "derived.get-envelope"
+	// Export of document units to a target recipient (Table "Compound
+	// operations", V-132 to V-136) and metadata search (SRH-001 to
+	// SRH-004).
+	OpDocExport         = "document.export"
+	OpDocExportEnvelope = "document.export-envelope"
+	OpDocSearch         = "document.search"
 )
 
 // Check roles shared by several operations.
@@ -103,6 +109,9 @@ const (
 	RoleSourceUnit       = "source-unit"
 	RoleSourceDerived    = "source-derived"
 	RoleRecipientDeclass = "recipient-declassify"
+	// Export roles.
+	RoleVersionRead = "version-read"
+	RoleUnitExport  = "unit-export"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -239,6 +248,23 @@ func r1Operations() []Operation {
 			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
 			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
 		}},
+		{Name: OpDocExport, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "export"},
+			{Role: RoleVersionRead, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true},
+			{Role: RoleUnitExport, ResourceType: "document.text_unit", Action: "export-key", Repeated: true},
+		}},
+		{Name: OpDocExportEnvelope, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "export"},
+			{Role: RoleVersionRead, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"},
+			{Role: RoleUnitExport, ResourceType: "document.text_unit", Action: "export-key"},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
+			{Role: RoleRecipientVersion, ResourceType: "document.version", Action: "read-units", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientRead, ResourceType: "document.text_unit", Action: "read", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
+		}},
+		{Name: OpDocSearch, Checks: []CheckSpec{{Role: RoleVersion, ResourceType: "document.version", Action: "discover", Repeated: true}}},
 		{Name: OpDocGetUnitEnvelope, Checks: []CheckSpec{
 			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"},
