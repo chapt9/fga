@@ -160,6 +160,8 @@ type CheckResult struct {
 	Reason      Reason
 	// Requires lists the prerequisites of an allowed check.
 	Requires []string
+	// Outputs are the business outputs of an allowed check (POL-011).
+	Outputs []map[string]any
 	// NextChange is the earliest next change of a time condition in either
 	// set for this check; zero means none (DEC-005).
 	NextChange time.Time
@@ -344,6 +346,7 @@ func (d *Decider) decideCheck(ctx context.Context, b Batch, principal policy.Pri
 		Effect:     effect,
 		Reason:     reason,
 		Requires:   requiresOf(effect, business),
+		Outputs:    outputsOf(effect, business),
 		NextChange: earliest(ceiling.NextChange, business.NextChange),
 	}, nil
 }
@@ -366,6 +369,14 @@ func requiresOf(effect CheckEffect, business policy.ActionResult) []string {
 		return nil
 	}
 	return business.Requires
+}
+
+// outputsOf returns the outputs of an allowed check.
+func outputsOf(effect CheckEffect, business policy.ActionResult) []map[string]any {
+	if effect != CheckAllow {
+		return nil
+	}
+	return business.Outputs
 }
 
 // evaluate returns the result for the check's action. An action the engine

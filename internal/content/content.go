@@ -31,6 +31,7 @@ import (
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/opplan"
+	"fga/internal/registry"
 	"fga/internal/signing"
 )
 
@@ -155,7 +156,15 @@ func New(d Deps) (*Service, error) {
 		len(d.TokenKey) != 32 || d.Now == nil || d.Limits.MaxCiphertext <= 0 {
 		return nil, errors.New("content: every dependency is required")
 	}
+	d.Verifier.Applying(Applies)
 	return &Service{d: d, approvals: approval.New(d.Catalog.Pool(), d.Now)}, nil
+}
+
+// Applies reports which obligations the storage role applies (APR-007): a
+// metadata projection on stat. A decision carrying any other obligation,
+// or one for another operation, is refused, since the role cannot honor it.
+func Applies(operation, obligation string) bool {
+	return obligation == signing.MetadataProjection && (operation == registry.OpStat || operation == registry.OpStatHistory)
 }
 
 // check is one planned check of an operation.

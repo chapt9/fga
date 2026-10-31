@@ -250,6 +250,8 @@ type Options struct {
 	Start time.Time
 	// FenceMargin is the fence's clock margin; nil means one second.
 	FenceMargin *time.Duration
+	// ObligationMapping, if set, is the release's obligation mapping.
+	ObligationMapping *release.ObligationMapping
 }
 
 // New builds the stack.
@@ -280,7 +282,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	releases := release.NewManager(map[string]ed25519.PublicKey{"pub-1": pub}, env, st.Catalog, now)
 	info := release.Info{Audience: release.AudienceDecision, CostLimit: engine.DefaultOptions.CostLimit, TestEvidence: "r1test",
-		LabelOrder: LabelOrder, LabelGeneration: 1}
+		LabelOrder: LabelOrder, LabelGeneration: 1, ObligationMapping: opts.ObligationMapping}
 	env.Stamp(&info)
 	b := release.Bundle{Epoch: 1, Info: info, Documents: map[string][]byte{}, CeilingDeclared: true, KeyID: "pub-1"}
 	for name, doc := range policies {

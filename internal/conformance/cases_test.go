@@ -3,10 +3,13 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +27,8 @@ import (
 	"fga/internal/r1test"
 	"fga/internal/recovery"
 	"fga/internal/registry"
+	"fga/internal/release"
+	"fga/internal/signing"
 	"fga/sdk/go/crypto"
 )
 
@@ -88,12 +93,61 @@ func TestV001(t *testing.T) {
 		"read.outcome": got.Outcome.String()})
 }
 
-// TestV141 cannot be bound: the fixture's decision carries a signed
-// metadata_projection obligation, and R1 maps no policy output to an
-// obligation (POL-011 not built), so its verifiers reject every
-// obligation (DEC-002).
+// TestV141 binds issue_signed_decision to the decision role deciding a
+// stat for the owner under a release whose obligation mapping turns the
+// rule's projection output into a signed metadata_projection obligation
+// (POL-011), verify_transmitted_grant to the storage role's verifier,
+// which applies that obligation to stat, and alter_transmitted_grant to
+// the same verification after the transmitted obligation set was removed
+// or widened. Mappings: the fixture's read of u1 is our stat of the
+// object (the storage role applies projections to stat), and the
+// projected field "id" is kept literally.
 func TestV141(t *testing.T) {
-	load(t, "V-141").unbound(t, "the decision carries a metadata_projection obligation; R1 has no obligation mapping and rejects all obligations")
+	f := load(t, "V-141")
+	policies := maps.Clone(r1test.Policies)
+	policies["objects.json"] = strings.Replace(policies["objects.json"], `"rules":[`,
+		`"rules":[{"id":"owner-stat-projected","effect":"allow","actions":["stat"],"roles":["*"],
+		  "when":"resource.attributes.owner == principal.id","outputs":{"fields":["id"]}},`, 1)
+	st, alice := setup(t, r1test.Options{Policies: policies, ObligationMapping: &release.ObligationMapping{
+		Version: signing.ObligationsV1, Outputs: map[string]string{"fields": signing.MetadataProjection}}})
+	p, err := alice.Put("objects", "u1", []byte("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.Catalog.GetIdentity(ctx, r1test.Tenant, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := st.Decisions.Decide(ctx, r1test.StorageAdapter, decisionsvc.Request{RequestID: "r-d1", Tenant: r1test.Tenant, Operation: registry.OpStat,
+		OperationID: "read-u1", Audience: content.Audience, Actor: decisionsvc.Ref{ID: "alice", Revision: id.Revision}, Evidence: alice.Caller.Token,
+		Checks: []decisionsvc.Check{{ID: "object", Role: registry.RoleObject, Action: "stat", Resource: decisionsvc.Alias{Type: "storage.object", ID: p.Object},
+			Version: p.Version}}})
+	obs := map[string]any{"issue.outcome": resp.Outcome, "protected_effect_count": 0}
+	if resp.Signed == nil {
+		f.check(t, obs)
+		return
+	}
+	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	verifier := st.Verifier(content.Audience).Applying(content.Applies)
+	accepted := func(payload []byte) bool {
+		_, err := verifier.Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+		return err == nil
+	}
+	alter := func(obligations []signing.Obligation) []byte {
+		var rec map[string]any
+		if err := json.Unmarshal(payload, &rec); err != nil {
+			t.Fatal(err)
+		}
+		rec["obligations"] = obligations
+		b, _ := json.Marshal(rec)
+		return b
+	}
+	widened := []byte(`{"fields":["id","title"]}`)
+	obs["verify_original.accepted"] = accepted(payload)
+	obs["remove.accepted"] = accepted(alter([]signing.Obligation{}))
+	obs["widen.accepted"] = accepted(alter([]signing.Obligation{{Type: signing.MetadataProjection, Version: 1, Parameters: widened,
+		ParametersDigest: signing.ParametersDigest(widened), ReferencedRevisions: []signing.Ref{}}}))
+	f.check(t, obs)
 }
 
 func setup(t *testing.T, opts r1test.Options) (*r1test.Stack, *r1test.Client) {

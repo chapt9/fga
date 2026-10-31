@@ -36,6 +36,23 @@ const RecordVersion = "fga.decision/v2"
 // does not understand (DEC-002).
 const NoObligations = "fga.obligations/none-v1"
 
+// ObligationsV1 is the obligation mapping a release may configure
+// (POL-011): its obligations carry their parameters, which their digest
+// binds. An enforcement point accepts a decision under it only if it can
+// apply every obligation the decision carries (DEC-002, APR-007).
+const ObligationsV1 = "fga.obligations/v1"
+
+// Obligation types of ObligationsV1.
+const (
+	// MetadataProjection limits the metadata a response returns to the
+	// fields named by its parameters: {"fields": [...]}.
+	MetadataProjection = "metadata_projection"
+	// Reservation requires the enforcing role to reserve the operation's
+	// budget and commit the reservation with the operation (APR-004);
+	// parameters: {}.
+	Reservation = "reservation"
+)
+
 // MaxClockSkew is tolerated between the signer's and verifier's clocks.
 const MaxClockSkew = 5 * time.Second
 
@@ -94,10 +111,33 @@ type Context struct {
 
 // Obligation is one platform obligation of a decision (APR-007).
 type Obligation struct {
-	Type                string `json:"type"`
-	Version             uint64 `json:"version"`
-	ParametersDigest    string `json:"parameters_digest"`
-	ReferencedRevisions []Ref  `json:"referenced_revisions"`
+	Type    string `json:"type"`
+	Version uint64 `json:"version"`
+	// Parameters are the obligation's parameters, canonical JSON, which
+	// ParametersDigest names.
+	Parameters          json.RawMessage `json:"parameters,omitempty"`
+	ParametersDigest    string          `json:"parameters_digest"`
+	ReferencedRevisions []Ref           `json:"referenced_revisions"`
+}
+
+// ParametersDigest is the digest of an obligation's parameters.
+func ParametersDigest(parameters []byte) string {
+	sum := sha256.Sum256(append([]byte("fga.obligation-parameters/v1\n"), parameters...))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// Has reports whether rec carries an obligation of type t.
+func (rec Record) Has(t string) bool {
+	return slices.ContainsFunc(rec.Obligations, func(o Obligation) bool { return o.Type == t })
+}
+
+// Obligation returns rec's obligation of type t, if any.
+func (rec Record) Obligation(t string) (Obligation, bool) {
+	i := slices.IndexFunc(rec.Obligations, func(o Obligation) bool { return o.Type == t })
+	if i < 0 {
+		return Obligation{}, false
+	}
+	return rec.Obligations[i], true
 }
 
 // Record is the signed content of an allowed decision (DEC-008): audience,
@@ -271,6 +311,15 @@ type Verifier struct {
 	keys        func() map[string]Key
 	consumption Consumption
 	now         func() time.Time
+	applies     func(operation, obligation string) bool
+}
+
+// Applying makes v accept decisions under ObligationsV1 whose every
+// obligation applies reports it can apply to the decision's operation.
+// Without it, v accepts no obligation at all.
+func (v *Verifier) Applying(applies func(operation, obligation string) bool) *Verifier {
+	v.applies = applies
+	return v
 }
 
 // NewVerifier returns a verifier for audience. keys returns the current key
@@ -335,15 +384,15 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 	if err := strictjson.Decode(s.Payload, &rec); err != nil || rec.Version != RecordVersion || rec.DecisionID == "" || len(rec.Checks) == 0 {
 		return Record{}, fmt.Errorf("%w: %v", ErrRecord, err)
 	}
-	switch {
-	case rec.ObligationMappingVersion != NoObligations || len(rec.Obligations) != 0:
-		return Record{}, ErrObligation
-	case rec.ObligationsDigest != ObligationsDigest(rec.ObligationMappingVersion, rec.Obligations),
-		rec.ResourceBindingsDigest != ResourceBindingsDigest(rec.Checks):
+	if err := v.obligations(rec); err != nil {
+		return Record{}, err
+	}
+	if rec.ObligationsDigest != ObligationsDigest(rec.ObligationMappingVersion, rec.Obligations) ||
+		rec.ResourceBindingsDigest != ResourceBindingsDigest(rec.Checks) {
 		return Record{}, ErrBinding
 	}
 	for _, c := range rec.Checks {
-		if c.BusinessEffect != "ALLOW" || c.CeilingEffect != "PASS" || !satisfied(c.Requires, rec.Context.Approval) {
+		if c.BusinessEffect != "ALLOW" || c.CeilingEffect != "PASS" || !satisfied(c.Requires, rec) {
 			return Record{}, fmt.Errorf("%w: check %q is not an unconditional allow", ErrRecord, c.ID)
 		}
 		if (c.Kind == "RECIPIENT_ELIGIBILITY") != (c.PrincipalBinding != "") || (c.Kind != "OPERATION" && c.Kind != "RECIPIENT_ELIGIBILITY") {
@@ -371,11 +420,38 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 // itself: the only prerequisite a record can satisfy is an approval, and
 // only by binding one, which the fence consumes (APR-002). A reservation
 // (R2) is never satisfied here.
-func satisfied(requires []string, approval Ref) bool {
+func satisfied(requires []string, rec Record) bool {
 	for _, r := range requires {
-		if r != "approval" || approval.ID == "" {
+		switch {
+		case r == "approval" && rec.Context.Approval.ID != "":
+		case r == "reservation" && rec.Has(Reservation):
+		default:
 			return false
 		}
 	}
 	return true
+}
+
+// obligations admits rec's obligation set: none under NoObligations;
+// under ObligationsV1, only obligations whose parameters match their
+// digest and that this enforcement point applies to the operation.
+func (v *Verifier) obligations(rec Record) error {
+	switch rec.ObligationMappingVersion {
+	case NoObligations:
+		if len(rec.Obligations) != 0 {
+			return ErrObligation
+		}
+	case ObligationsV1:
+		for _, o := range rec.Obligations {
+			switch {
+			case o.Version != 1 || o.ParametersDigest != ParametersDigest(o.Parameters):
+				return ErrBinding
+			case v.applies == nil || !v.applies(rec.Operation, o.Type):
+				return ErrObligation
+			}
+		}
+	default:
+		return ErrObligation
+	}
+	return nil
 }

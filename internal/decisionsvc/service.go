@@ -115,6 +115,9 @@ type Result struct {
 	Ceiling     string `json:"ceiling"`
 	Effect      string `json:"effect"`
 	Reason      string `json:"reason,omitempty"`
+	// Outputs are the policy outputs of an allowed check (DEC-003); they
+	// are data, and authorize nothing on their own.
+	Outputs []map[string]any `json:"outputs,omitempty"`
 }
 
 // SignedDecision is the exact signed record (base64) and its detached JWS.
@@ -137,6 +140,9 @@ type Response struct {
 	Signed       *SignedDecision `json:"signed,omitempty"`
 	// ApprovalID names the pending approval of a NEEDS_APPROVAL outcome.
 	ApprovalID string `json:"approval_id,omitempty"`
+	// Obligations repeats the obligations of the signed decision, which
+	// alone is authoritative (DEC-003).
+	Obligations []signing.Obligation `json:"obligations,omitempty"`
 }
 
 // Approvals is the approval store as the decision role uses it: it opens
@@ -390,7 +396,16 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 			resp.ApprovalID = a.ID
 		}
 	}
+	// The release's obligation mapping may turn a reservation prerequisite
+	// into an obligation the enforcing role meets, and mapped outputs into
+	// obligations (POL-011, APR-007).
+	mapping, obligations := applyObligations(snap.Info.ObligationMapping, &d)
 	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
+	for i, r := range d.Results {
+		if i < len(resp.Results) {
+			resp.Results[i].Outputs = r.Outputs
+		}
+	}
 	if d.Outcome != decision.OutcomeAllow {
 		return resp, bound
 	}
@@ -423,6 +438,8 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return deny(gate.ReasonDecisionExpired)
 	}
 	rec := s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation)
+	rec.ObligationMappingVersion, rec.Obligations = mapping, obligations
+	resp.Obligations = obligations
 	if used != nil {
 		rec.Context.Approval = signing.Ref{ID: used.ID, Revision: used.Revision}
 	}

@@ -2,6 +2,7 @@ package content
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,27 @@ type VersionInfo struct {
 	// also has its plaintext Length, which a reader receives.
 	Encryption string `json:"encryption"`
 	Length     int64  `json:"length,omitempty"`
+	// Projection, when set, names the only fields the caller may see: the
+	// decision's metadata_projection obligation (APR-007).
+	Projection []string `json:"-"`
+}
+
+// Wire is what a response shows of v: every field, or only those its
+// projection names.
+func (v VersionInfo) Wire() any {
+	if v.Projection == nil {
+		return v
+	}
+	raw, _ := json.Marshal(v) // plain fields always marshal
+	var all map[string]any
+	_ = json.Unmarshal(raw, &all)
+	out := map[string]any{}
+	for _, f := range v.Projection {
+		if x, ok := all[f]; ok {
+			out[f] = x
+		}
+	}
+	return out
 }
 
 func info(v version, current bool) VersionInfo {
@@ -72,7 +94,17 @@ func (s *Service) Stat(ctx context.Context, c Caller, bucketName, key, versionSe
 	if err := s.headHolds(ctx, s.d.Catalog.Pool(), c.Tenant, o, v, current, rec, false); err != nil {
 		return VersionInfo{}, err
 	}
-	return info(v, current), nil
+	out := info(v, current)
+	if p, ok := rec.Obligation(signing.MetadataProjection); ok {
+		var params struct {
+			Fields []string `json:"fields"`
+		}
+		if err := json.Unmarshal(p.Parameters, &params); err != nil {
+			return VersionInfo{}, fmt.Errorf("%w: projection parameters", ErrUnavailable)
+		}
+		out.Projection = append([]string{}, params.Fields...)
+	}
+	return out, nil
 }
 
 // Package is the encrypted package of one version for one recipient

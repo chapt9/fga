@@ -63,6 +63,7 @@ type rule struct {
 	actions  map[string]bool
 	roles    map[string]bool
 	requires []string
+	outputs  map[string]any
 	program  cel.Program // nil when the rule has no condition
 	// times are the timestamp literals that request.now is compared with.
 	times []time.Time
@@ -104,6 +105,7 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 				actions:  toSet(r.Actions),
 				roles:    toSet(r.Roles),
 				requires: r.Requires,
+				outputs:  r.Outputs,
 			}
 			if r.When != "" {
 				prg, times, err := compileCondition(env, r.When, opts)
@@ -251,6 +253,7 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 	var allowed, denied, errored bool
 	var next time.Time
 	requires := map[string]bool{}
+	var outputs []map[string]any
 	for _, scope := range format.ScopeChain(req.Resource.Scope) {
 		for _, r := range e.rules[ruleKey{set: req.Set, resource: req.Resource.Kind, scope: scope}] {
 			if !r.listsAction(action) {
@@ -282,6 +285,9 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 				for _, p := range r.requires {
 					requires[p] = true
 				}
+				if len(r.outputs) > 0 {
+					outputs = append(outputs, r.outputs)
+				}
 			}
 		}
 	}
@@ -295,7 +301,7 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 		// No ceiling rule objects. This is not a grant.
 		res = policy.ActionResult{Effect: policy.EffectAllow}
 	case allowed:
-		res = policy.ActionResult{Effect: policy.EffectAllow, Requires: sortedKeys(requires)}
+		res = policy.ActionResult{Effect: policy.EffectAllow, Requires: sortedKeys(requires), Outputs: outputs}
 	default:
 		res = policy.ActionResult{Effect: policy.EffectDeny}
 	}

@@ -20,6 +20,7 @@ import (
 	"fga/internal/policy"
 	"fga/internal/policy/engine"
 	"fga/internal/policy/format"
+	"fga/internal/signing"
 )
 
 // Errors returned by the manager.
@@ -75,6 +76,62 @@ type Info struct {
 	// TestEvidence references the conformance and sentinel evidence the
 	// publisher reviewed (REL-005).
 	TestEvidence string `json:"test_evidence"`
+	// ObligationMapping, if set, is the release's explicit mapping from
+	// policy outputs and prerequisites to platform obligations (POL-011).
+	// Without it, outputs stay data and no decision carries an obligation.
+	ObligationMapping *ObligationMapping `json:"obligation_mapping,omitempty"`
+}
+
+// ObligationMapping maps policy outputs and allow prerequisites to the
+// obligations of signing.ObligationsV1 (POL-011, APR-007). It is part of
+// the signed manifest, so only a publisher can change it.
+type ObligationMapping struct {
+	Version string `json:"version"`
+	// Outputs maps an output name to the obligation type it becomes.
+	Outputs map[string]string `json:"outputs,omitempty"`
+	// Prerequisites maps an allow prerequisite to the obligation type it
+	// becomes: the enforcing role then meets it instead of the decision
+	// role resolving it first. Only a reservation can be mapped; an
+	// approval is always resolved before a decision is signed.
+	Prerequisites map[string]string `json:"prerequisites,omitempty"`
+}
+
+// check validates the mapping's structure.
+func (m ObligationMapping) check() error {
+	var errs []error
+	if m.Version != signing.ObligationsV1 {
+		errs = append(errs, fmt.Errorf("obligation_mapping.version must be %q", signing.ObligationsV1))
+	}
+	for out, t := range m.Outputs {
+		if t != signing.MetadataProjection {
+			errs = append(errs, fmt.Errorf("obligation_mapping: output %q maps to %q, which no output can become", out, t))
+		}
+	}
+	for p, t := range m.Prerequisites {
+		if p != policy.RequireReservation || t != signing.Reservation {
+			errs = append(errs, fmt.Errorf("obligation_mapping: prerequisite %q cannot become %q", p, t))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// checkOutputs validates the outputs a mapping turns into obligations: a
+// metadata projection is a list of field names.
+func (m ObligationMapping) checkOutputs(docs []format.Document) error {
+	var errs []error
+	for _, d := range docs {
+		for _, r := range d.Rules {
+			for name, v := range r.Outputs {
+				if m.Outputs[name] != signing.MetadataProjection {
+					continue
+				}
+				if list, ok := v.([]any); !ok || len(list) == 0 {
+					errs = append(errs, fmt.Errorf("rule %q: output %q is a metadata projection, a non-empty list of field names", r.ID, name))
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Environment is what an instance checks a release against: its registry,
@@ -124,6 +181,9 @@ func (e Environment) check(info Info) error {
 	}
 	if (len(info.LabelOrder) == 0) != (info.LabelGeneration == 0) {
 		errs = append(errs, errors.New("a label order needs a generation above 0, and only a label order has one"))
+	}
+	if info.ObligationMapping != nil {
+		errs = append(errs, info.ObligationMapping.check())
 	}
 	return errors.Join(errs...)
 }
@@ -296,6 +356,11 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 			return nil, fmt.Errorf("release: %s: a document is in the business set exactly when the manifest declares it there", name)
 		}
 		docs = append(docs, d)
+	}
+	if om := b.Info.ObligationMapping; om != nil {
+		if err := om.checkOutputs(docs); err != nil {
+			return nil, fmt.Errorf("release: %w", err)
+		}
 	}
 	eng, err := engine.Compile(digest, docs, m.env.Schema, engine.Options{CostLimit: b.Info.CostLimit})
 	if err != nil {

@@ -109,3 +109,32 @@ func TestValidatePrerequisites(t *testing.T) {
 		t.Errorf("an allow rule requiring approval and a reservation was rejected: %v", err)
 	}
 }
+
+// TestValidateOutputs covers POL-011 at the format: only business allow
+// rules carry outputs, under identifier names, with string, integer,
+// boolean or string-list values.
+func TestValidateOutputs(t *testing.T) {
+	with := func(effect, set, outputs string) Document {
+		d, err := Parse([]byte(strings.Replace(strings.Replace(strings.Replace(validDoc, `"when":"true"`, `"when":"true","outputs":`+outputs, 1),
+			`"effect":"allow"`, `"effect":"`+effect+`"`, 1), `"set":"business"`, `"set":"`+set+`"`, 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if err := ValidateBundle([]Document{with("allow", "business", `{"fields":["id","etag"],"limit":10,"note":"x","on":true}`)}, schema); err != nil {
+		t.Fatalf("valid outputs: %v", err)
+	}
+	for name, d := range map[string]Document{
+		"on a deny rule":       with("deny", "business", `{"fields":["id"]}`),
+		"in the ceiling set":   with("deny", "ceiling", `{"fields":["id"]}`),
+		"a nested object":      with("allow", "business", `{"fields":{"a":1}}`),
+		"a fraction":           with("allow", "business", `{"limit":1.5}`),
+		"a list of non-string": with("allow", "business", `{"fields":[1,2]}`),
+		"an invalid name":      with("allow", "business", `{"no spaces":["id"]}`),
+	} {
+		if err := ValidateBundle([]Document{d}, schema); err == nil || !strings.Contains(err.Error(), "output") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

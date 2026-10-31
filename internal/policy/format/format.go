@@ -65,6 +65,39 @@ type Rule struct {
 	When string `json:"when,omitempty"`
 	// Requires lists prerequisites of an allow rule in the business set.
 	Requires []string `json:"requires,omitempty"`
+	// Outputs are data an allow rule of the business set reports when it
+	// allows (POL-011): string, integer, boolean or string-list values
+	// under identifier names. They become platform obligations only
+	// through a release's explicit obligation mapping.
+	Outputs map[string]any `json:"outputs,omitempty"`
+}
+
+// MaxOutputs bounds a rule's outputs, and MaxOutputList a list value.
+const (
+	MaxOutputs    = 8
+	MaxOutputList = 64
+)
+
+// validOutput reports whether v is an output value: a string, an integer,
+// a boolean or a list of at most MaxOutputList strings.
+func validOutput(v any) bool {
+	switch x := v.(type) {
+	case string, bool:
+		return true
+	case float64:
+		return x == float64(int64(x))
+	case []any:
+		if len(x) > MaxOutputList {
+			return false
+		}
+		for _, e := range x {
+			if _, ok := e.(string); !ok {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // Schema reports which resource types and actions are registered (RES-001).
@@ -145,6 +178,17 @@ func ValidateBundle(docs []Document, schema Schema) error {
 					fail("rule %q: unknown prerequisite %q", r.ID, req)
 				case r.Effect != EffectAllow || d.Set != SetBusiness:
 					fail("rule %q: only business allow rules may require %q", r.ID, req)
+				}
+			}
+			if len(r.Outputs) > 0 && (r.Effect != EffectAllow || d.Set != SetBusiness) {
+				fail("rule %q: only business allow rules have outputs", r.ID)
+			}
+			if len(r.Outputs) > MaxOutputs {
+				fail("rule %q: more than %d outputs", r.ID, MaxOutputs)
+			}
+			for name, v := range r.Outputs {
+				if !identifier.MatchString(name) || !validOutput(v) {
+					fail("rule %q: output %q is not an identifier with a string, integer, boolean or string-list value", r.ID, name)
 				}
 			}
 			if len(r.Actions) == 0 {

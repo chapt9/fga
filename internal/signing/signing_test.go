@@ -288,3 +288,54 @@ func TestRecordContentRules(t *testing.T) {
 		}
 	}
 }
+
+// TestObligations covers POL-011, APR-007 and DEC-002 at the verifier:
+// under ObligationsV1 a decision is accepted only by an enforcement point
+// that applies every obligation it carries to its operation, with
+// parameters matching their digest; a reservation obligation satisfies a
+// reservation prerequisite, and nothing else does.
+func TestObligations(t *testing.T) {
+	f := newFixture(t)
+	projection := func(fields string) Obligation {
+		raw := []byte(`{"fields":` + fields + `}`)
+		return Obligation{Type: MetadataProjection, Version: 1, Parameters: raw, ParametersDigest: ParametersDigest(raw), ReferencedRevisions: []Ref{}}
+	}
+	reservation := Obligation{Type: Reservation, Version: 1, Parameters: []byte(`{}`), ParametersDigest: ParametersDigest([]byte(`{}`)),
+		ReferencedRevisions: []Ref{}}
+	stat := func(op, o string) bool { return o == MetadataProjection && op == "storage.object.read" }
+	executor := func(op, o string) bool { return o == Reservation }
+	for name, tc := range map[string]struct {
+		obligations []Obligation
+		requires    []string
+		applies     func(op, o string) bool
+		want        error
+	}{
+		"applied":                {[]Obligation{projection(`["id"]`)}, nil, stat, nil},
+		"not applied here":       {[]Obligation{projection(`["id"]`)}, nil, nil, ErrObligation},
+		"not for this operation": {[]Obligation{projection(`["id"]`)}, nil, func(op, o string) bool { return op == "other" }, ErrObligation},
+		"parameters not their digest": {[]Obligation{{Type: MetadataProjection, Version: 1, Parameters: []byte(`{"fields":["id","title"]}`),
+			ParametersDigest: ParametersDigest([]byte(`{"fields":["id"]}`)), ReferencedRevisions: []Ref{}}}, nil, stat, ErrBinding},
+		"reservation met":     {[]Obligation{reservation}, []string{"reservation"}, executor, nil},
+		"reservation unmet":   {nil, []string{"reservation"}, executor, ErrRecord},
+		"approval not a duty": {[]Obligation{reservation}, []string{"approval"}, executor, ErrRecord},
+	} {
+		r := record(false)
+		r.ObligationMappingVersion, r.Obligations = ObligationsV1, tc.obligations
+		r.Checks[0].Requires = append([]string{}, tc.requires...)
+		signed, err := f.signer.Sign(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := f.verifier("storage", NewMemoryConsumption())
+		if tc.applies != nil {
+			v.Applying(tc.applies)
+		}
+		got, err := v.Verify(context.Background(), signed)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
+		if err == nil && len(got.Obligations) != len(tc.obligations) {
+			t.Errorf("%s: %d obligations verified", name, len(got.Obligations))
+		}
+	}
+}

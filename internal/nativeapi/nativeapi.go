@@ -383,7 +383,7 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 			fail(w, r, err)
 			return
 		}
-		httpapi.WriteJSON(w, http.StatusOK, info)
+		httpapi.WriteJSON(w, http.StatusOK, info.Wire())
 	}))
 	mux.HandleFunc("DELETE /v1/buckets/{bucket}/object", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)

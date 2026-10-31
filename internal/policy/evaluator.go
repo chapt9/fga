@@ -102,6 +102,10 @@ type ActionResult struct {
 	// Requires lists the prerequisites of an allow, sorted and without
 	// duplicates: the union over every matching allow rule (APR-007).
 	Requires []string
+	// Outputs are the outputs of every matching allow rule that has any, in
+	// rule order (POL-011); a release's obligation mapping decides what, if
+	// anything, they become.
+	Outputs []map[string]any
 	// NextChange is the earliest time, not before the request time, at
 	// which a time condition of any rule listing the action can change its
 	// value. Zero means no time condition applies. A decision is valid only

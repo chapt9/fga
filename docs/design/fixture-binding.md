@@ -7,7 +7,7 @@ Specification fixtures (`docs/spec/vectors/fixtures/*.json`, schema `fga.fixture
 | Fixture operation | Bound to | Notes |
 |---|---|---|
 | `evaluate` | `decision.Decider.DecideBatch` over a snapshot compiled from the fixture's policies | V-001 |
-| `issue_signed_decision`, `verify_transmitted_grant`, `alter_transmitted_grant` | `decisionsvc.Service.Decide`, `signing.Verifier.Verify` on the transmitted bytes | V-141 |
+| `issue_signed_decision`, `verify_transmitted_grant`, `alter_transmitted_grant` | `decisionsvc.Service.Decide` for a stat under a release whose obligation mapping turns the rule's output into a `metadata_projection` obligation, then the storage role's `signing.Verifier.Verify` (which applies it to stat) on the transmitted bytes, original and altered | V-141 |
 | `prepare_publish`, `revoke_principal`, `publish` | `content.Service` begin and finalize; `catalog` identity disable | V-142, needs PostgreSQL |
 | `decide_read`, `admit_read` | Decision for `storage.object.read` and the fence's read admission at the fixture's `now` | V-143 |
 | `delete_key`, `delete_version`, `read_version` | `content.Service` | V-146, needs PostgreSQL |

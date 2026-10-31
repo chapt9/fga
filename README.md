@@ -26,7 +26,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 
 | Area | Packages | Specification |
 |---|---|---|
-| Policy | `internal/policy/format`, `internal/policy/engine`: `fga.policy/v1`, deny overrides, deny-only ceiling set, strict errors, cost limit, `request.now` only against timestamp literals | "Policy format", POL-001 to POL-014 |
+| Policy | `internal/policy/format`, `internal/policy/engine`: `fga.policy/v1`, deny overrides, deny-only ceiling set, strict errors, cost limit, `request.now` only against timestamp literals; rule outputs, which a release's signed obligation mapping turns into signed obligations ([obligations.md](docs/design/obligations.md)) | "Policy format", POL-001 to POL-014, APR-007 |
 | Decisions | `internal/decision`, `internal/gate`, `internal/decisionsvc`, `cmd/fga-decision`. Check kinds with per-check principals, registered operations only, first-hop token evidence, public projection, signed record v2 with recovery incarnation | DEC-001 to DEC-012, RES-009, TRU-003 |
 | Releases | `internal/release`: signed bundles whose manifest names the business and ceiling sets, evaluator build, registry digests, label order and cost limit | REL-001 to REL-005, POL-007 |
 | Authority | `internal/identity`, `internal/delegation`, `internal/registry` (R1 types, operations, planned resources), `internal/catalog`, `internal/audit`, `internal/authn` (development token profile) | ID-*, DLG-*, RES-*, DAT-*, AUD-* |
@@ -57,7 +57,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 | V-001, V-142, V-144, V-145, V-146, V-148, V-149 | Pass |
 | V-147 | Pass, bound to a storage object |
 | V-143 | Passes with fence clock margin 0. One host clock in the local profile. With the default one-second margin, the admission one second before the cutoff is refused (more restrictive than the fixture). |
-| V-141 | Unbound. Its decision carries a `metadata_projection` obligation. R1 maps no obligations (POL-011 not built), so verifiers reject every obligation. |
+| V-141 | Pass: the decision's `metadata_projection` obligation comes from a mapped policy output ([obligations.md](docs/design/obligations.md)), and a removed or widened obligation set does not verify |
 
 ### Known gaps (not done or not verified)
 
