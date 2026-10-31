@@ -333,6 +333,12 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, PrincipalID: r.Principal.ID, Business: r.Business.String(),
 			Ceiling: ceilingName(r.Ceiling), Effect: effectName(r.Effect), Reason: string(r.Reason)})
 	}
+	// A preparatory operation defers an approval to its commit, which
+	// decides the same rights again and consumes the approval there
+	// (APR-003); nothing it prepares is visible.
+	if op.Preparatory && d.Outcome == decision.OutcomeNeedsApproval {
+		deferApproval(&d)
+	}
 	var used *approval.Approval
 	if d.Outcome == decision.OutcomeNeedsApproval {
 		a, reason, err := s.settleApproval(ctx, req, snap.Epoch, bound, &d)
@@ -618,4 +624,19 @@ func planTarget(p opplan.Summary, bound []registry.Resource) (opplan.Target, boo
 		}
 	}
 	return opplan.Target{}, false
+}
+
+// deferApproval removes the approval prerequisite from d and its results.
+func deferApproval(d *decision.Decision) {
+	strip := func(r []string) []string {
+		return slices.DeleteFunc(slices.Clone(r), func(p string) bool { return p == policy.RequireApproval })
+	}
+	d.Requires = strip(d.Requires)
+	for i := range d.Results {
+		d.Results[i].Requires = strip(d.Results[i].Requires)
+	}
+	d.Outcome, d.Reason = decision.OutcomeAllow, ""
+	if len(d.Requires) > 0 {
+		d.Outcome, d.Reason = decision.OutcomeNeedsReservation, decision.ReasonReservationRequired
+	}
 }

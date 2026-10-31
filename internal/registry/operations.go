@@ -157,7 +157,19 @@ func envelopeChecks(repeated bool) []CheckSpec {
 
 func r1Operations() []Operation {
 	ops := baseOperations()
-	return append(ops, entryTwins(ops)...)
+	ops = append(ops, entryTwins(ops)...)
+	for i := range ops {
+		ops[i].Preparatory = preparatory[ops[i].Name]
+	}
+	return ops
+}
+
+// preparatory are the operations that reserve or stage an upload; their
+// commits (publish and finalize operations) decide the same rights again.
+var preparatory = map[string]bool{
+	OpBeginCreate: true, OpBeginVersion: true, OpStageCreate: true, OpStageVersion: true,
+	OpDocBeginCreate: true, OpDocBeginVersion: true,
+	OpDerivedBegin: true, OpDerivedBeginVersion: true, OpDerivedStageVersion: true,
 }
 
 // entryTwins are the text-entry forms of the unit operations (DOC-005):

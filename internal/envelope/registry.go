@@ -6,8 +6,10 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +21,7 @@ import (
 	"fga/internal/decisionsvc"
 	"fga/internal/enforce"
 	"fga/internal/fence"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -370,14 +373,27 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 	}
 	id := cryptowire.NewUUID()
 	obj := canonical("storage.object", objectID.String())
-	rec, err := s.authorize(ctx, c, registry.OpPublishEnvelope, []enforce.Check{
-		{ID: "share", Role: registry.RoleShare, Action: "share", Resource: obj, Version: versionID},
-		{ID: "envelope", Role: registry.RoleEnvelope, Action: "create", Resource: alias(registry.PlannedEnvelope, objectID.String()+"|"+fp+"|"+id.String())},
-		{ID: "recipient-read", Role: registry.RoleRecipientRead, Action: "read", Resource: obj, Version: versionID, Recipient: fp},
-		{ID: "recipient-key", Role: registry.RoleRecipientKey, Action: "receive-key", Resource: canonical("crypto.recipient", fp), Recipient: fp},
-	})
-	if err != nil {
+	// The share carries a plan, so a policy can make it subject to an
+	// approval (APR-001); the plan names the version, recipient and
+	// generation, not the per-attempt envelope.
+	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, registry.OpPublishEnvelope, enforce.KeysAudience, true,
+		[]enforce.Check{
+			{ID: "share", Role: registry.RoleShare, Action: "share", Resource: obj, Version: versionID},
+			{ID: "envelope", Role: registry.RoleEnvelope, Action: "create", Resource: alias(registry.PlannedEnvelope, objectID.String()+"|"+fp+"|"+id.String())},
+			{ID: "recipient-read", Role: registry.RoleRecipientRead, Action: "read", Resource: obj, Version: versionID, Recipient: fp},
+			{ID: "recipient-key", Role: registry.RoleRecipientKey, Action: "receive-key", Resource: canonical("crypto.recipient", fp), Recipient: fp},
+		}, enforce.Options{Plan: &opplan.Summary{Action: "share",
+			Targets: []opplan.Target{{Role: registry.RoleShare, Type: "storage.object", ID: objectID.String(), Version: versionID}},
+			Changes: map[string]string{"recipient": fp, "generation": strconv.FormatUint(ctxv.Generation, 10)},
+			Details: mustJSON(map[string]string{"bucket": bucketName, "key": key})}})
+	var need *enforce.ApprovalRequired
+	switch {
+	case errors.As(err, &need), errors.Is(err, enforce.ErrApprovalNotUsable):
 		return EnvelopeRef{}, err
+	case errors.Is(err, enforce.ErrNotFound):
+		return EnvelopeRef{}, ErrNotFound
+	case err != nil:
+		return EnvelopeRef{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	digest := cryptowire.EnvelopeDigest(e.Context, e.Ciphertext)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
@@ -464,4 +480,9 @@ func fenceBinding(rec signing.Record) (fence.Binding, error) {
 func isUnique(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+func mustJSON(v map[string]string) json.RawMessage {
+	b, _ := json.Marshal(v) // a string map always encodes
+	return b
 }

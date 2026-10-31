@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,7 @@ import (
 	"fga/internal/decisionsvc"
 	"fga/internal/envelope"
 	"fga/internal/fence"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -432,7 +434,7 @@ func (s *Service) FinalizeDocument(ctx context.Context, c Caller, intentID strin
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	recs, err := s.documentDecisions(ctx, c, in, units, original)
+	recs, err := s.documentDecisions(ctx, c, in, units, original, digest)
 	if err != nil {
 		return DocumentPublished{}, err
 	}
@@ -553,9 +555,28 @@ const maxBatch = 50
 
 // documentDecisions obtains every decision of a publication, each check
 // group kept within one batch.
-func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocIntent, units []checkedUnit, original *checkedUnit) ([]signing.Record, error) {
+func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocIntent, units []checkedUnit, original *checkedUnit,
+	digest cryptowire.Digest) ([]signing.Record, error) {
+	// The document's own decision carries the plan, so a policy can make
+	// publication subject to an approval (APR-001, APR-005); the plan names
+	// the exact version, manifest and recipients.
 	op, ch := docChecks(in, registry.OpDocPublishCreate, registry.OpDocPublishVersion)
-	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
+	plan := opplan.Summary{Action: ch.action, Changes: map[string]string{"manifest": digest.String(), "units": strconv.Itoa(len(units))},
+		Details: details(map[string]string{"key": in.key})}
+	if in.newDocument {
+		plan.Targets = []opplan.Target{{Role: registry.RoleBucket, Type: "storage.bucket", ID: in.bucket.String()},
+			{Role: registry.RoleDocument, Type: "storage.object", ID: in.Document, Version: in.DocumentVersion}}
+	} else {
+		plan.Targets = []opplan.Target{{Role: registry.RoleDocument, Type: "storage.object", ID: in.Document, Version: in.DocumentVersion}}
+	}
+	targets := map[string]bool{}
+	for _, u := range units {
+		for _, e := range u.envs {
+			targets[e.ctx.Recipient.String()] = true
+		}
+	}
+	plan.Changes["recipients"] = strings.Join(slices.Sorted(maps.Keys(targets)), ",")
+	rec, err := s.decidePlanned(ctx, c, op, []check{ch}, plan)
 	if err != nil {
 		return nil, err
 	}

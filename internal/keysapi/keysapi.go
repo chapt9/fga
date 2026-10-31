@@ -27,8 +27,21 @@ func classify(err error) (int, string, bool) {
 		return http.StatusConflict, httpapi.CodeConflict, true
 	case errors.Is(err, envelope.ErrDecision):
 		return http.StatusForbidden, httpapi.CodeInvalid, true
+	case errors.Is(err, enforce.ErrApprovalNotUsable):
+		return http.StatusConflict, httpapi.CodeApprovalNotUsable, true
 	}
 	return 0, "", false
+}
+
+// fail writes err; an operation that needs an approval answers 202 with
+// the pending approval's ID (APR-001), as the storage API does.
+func fail(w http.ResponseWriter, r *http.Request, err error) {
+	var need *enforce.ApprovalRequired
+	if errors.As(err, &need) {
+		httpapi.WriteJSON(w, http.StatusAccepted, map[string]string{"status": httpapi.CodeApprovalRequired, "approval_id": need.ID})
+		return
+	}
+	httpapi.Fail(w, r, err, classify)
 }
 
 // wire types of the keys API.
@@ -86,7 +99,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		}
 		ch, err := svc.EnrollRecipient(r.Context(), c, b.PublicKey)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, ch)
@@ -103,7 +116,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		}
 		rec, err := svc.ActivateRecipient(r.Context(), c, r.PathValue("fp"), b.ChallengeID, proof)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, rec)
@@ -111,14 +124,14 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 	mux.HandleFunc("GET /v1/recipients/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		rec, err := svc.Recipient(r.Context(), c, r.PathValue("fp"))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, rec)
 	}))
 	mux.HandleFunc("DELETE /v1/recipients/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		if err := svc.RevokeRecipient(r.Context(), c, r.PathValue("fp")); err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, map[string]string{"fingerprint": r.PathValue("fp"), "status": "REVOKED"})
@@ -126,7 +139,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 	mux.HandleFunc("GET /v1/signing-keys/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		rec, err := svc.SigningKey(r.Context(), c, r.PathValue("fp"))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, rec)
@@ -139,7 +152,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		ref, err := svc.Publish(r.Context(), c, b.Bucket, b.Key, b.Version,
 			envelope.EnvelopeIn{Context: b.Envelope.Context, Ciphertext: b.Envelope.Ciphertext, Signature: b.Envelope.Signature})
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, ref)
@@ -147,7 +160,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 	mux.HandleFunc("DELETE /v1/envelopes/{id}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		ref, err := svc.Retire(r.Context(), c, r.PathValue("id"))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, ref)
@@ -167,7 +180,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		}
 		d, err := svc.Deliver(r.Context(), signingSigned(b), b.EnvelopeID, extra...)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, DeliveredBody{EnvelopeID: d.EnvelopeID, Envelope: httpapi.EnvelopeBody{Context: d.Context,

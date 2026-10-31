@@ -334,6 +334,11 @@ func (c CheckSpec) kind() CheckKind {
 type Operation struct {
 	Name   string
 	Checks []CheckSpec
+	// Preparatory marks an operation that only prepares an invisible
+	// change (reserving or staging an upload) whose commit decides the
+	// same rights again. An approval prerequisite is deferred to that
+	// commit, where it is consumed (APR-003).
+	Preparatory bool
 }
 
 // Operations is the registry of operations.
@@ -391,6 +396,9 @@ func (o *Operations) Digest() string {
 	h.Write([]byte("fga.operations/v1\n"))
 	for _, name := range slices.Sorted(maps.Keys(o.byName)) {
 		fmt.Fprintf(h, "op %s\n", name)
+		if o.byName[name].Preparatory {
+			h.Write([]byte("preparatory\n"))
+		}
 		for _, c := range o.byName[name].Checks {
 			fmt.Fprintf(h, "check %s %s %s %s %t", c.Role, c.ResourceType, c.Action, c.kind(), c.Repeated)
 			if c.Optional {

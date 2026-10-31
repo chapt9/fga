@@ -72,8 +72,8 @@ type Client struct {
 	HTTP         *http.Client
 	StorageToken string
 	KeysToken    string
-	// Approval is presented with every storage request when set (the
-	// Fga-Approval header); operations that need one use it.
+	// Approval is presented with every request when set (the Fga-Approval
+	// header); operations that need one use it.
 	Approval   string
 	Recipient  *crypto.RecipientKey
 	KeyVersion uint64
@@ -91,7 +91,7 @@ func (c *Client) do(ctx context.Context, method, url, token string, body io.Read
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	if c.Approval != "" && token == c.StorageToken {
+	if c.Approval != "" {
 		req.Header.Set("Fga-Approval", c.Approval)
 	}
 	if length >= 0 && body != nil {

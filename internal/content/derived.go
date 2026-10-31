@@ -17,6 +17,7 @@ import (
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/labels"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -223,7 +224,15 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 				ref: planned(registry.PlannedEnvelope, envelopeObject+"|"+fp+"|"+e.id.String())},
 			check{id: "recipient-key-" + n, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp})
 	}
-	_, base, err := s.decide(ctx, c, op, Audience, true, checks)
+	plan := opplan.Summary{Action: checks[0].action, Changes: map[string]string{"lineage": cryptowire.ManifestDigest(lineage).String(), "label": effective},
+		Details: details(map[string]string{"key": in.key})}
+	if in.newObject {
+		plan.Targets = []opplan.Target{{Role: registry.RoleBucket, Type: "storage.bucket", ID: in.bucket.String()},
+			{Role: registry.RoleOutput, Type: "document.derived", ID: in.Object.String(), Version: in.LogicalVersion.String()}}
+	} else {
+		plan.Targets = []opplan.Target{{Role: registry.RoleOutput, Type: "document.derived", ID: in.Object.String(), Version: in.LogicalVersion.String()}}
+	}
+	base, err := s.decidePlanned(ctx, c, op, checks, plan)
 	if err != nil {
 		return Published{}, err
 	}
