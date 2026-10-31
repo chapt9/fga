@@ -80,6 +80,7 @@ type (
 	proposalBody struct {
 		Label      string `json:"label"`
 		Classifier string `json:"classifier"`
+		Signature  string `json:"signature"`
 	}
 	approvalDecisionBody struct {
 		Decision string `json:"decision"`
@@ -550,7 +551,7 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 		if !httpapi.DecodeJSON(w, r, &body) {
 			return
 		}
-		p, err := svc.ProposeLabel(r.Context(), c, b, k, body.Label, body.Classifier)
+		p, err := svc.ProposeLabel(r.Context(), c, b, k, body.Label, body.Classifier, body.Signature)
 		if err != nil {
 			fail(w, r, err)
 			return

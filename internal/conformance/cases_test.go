@@ -464,8 +464,8 @@ func noop(context.Context, pgx.Tx) error { return nil }
 // collection floor is the bucket's default label, and its access revision
 // is our metadata revision, brought to the fixture's 3 by two raises from
 // the bucket default. The proposer is a project member whose policy allows
-// propose-label; its classifier is not registered (no classifier registry
-// exists, D-06), so the proposal can only be advisory.
+// propose-label; its classifier is not registered (D-06), so the
+// proposal is refused and changes nothing.
 func TestV147(t *testing.T) {
 	f := load(t, "V-147")
 	var init struct {
@@ -498,10 +498,21 @@ func TestV147(t *testing.T) {
 		t.Fatalf("initial state %s at %d, want %s at %d", label, meta, init.Label, init.AccessRevision)
 	}
 	in := f.input(t, "proposal")
-	f.step("proposal_submitted")
-	p, err := st.Content.ProposeLabel(ctx, alice.Caller, "objects", "u1", in["label"].(string), in["signer"].(string))
+	// The fixture's signer is no registered classifier: its proposal,
+	// signed with alice's own key, is refused and changes nothing.
+	v, err := st.Content.Stat(ctx, alice.Caller, "objects", "u1", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	sig, err := alice.Signer.Sign(cryptowire.TypeLabelProposal, cryptowire.LabelProposalInput("storage.object", v.Version,
+		in["label"].(string), in["signer"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.step("proposal_submitted")
+	p, err := st.Content.ProposeLabel(ctx, alice.Caller, "objects", "u1", in["label"].(string), in["signer"].(string), sig)
+	if !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("an unregistered classifier's proposal: %v", err)
 	}
 	label, meta := probe()
 	f.check(t, map[string]any{"unit.label": label, "unit.access_revision": meta, "proposal.authoritative": p.Authoritative})

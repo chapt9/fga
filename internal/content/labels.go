@@ -2,6 +2,7 @@ package content
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 
@@ -219,12 +220,16 @@ func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label s
 	return out, nil
 }
 
-// ProposeLabel records a client classifier's label proposal for a key
-// (LAB-002 source 3). It needs propose-label, is always advisory and never
-// changes the label or any revision (V-147); a principal applies it with
-// SetLabel.
-func (s *Service) ProposeLabel(ctx context.Context, c Caller, bucketName, key, label, classifier string) (catalog.Proposal, error) {
-	if label == "" || len(label) > 64 || classifier == "" || len(classifier) > 128 {
+// ProposeLabel records a registered client classifier's label proposal
+// for a key's current version (LAB-002 source 3): signature is the
+// classifier's detached JWS over cryptowire.LabelProposalInput, by the
+// ACTIVE signing key the classifier is registered with. It needs
+// propose-label, is always advisory and never changes the label or any
+// revision (V-147); a principal applies it with SetLabel. A proposal of
+// an unregistered or revoked classifier, or not signed by its key for
+// exactly this version and label, is refused.
+func (s *Service) ProposeLabel(ctx context.Context, c Caller, bucketName, key, label, classifier, signature string) (catalog.Proposal, error) {
+	if label == "" || len(label) > 64 || classifier == "" || len(classifier) > 128 || signature == "" || len(signature) > 4096 {
 		return catalog.Proposal{}, ErrInvalid
 	}
 	b, err := s.bucketByName(ctx, c.Tenant, bucketName)
@@ -240,11 +245,32 @@ func (s *Service) ProposeLabel(ctx context.Context, c Caller, bucketName, key, l
 	if err != nil {
 		return catalog.Proposal{}, err
 	}
+	if o.Current == nil {
+		return catalog.Proposal{}, ErrNotFound
+	}
+	version := o.Current.String()
 	var p catalog.Proposal
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
+		signer, public, err := catalog.ClassifierKeyTx(ctx, tx, c.Tenant, classifier)
+		if errors.Is(err, catalog.ErrClassifier) {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := cryptowire.Verify(cryptowire.TypeLabelProposal, signature,
+			cryptowire.LabelProposalInput("storage.object", version, label, classifier),
+			func(kid string) (ed25519.PublicKey, error) {
+				if kid != signer {
+					return nil, errors.New("another key")
+				}
+				return ed25519.PublicKey(public), nil
+			}); err != nil {
+			return fmt.Errorf("%w: the proposal is not signed by its classifier for this version", ErrInvalid)
+		}
 		p, err = catalog.AddProposal(ctx, tx, c.Tenant, catalog.Proposal{ResourceType: "storage.object", ResourceID: o.ID.String(),
-			Label: label, Classifier: classifier, Proposer: c.Represented(), CreatedAt: s.d.Now()})
+			Label: label, Classifier: classifier, Proposer: c.Represented(), CreatedAt: s.d.Now(), Version: version, Signer: signer,
+			Signature: signature})
 		if err != nil {
 			return err
 		}

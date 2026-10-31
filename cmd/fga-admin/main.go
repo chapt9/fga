@@ -13,6 +13,8 @@
 //	identity disable   -tenant T -id ID                      (journaled)
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
 //	signing-key add    -tenant T -principal ID -public-key B64
+//	classifier add     -tenant T -id NAME -signer FP          register a label classifier with its ACTIVE signing key (LAB-002, D-06)
+//	classifier revoke  -tenant T -id NAME
 //	signing-key retire|compromise -tenant T -fingerprint FP  (compromise is journaled)
 //	recipient revoke   -tenant T -fingerprint FP             (journaled)
 //	delegation add     -tenant T -id ID -actor A -subject S -audience ADAPTER -grants 'type:a,b;type:c' -expires 24h [-parent ID]
@@ -173,6 +175,7 @@ func run(args []string) error {
 	principal := fs.String("principal", "", "principal identity")
 	publicKey := fs.String("public-key", "", "base64 public key")
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
+	signerFP := fs.String("signer", "", "classifier add: the classifier's ACTIVE content-signing key fingerprint")
 	epoch := fs.Uint64("epoch", 0, "policy epoch")
 	out := fs.String("out", "", "backup directory or key file to create")
 	backupKeyFile := fs.String("backup-key", "", "backup key file")
@@ -310,6 +313,16 @@ func run(args []string) error {
 			fmt.Println(fp)
 		}
 		return err
+	case "classifier add":
+		if err := need(*tenant, *id, *signerFP); err != nil {
+			return errors.New("classifier add needs -tenant, -id and -signer")
+		}
+		return e.store.RegisterClassifier(ctx, *tenant, *id, *signerFP)
+	case "classifier revoke":
+		if err := need(*tenant, *id); err != nil {
+			return err
+		}
+		return e.store.RevokeClassifier(ctx, *tenant, *id)
 	case "signing-key retire":
 		if err := need(*tenant, *fingerprint); err != nil {
 			return err

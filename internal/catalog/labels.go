@@ -100,15 +100,63 @@ type Proposal struct {
 	Proposer      string    `json:"proposer"`
 	Authoritative bool      `json:"authoritative"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Version, Signer and Signature are what the registered classifier
+	// signed, with which key.
+	Version   string `json:"version,omitempty"`
+	Signer    string `json:"signer,omitempty"`
+	Signature string `json:"-"`
+}
+
+// ErrClassifier means a classifier is not registered and ACTIVE with an
+// ACTIVE signing key.
+var ErrClassifier = errors.New("catalog: not a registered classifier")
+
+// ClassifierKeyTx returns the signing key fingerprint and public key of an
+// ACTIVE classifier whose key is ACTIVE, holding both rows until tx ends
+// so a concurrent revocation waits or is seen.
+func ClassifierKeyTx(ctx context.Context, tx pgx.Tx, tenant, id string) (string, []byte, error) {
+	var signer string
+	var public []byte
+	err := tx.QueryRow(ctx, `SELECT c.signer, k.public_key FROM classifiers c
+	                          JOIN signing_keys k ON k.tenant = c.tenant AND k.fingerprint = c.signer
+	                         WHERE c.tenant = $1 AND c.id = $2 AND c.status = 'ACTIVE' AND k.status = 'ACTIVE'
+	                           FOR SHARE OF c, k`, tenant, id).Scan(&signer, &public)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, ErrClassifier
+	}
+	return signer, public, err
+}
+
+// RegisterClassifier binds a classifier name to an ACTIVE content-signing
+// key (D-06). A name is registered once; revoking it ends it.
+func (s *Store) RegisterClassifier(ctx context.Context, tenant, id, signer string) error {
+	if id == "" || len(id) > 128 {
+		return errors.New("catalog: a classifier needs a name of at most 128 characters")
+	}
+	tag, err := s.pool.Exec(ctx, `INSERT INTO classifiers (tenant, id, signer, status, revision, created_at)
+		SELECT $1, $2, $3, 'ACTIVE', 1, now() WHERE EXISTS (
+		  SELECT 1 FROM signing_keys WHERE tenant = $1 AND fingerprint = $3 AND status = 'ACTIVE')
+		ON CONFLICT (tenant, id) DO NOTHING`, tenant, id, signer)
+	if err == nil && tag.RowsAffected() != 1 {
+		return errors.New("catalog: the name is taken or the signer is not an ACTIVE signing key")
+	}
+	return err
+}
+
+// RevokeClassifier ends a classifier: its proposals are refused from now
+// on; those recorded stay, attributed.
+func (s *Store) RevokeClassifier(ctx context.Context, tenant, id string) error {
+	return s.exec1(ctx, `UPDATE classifiers SET status = 'REVOKED', revision = revision + 1 WHERE tenant = $1 AND id = $2 AND status = 'ACTIVE'`,
+		tenant, id)
 }
 
 // AddProposal records an advisory proposal inside tx. It never changes the
 // label or the resource's revisions (V-147).
 func AddProposal(ctx context.Context, tx pgx.Tx, tenant string, p Proposal) (Proposal, error) {
 	p.ID, p.Authoritative = cryptowire.NewUUID().String(), false
-	_, err := tx.Exec(ctx, `INSERT INTO label_proposals (tenant, id, resource_type, resource_id, label, classifier, proposer, created_at)
-	                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		tenant, p.ID, p.ResourceType, p.ResourceID, p.Label, p.Classifier, p.Proposer, p.CreatedAt)
+	_, err := tx.Exec(ctx, `INSERT INTO label_proposals (tenant, id, resource_type, resource_id, label, classifier, proposer, created_at,
+	                        version, signer, signature) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		tenant, p.ID, p.ResourceType, p.ResourceID, p.Label, p.Classifier, p.Proposer, p.CreatedAt, p.Version, p.Signer, p.Signature)
 	return p, err
 }
 

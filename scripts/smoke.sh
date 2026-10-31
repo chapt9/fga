@@ -140,6 +140,11 @@ as alice; check $B/fga label -bucket reports -key q3/report.bin -label internal 
 as alice; check $B/fga label -bucket reports -key q3/report.bin -label confidential
 as alice; if $B/fga label -bucket reports -key q3/report.bin -label internal -approval $APPROVAL 2>err.txt; then echo "UNEXPECTED: approval used twice"; exit 1; fi
 echo "approval used twice: $(cat err.txt)"
+# A label proposal counts only from a registered classifier, signed by its
+# key (LAB-002); bob's client is registered as one, and stays advisory.
+if $B/fga propose-label -bucket reports -key q3/report.bin -label public -classifier smoke-classifier 2>err.txt; then
+  echo "UNEXPECTED: an unregistered classifier's proposal was recorded"; exit 1; fi
+$ADMIN classifier add -tenant t-acme -id smoke-classifier -signer "$(awk '/^signer/{print $2}' bob.keys)"
 as bob;   check $B/fga propose-label -bucket reports -key q3/report.bin -label public -classifier smoke-classifier
 as bob;   $B/fga get -bucket reports -key q3/report.bin -out bob.out && cmp plain.bin bob.out && echo "bob still reads after the label changes"
 

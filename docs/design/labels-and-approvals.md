@@ -31,7 +31,7 @@ An explicit label at upload resolves the same way on the planned object. A polic
 | Upload of a new version with another label | Refused | Labels of existing keys change only through the label operation |
 | Label change to an equal or higher rank | New label | `label` (`storage.object.label`) |
 | Label change to a lower rank | New label, never below the floor | `relabel` (`storage.object.relabel`). A policy may require an approval (`"requires": ["approval"]`), which is how LAB-004's default approval is expressed. The example and fixture policies do |
-| Classifier proposal | Unchanged | `propose-label` (`storage.object.propose-label`). The proposal is stored as advisory (`label_proposals`, `authoritative` always false, V-147) |
+| Classifier proposal | Unchanged | `propose-label` (`storage.object.propose-label`) and a registered classifier's signature. The proposal is stored as advisory (`label_proposals`, `authoritative` always false, V-147) |
 
 Document units and derived outputs are labelled the same way: `PUT …/document/unit/label?key=&unit=` with `document.unit.label` or `document.unit.relabel`, and `PUT …/derived/label?key=` with `derived.label` or `derived.relabel` (`fga label -unit` or `-derived`). A unit's label is the unit's, in every document version that includes it. Text entries take their collection's label and are not labelled alone. Lowering a derived output, also below its lineage maximum, is relabel (LAB-004, DRV-007). Approvals can target units and derived outputs (`document.unit.approve`, `derived.approve`), and document versions and collection entries (`document.version.approve`, `collection.entry.approve`, for share grants on them). A change advances the resource's metadata revision, so derived outputs that name a relabelled unit lose their admitted authority (LAB-005, DRV-009). A change is classified as `label` or `relabel` from the label and label order read before its decision. The commit requires both unchanged and otherwise answers `409 CONFLICT`, so a raise committed in between cannot let a lowering pass as `label` (review v3 F01).
 
@@ -43,7 +43,9 @@ A label outside the order, or below the floor, is refused before any decision. T
 - `label`, `relabel`, `propose-label` and `approve` on `document.text_unit`;
 - `label` and `approve` on `document.derived`, which already had `relabel`.
 
-`propose-label` is our addition: under default deny, storing a proposal is an action like any other. There is no registry of trusted classifiers (D-06 leaves it open), so every proposal is advisory.
+`propose-label` is our addition: under default deny, storing a proposal is an action like any other.
+
+**Registered classifiers (LAB-002 source 3).** The administrator registers a classifier as a name bound to an ACTIVE content-signing key (`fga-admin classifier add -tenant T -id NAME -signer FP`, `classifier revoke`). A proposal carries that key's detached JWS (`fga-label-proposal+jws`) over `"fga.label-proposal/v1"`, the resource type, the version ID, the label and the classifier name, each separated by a zero byte (`cryptowire.LabelProposalInput`). The storage role verifies it, in the fence of the `propose-label` decision, against the classifier's key as it is then, and for the object's current version. A proposal of an unregistered or revoked classifier, by another key, for another label or for an earlier version is refused. A recorded proposal names its version, key and signature, and stays advisory: a principal applies it with `label` or `relabel` (source 1). The SDK and `fga propose-label` sign with the client's own signing key, which the administrator registered for the classifier.
 
 ## Approvals
 

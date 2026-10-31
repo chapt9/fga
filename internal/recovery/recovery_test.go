@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -467,5 +468,37 @@ func TestBackupVerifiesCiphertext(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "blobs", id)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the corrupted copy was kept in the backup: %v", err)
+	}
+}
+
+// TestBackupCoversEveryTable holds the backup's table list to the catalog:
+// every table the catalog migrations create is backed up or left out on
+// purpose (recovery.NotBackedUp), so a new table is never silently
+// missing from a restore.
+func TestBackupCoversEveryTable(t *testing.T) {
+	st := r1test.New(t)
+	rows, err := st.Pool.Query(ctx, `SELECT table_name FROM information_schema.tables
+	                                  WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	known := map[string]bool{"schema_migrations": true}
+	for _, name := range append(slices.Clone(recovery.Tables), recovery.NotBackedUp...) {
+		known[name] = true
+	}
+	n := 0
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if !known[name] {
+			t.Errorf("table %s is neither backed up nor left out on purpose", name)
+		}
+	}
+	if err := rows.Err(); err != nil || n < len(recovery.Tables) {
+		t.Fatalf("%d tables seen: %v", n, err)
 	}
 }

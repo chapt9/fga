@@ -595,8 +595,19 @@ type Proposal struct {
 // ProposeLabel records a classifier's label proposal for a key.
 func (c *Client) ProposeLabel(ctx context.Context, bucket, key, label, classifier string) (Proposal, error) {
 	var out Proposal
-	body, n := jsonBody(map[string]string{"label": label, "classifier": classifier})
-	_, err := c.do(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/label-proposals", key, "", nil), c.StorageToken, body, n,
+	// The classifier's key is the client's signing key, which the
+	// administrator registered for the classifier; it signs the proposal
+	// for the object's current version.
+	v, err := c.Stat(ctx, bucket, key, "")
+	if err != nil {
+		return out, err
+	}
+	sig, err := c.Signer.Sign(cryptowire.TypeLabelProposal, cryptowire.LabelProposalInput("storage.object", v.Version, label, classifier))
+	if err != nil {
+		return out, err
+	}
+	body, n := jsonBody(map[string]string{"label": label, "classifier": classifier, "signature": sig})
+	_, err = c.do(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/label-proposals", key, "", nil), c.StorageToken, body, n,
 		map[string]string{"Content-Type": "application/json"}, &out)
 	return out, err
 }

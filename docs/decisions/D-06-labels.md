@@ -7,4 +7,5 @@
   2. the collection's default, where a collection is a bucket; the default is also the collection's floor (LAB-003);
   3. a signed proposal from a client classifier, which is advisory and never applied until a principal applies it under (1).
 - **Lineage.** Any client signing with its own active content-signing key may declare lineage (DRV-001). The server validates signer authority, references, bounds and cycles; it cannot prove that the declaration is complete.
-- **Not decided here:** per-tenant orders (a later release can add them), and a registry of trusted classifier workloads (proposals stay advisory either way).
+- **Not decided here:** per-tenant orders (a later release can add them).
+- **Classifier registry (added 1 November 2026).** Source 3 counts only from a classifier the administrator registered with its content-signing key; its proposals are signed and stay advisory ([labels-and-approvals.md](../design/labels-and-approvals.md)).

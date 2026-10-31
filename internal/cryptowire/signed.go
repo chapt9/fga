@@ -25,6 +25,8 @@ const (
 	TypeEnvelope     = "fga-envelope+jws"
 	TypeReceipt      = "fga-receipt+jws"
 	TypeSigningProof = "fga-signing-proof+jws"
+	// TypeLabelProposal signs a classifier's label proposal (LAB-002).
+	TypeLabelProposal = "fga-label-proposal+jws"
 )
 
 // ErrSignature is returned for a signature that does not verify, has the
@@ -171,6 +173,20 @@ func SigningProofInput(challengeID, tenant, principal string, fingerprint Digest
 		b = append(b, 0)
 	}
 	return append(b, nonce...)
+}
+
+// LabelProposalInput is what a registered classifier signs to propose a
+// label for one exact version of a resource, which the version's ID names
+// (LAB-002 source 3).
+func LabelProposalInput(resourceType, version, label, classifier string) []byte {
+	var b []byte
+	for i, f := range []string{"fga.label-proposal/v1", resourceType, version, label, classifier} {
+		if i > 0 {
+			b = append(b, 0)
+		}
+		b = append(b, f...)
+	}
+	return b
 }
 
 // RecipientProof is the possession proof for an X25519 recipient key

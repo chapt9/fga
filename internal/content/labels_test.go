@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"fga/internal/content"
+	"fga/internal/cryptowire"
 	"fga/internal/decisionsvc"
 	"fga/internal/r1test"
 	"fga/internal/registry"
+	"fga/sdk/go/crypto"
 )
 
 // objectLabel reads an object's stored label and metadata revision.
@@ -353,5 +355,60 @@ func TestConcurrentRaiseKeepsRelabel(t *testing.T) {
 	var need *content.ApprovalRequired
 	if !errors.As(err, &need) {
 		t.Fatalf("a fresh lowering: %v", err)
+	}
+}
+
+// TestClassifierProposals covers LAB-002 source 3: a proposal is recorded
+// only from a registered classifier, signed by the key it is registered
+// with for exactly the current version and label; it stays advisory and
+// changes nothing. Another label, another key, an earlier version and a
+// revoked classifier are refused.
+func TestClassifierProposals(t *testing.T) {
+	st := r1test.New(t)
+	st.LabeledBucket("reports", "p1", "internal")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	classifier := st.Client("pii-scanner", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Catalog.RegisterClassifier(ctx, r1test.Tenant, "pii", classifier.Signer.Fingerprint.String()); err != nil {
+		t.Fatal(err)
+	}
+	sign := func(key crypto.SigningKey, version, label string) string {
+		sig, err := key.Sign(cryptowire.TypeLabelProposal, cryptowire.LabelProposalInput("storage.object", version, label, "pii"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sig
+	}
+	v1, err := st.Content.Stat(ctx, alice.Caller, "reports", "doc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.Content.ProposeLabel(ctx, alice.Caller, "reports", "doc", "confidential", "pii", sign(classifier.Signer, v1.Version, "confidential"))
+	if err != nil || p.Authoritative || p.Version != v1.Version || p.Signer != classifier.Signer.Fingerprint.String() {
+		t.Fatalf("a registered classifier's proposal: %+v %v", p, err)
+	}
+	if after, _ := st.Content.Stat(ctx, alice.Caller, "reports", "doc", ""); after.ETag != v1.ETag {
+		t.Fatal("a proposal changed the object")
+	}
+	if _, err := alice.Put("reports", "doc", []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	v2, _ := st.Content.Stat(ctx, alice.Caller, "reports", "doc", "")
+	for name, c := range map[string]struct{ label, sig string }{
+		"signed for another label":  {"public", sign(classifier.Signer, v2.Version, "confidential")},
+		"signed by another key":     {"public", sign(alice.Signer, v2.Version, "public")},
+		"signed for an earlier one": {"public", sign(classifier.Signer, v1.Version, "public")},
+	} {
+		if _, err := st.Content.ProposeLabel(ctx, alice.Caller, "reports", "doc", c.label, "pii", c.sig); !errors.Is(err, content.ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := st.Catalog.RevokeClassifier(ctx, r1test.Tenant, "pii"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.ProposeLabel(ctx, alice.Caller, "reports", "doc", "public", "pii", sign(classifier.Signer, v2.Version, "public")); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("a revoked classifier: %v", err)
 	}
 }

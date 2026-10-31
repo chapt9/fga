@@ -927,10 +927,11 @@ components:
     ProposalRequest:
       type: object
       additionalProperties: false
-      required: [label, classifier]
+      required: [label, classifier, signature]
       properties:
         label: { type: string, minLength: 1, maxLength: 64 }
-        classifier: { type: string, minLength: 1, maxLength: 128 }
+        classifier: { type: string, minLength: 1, maxLength: 128, description: A classifier registered with fga-admin classifier add }
+        signature: { type: string, maxLength: 4096, description: 'The classifier key''s detached JWS (fga-label-proposal+jws) over the object''s current version and the label' }
     Proposal:
       type: object
       properties:
