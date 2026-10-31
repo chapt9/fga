@@ -56,7 +56,7 @@ Each grantable type has three registered operations, each with one check, `share
    Then the earlier grant and any expired grants of the resource are marked removed, the new grant is inserted, and the resource's metadata revision advances.
 5. Audit: a `mutation` event `SHARE_GRANT_RECORDED` names the resource and the grant.
 
-Any check that fails rejects the grant (`400 INVALID`, V-177). A caller without `share` gets `404 NOT_FOUND` (V-176).
+Any check that fails rejects the grant (`400 INVALID`, V-177). A caller without `share` gets `404 NOT_FOUND` (V-176). Before the caller's `share` is decided, nothing reveals what a key holds: a version or unit selector on an object or derived output answers like an absent key, and whether the actions fit the target's type is checked only after the decision (review v3 F04).
 
 **Removing** (`content.RemoveGrant`) decides `share`, journals the removal, then in the fence marks the grant removed and advances the resource's metadata revision (`SHARE_GRANT_REMOVED`).
 

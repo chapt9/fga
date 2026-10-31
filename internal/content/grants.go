@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -61,16 +62,18 @@ type GrantOutcome struct {
 	MetadataRevision uint64             `json:"metadata_revision"`
 }
 
-// grantTarget resolves t to the type and ID of its resource.
+// grantTarget resolves t to the type and ID of its resource. It runs
+// before the caller's share is decided, so a problem that depends on what
+// the key holds answers like an absent target (review v3 F04).
 func (s *Service) grantTarget(ctx context.Context, tenant string, t GrantTarget) (string, string, error) {
+	if t.Key == "" && (t.Version != "" || t.Unit != "") {
+		return "", "", ErrInvalid
+	}
 	b, err := s.bucketByName(ctx, tenant, t.Bucket)
 	if err != nil {
 		return "", "", err
 	}
 	if t.Key == "" {
-		if t.Version != "" || t.Unit != "" {
-			return "", "", ErrInvalid
-		}
 		return "storage.bucket", b.ID.String(), nil
 	}
 	var id cryptowire.UUID
@@ -98,7 +101,7 @@ func (s *Service) grantTarget(ctx context.Context, tenant string, t GrantTarget)
 		return "document.version", d.id.String(), nil
 	case t.Version != "" || t.Unit != "":
 		// An object's or output's grant covers the resource, not a version.
-		return "", "", ErrInvalid
+		return "", "", ErrNotFound
 	case kind == "derived":
 		return "document.derived", id.String(), nil
 	default:
@@ -106,10 +109,13 @@ func (s *Service) grantTarget(ctx context.Context, tenant string, t GrantTarget)
 	}
 }
 
-// grantActions checks that actions are from typ's read set and returns
-// them sorted, without duplicates (SHR-001).
-func grantActions(typ string, actions []string) ([]string, error) {
-	allowed := registry.GrantableActions[typ]
+// actionName is the form of an action name.
+var actionName = regexp.MustCompile(`^[a-z][a-z-]{0,31}$`)
+
+// normalActions returns actions sorted and without duplicates, if each is
+// an action name. Whether they fit the target's type is checked after the
+// caller's share is decided (grantActionsFit).
+func normalActions(actions []string) ([]string, error) {
 	if len(actions) == 0 {
 		return nil, ErrInvalid
 	}
@@ -117,11 +123,22 @@ func grantActions(typ string, actions []string) ([]string, error) {
 	slices.Sort(out)
 	out = slices.Compact(out)
 	for _, a := range out {
-		if !slices.Contains(allowed, a) {
-			return nil, fmt.Errorf("%w: a grant on %s may name %s", ErrInvalid, typ, strings.Join(allowed, ", "))
+		if !actionName.MatchString(a) {
+			return nil, ErrInvalid
 		}
 	}
 	return out, nil
+}
+
+// grantActionsFit checks that actions are from typ's read set (SHR-001).
+func grantActionsFit(typ string, actions []string) error {
+	allowed := registry.GrantableActions[typ]
+	for _, a := range actions {
+		if !slices.Contains(allowed, a) {
+			return fmt.Errorf("%w: a grant on %s may name %s", ErrInvalid, typ, strings.Join(allowed, ", "))
+		}
+	}
+	return nil
 }
 
 // journalRemoval journals the removal of grant id before it is
@@ -150,11 +167,11 @@ func (s *Service) journalRemoval(tenant, id string) (string, []string, error) {
 // replaces the earlier one, whose removal is journaled. The resource's
 // metadata revision advances (SHR-002).
 func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r GrantRequest) (GrantOutcome, error) {
-	typ, id, err := s.grantTarget(ctx, c.Tenant, t)
+	actions, err := normalActions(r.Actions)
 	if err != nil {
 		return GrantOutcome{}, err
 	}
-	actions, err := grantActions(typ, r.Actions)
+	typ, id, err := s.grantTarget(ctx, c.Tenant, t)
 	if err != nil {
 		return GrantOutcome{}, err
 	}
@@ -178,6 +195,10 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 		opplan.Summary{Action: "share", Targets: []opplan.Target{{Role: registry.RoleGrantTarget, Type: typ, ID: id}}, Changes: changes,
 			Details: details(map[string]string{"bucket": t.Bucket, "key": t.Key, "version": t.Version, "unit": t.Unit})})
 	if err != nil {
+		return GrantOutcome{}, err
+	}
+	// Only a caller who may share the resource learns its type's read set.
+	if err := grantActionsFit(typ, actions); err != nil {
 		return GrantOutcome{}, err
 	}
 	replaced, err := catalog.ActiveGrant(ctx, s.d.Catalog.Pool(), c.Tenant, id, r.Grantee)

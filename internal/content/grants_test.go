@@ -86,11 +86,6 @@ func TestGrants(t *testing.T) {
 		"another tenant's principal": func() error { _, err := grant(st, alice.Caller, plan, "olga", time.Hour, "read"); return err },
 		"delete":                     func() error { _, err := grant(st, alice.Caller, plan, "bob", time.Hour, "read", "delete"); return err },
 		"an expiry that has passed":  func() error { _, err := grant(st, alice.Caller, plan, "bob", -time.Minute, "read"); return err },
-		"a version of an object": func() error {
-			_, err := st.Content.RecordGrant(ctx, alice.Caller, content.GrantTarget{Bucket: "vault", Key: "plan.txt", Version: "x"},
-				content.GrantRequest{Grantee: "bob", Actions: []string{"read"}, ExpiresAt: st.Clock.Add(time.Hour)})
-			return err
-		},
 	} {
 		if err := try(); !errors.Is(err, content.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
@@ -358,5 +353,48 @@ func TestGrantBindsGrantee(t *testing.T) {
 	}
 	if _, err := grant(st, alice.Caller, plan, "bob", time.Hour, "stat"); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a fresh grant to bob outside the project: %v", err)
+	}
+}
+
+// TestGrantLookupRedacted is the regression test of review v3 F04: before
+// any permission check, a grant on an existing object with a version
+// selector answered INVALID while an absent key answered NOT_FOUND, and an
+// action outside the target type's read set answered INVALID, so a caller
+// could tell which keys exist and what they are. State-dependent problems
+// now answer like an absent target, and the actions are checked after the
+// caller's share is decided.
+func TestGrantLookupRedacted(t *testing.T) {
+	st := r1test.New(t)
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	eve := st.Client("eve", []string{"member"}, "p2")
+	src, err := putPlain(st, alice.Caller, "vault", "plan.txt", "", []byte("the plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "out.txt", IdempotencyKey: "o"},
+		[]cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}, -1, strings.NewReader("d")); err != nil {
+		t.Fatal(err)
+	}
+	try := func(c content.Caller, target content.GrantTarget, actions ...string) error {
+		_, err := st.Content.RecordGrant(ctx, c, target, content.GrantRequest{Grantee: "alice", Actions: actions, ExpiresAt: st.Clock.Add(time.Hour)})
+		return err
+	}
+	for name, err := range map[string]error{
+		"an absent key with a version":         try(eve.Caller, content.GrantTarget{Bucket: "vault", Key: "absent", Version: "x"}, "read"),
+		"an existing object with a version":    try(eve.Caller, content.GrantTarget{Bucket: "vault", Key: "plan.txt", Version: "x"}, "read"),
+		"an existing output with object reads": try(eve.Caller, content.GrantTarget{Bucket: "vault", Key: "out.txt"}, "read"),
+		"an existing object with deliver":      try(eve.Caller, content.GrantTarget{Bucket: "vault", Key: "plan.txt"}, "deliver"),
+	} {
+		if !errors.Is(err, content.ErrNotFound) {
+			t.Errorf("%s, for a caller without access: %v", name, err)
+		}
+	}
+	// The owner, who may share, learns that the actions do not fit.
+	if err := try(alice.Caller, content.GrantTarget{Bucket: "vault", Key: "out.txt"}, "read"); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("the owner granting read on a derived output: %v", err)
+	}
+	if err := try(alice.Caller, content.GrantTarget{Bucket: "vault", Version: "x"}, "list"); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("a bucket grant with a version: %v", err)
 	}
 }
