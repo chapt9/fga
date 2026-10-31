@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"fga/internal/decision"
 	"fga/internal/policy"
@@ -156,6 +157,29 @@ type Catalog interface {
 	Get(ctx context.Context, tenant, id string) (Resource, error)
 }
 
+// PlannedPrefix starts the namespaces of planned resources: resources a
+// fenced transition will create, such as the object of an upload intent.
+// A planned resource has generation 0; the fence requires it to be absent
+// until the transition creates it.
+const PlannedPrefix = "planned."
+
+// Planned-resource namespaces and the form of their names.
+const (
+	// PlannedObject: the upload intent ID.
+	PlannedObject = "planned.object"
+	// PlannedEnvelope: "<object>|<recipient fingerprint>|<envelope ID>",
+	// where <object> is an object ID or "intent:<intent ID>".
+	PlannedEnvelope = "planned.envelope"
+	// PlannedRecipient: "<principal>|<recipient fingerprint>".
+	PlannedRecipient = "planned.recipient"
+)
+
+// Planner resolves planned resources from authoritative state, never from
+// facts the caller supplies (ID-003, RES-009).
+type Planner interface {
+	Planned(ctx context.Context, tenant string, alias Alias) (Resource, error)
+}
+
 // Resolver resolves aliases to canonical resources.
 type Resolver struct {
 	catalog Catalog
@@ -167,8 +191,23 @@ func NewResolver(catalog Catalog, types *Types) *Resolver {
 	return &Resolver{catalog: catalog, types: types}
 }
 
-// Resolve returns the canonical resource the alias names, as of now.
+// Resolve returns the canonical resource the alias names, as of now. A
+// planned namespace resolves through the catalog's Planner.
 func (r *Resolver) Resolve(ctx context.Context, tenant string, alias Alias) (Resource, error) {
+	if strings.HasPrefix(alias.Namespace, PlannedPrefix) {
+		p, ok := r.catalog.(Planner)
+		if !ok {
+			return Resource{}, ErrUnknownAlias
+		}
+		res, err := p.Planned(ctx, tenant, alias)
+		if err != nil {
+			return Resource{}, err
+		}
+		if res.Generation != 0 || !r.types.HasResourceType(res.Type) {
+			return Resource{}, fmt.Errorf("%w: planned %s", ErrUnknownType, res.Type)
+		}
+		return res, nil
+	}
 	id, err := r.catalog.LookupAlias(ctx, tenant, alias)
 	if err != nil {
 		return Resource{}, err
