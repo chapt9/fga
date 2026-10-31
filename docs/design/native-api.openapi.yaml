@@ -211,6 +211,64 @@ paths:
       responses:
         "200": { description: Plaintext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
         default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: exportObject
+      description: Exports a client-mode object version to an approved compatible recipient (storage.object.export, then the keys role's export envelope); no server rewrapping or decryption.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [recipient], properties: { recipient: { $ref: "#/components/schemas/Digest" } } }
+      responses:
+        "200":
+          description: The encrypted package and its ciphertext
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Package" }
+                  - { type: object, properties: { ciphertext: { type: string, format: byte } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/unit/label:
+    put:
+      operationId: setUnitLabel
+      description: Sets a document unit's label (document.unit.label to raise or keep, document.unit.relabel to lower). The unit must belong to the selected document version. Text entries take their collection's label.
+      parameters:
+        - { $ref: "#/components/parameters/bucket" }
+        - { $ref: "#/components/parameters/key" }
+        - { $ref: "#/components/parameters/version" }
+        - { name: unit, in: query, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/approval" }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LabelRequest" } } }
+      responses:
+        "200": { description: Label set, content: { application/json: { schema: { $ref: "#/components/schemas/LabelOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/derived/label:
+    put:
+      operationId: setDerivedLabel
+      description: Sets a derived output's label (derived.label to raise or keep, derived.relabel to lower, also below its lineage maximum).
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/approval" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LabelRequest" } } }
+      responses:
+        "200": { description: Label set, content: { application/json: { schema: { $ref: "#/components/schemas/LabelOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document:
+    delete:
+      operationId: deleteDocument
+      description: Without version, deletes the document (a delete marker). With version, withdraws that document version.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { $ref: "#/components/parameters/approval" }]
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/DeleteOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/encryption:
     get:
       operationId: getBucketEncryption
