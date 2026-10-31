@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"fga/internal/opplan"
 	"fga/internal/registry"
 )
 
@@ -101,7 +102,8 @@ func TestSummaryComesFromThePlan(t *testing.T) {
 	tl := expenseTool()
 	args, _ := tl.ParseArguments([]byte(validArgs))
 	s := Summarize(tl, args, map[string]string{"source": "u-1"}, "Pay vendor X 50.00")
-	if !strings.Contains(string(s.Arguments), `"minor":50000`) || s.UnverifiedNote != "Pay vendor X 50.00" || s.OperationDigest != OperationDigest(tl, args) {
+	if !strings.Contains(string(s.Details), `"minor":50000`) || s.UnverifiedNote != "Pay vendor X 50.00" || s.OperationDigest != OperationDigest(tl, args) ||
+		len(s.Targets) != 2 || s.Targets[1] != (opplan.Target{Role: "source", ID: "u-1"}) {
 		t.Fatalf("summary = %+v", s)
 	}
 }

@@ -9,10 +9,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/approval"
-	"fga/internal/catalog"
 	"fga/internal/pgtest"
 	"fga/internal/reservation"
 	"fga/internal/tools"
+	"fga/internal/toolstore"
 )
 
 var start = time.Unix(1_800_000_000, 0).UTC()
@@ -26,7 +26,7 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	pool := pgtest.Pool(t, catalog.Migrate)
+	pool := pgtest.Pool(t, toolstore.Migrate)
 	pgtest.Invocations(t, pool) // identities, tool and budget only
 	now := start
 	f := &fixture{pool: pool, clock: &now}
@@ -114,7 +114,7 @@ func TestDispatchConsumesTheApproval(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	approvals := approval.New(f.pool, func() time.Time { return *f.clock })
-	a, _ := approvals.Request(ctx, approval.Approval{Tenant: "t-acme", Invocation: f.inv.ID, OperationDigest: "sha256:op",
+	a, _ := approvals.Request(ctx, approval.Approval{Tenant: "t-acme", Operation: f.inv.ID, OperationDigest: "sha256:op",
 		RequestedBy: "user-42", Actor: "agent-7", ExpiresAt: start.Add(time.Hour)})
 	_ = approvals.Decide(ctx, "t-acme", a.ID, "finance-1", true)
 

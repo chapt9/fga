@@ -3,6 +3,8 @@ package approval
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/catalog"
+	"fga/internal/opplan"
 	"fga/internal/pgtest"
-	"fga/internal/tools"
 )
 
 var now = time.Unix(1_800_000_000, 0).UTC()
@@ -20,11 +22,11 @@ var now = time.Unix(1_800_000_000, 0).UTC()
 func setup(t *testing.T) (*Store, *pgxpool.Pool, Approval) {
 	t.Helper()
 	pool := pgtest.Pool(t, catalog.Migrate)
-	pgtest.Invocations(t, pool, "inv-1")
 	s := New(pool, func() time.Time { return now })
-	a, err := s.Request(context.Background(), Approval{Tenant: "t-acme", Invocation: "inv-1", OperationDigest: "sha256:op-inv-1",
-		Summary: tools.Summary{Tool: "expense.submit", OperationDigest: "sha256:op-inv-1"}, RequestedBy: "user-42", Actor: "agent-7",
-		ExpiresAt: now.Add(time.Hour)})
+	a, err := s.Request(context.Background(), Approval{Tenant: "t-acme", Operation: "op-1", OperationDigest: "sha256:op-1",
+		Summary: opplan.Summary{Operation: "storage.object.delete-version", OperationDigest: "sha256:op-1", Action: "delete-version",
+			Targets: []opplan.Target{{Role: "object", Type: "storage.object", ID: "o-1", Version: "v-1"}}},
+		RequestedBy: "user-42", Actor: "agent-7", ExpiresAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,5 +107,21 @@ func TestConsumedOnce(t *testing.T) {
 	}
 	if got, _ := s.Get(ctx, "t-acme", a.ID); got.State != StateConsumed {
 		t.Errorf("state = %s, want %s", got.State, StateConsumed)
+	}
+}
+
+// TestNoToolDependency covers MOD-004 and the decoupling of approvals from
+// tool execution: the approval package links no executor package.
+func TestNoToolDependency(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", ".").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		for _, executor := range []string{"fga/internal/tools", "fga/internal/toolstore", "fga/internal/invocation", "fga/internal/reservation"} {
+			if dep == executor || strings.HasPrefix(dep, executor+"/") {
+				t.Errorf("approval imports %s", dep)
+			}
+		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,9 +18,22 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/catalog"
 	"fga/internal/strictjson"
 	"fga/internal/tools"
 )
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+// Migrate applies the core catalog migrations and then the executor's own
+// (feature executor). Roles without the executor never create these tables.
+func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	if err := catalog.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	return catalog.ApplyMigrations(ctx, pool, migrations, "migrations", "executor/")
+}
 
 // Errors returned by the tool-side catalog.
 var (

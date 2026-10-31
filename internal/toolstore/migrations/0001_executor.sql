@@ -1,6 +1,7 @@
--- Release R1-B: tools, agent keys, budgets, invocations, approvals and
--- reservations (specification 2.2, Part 2). As in 0001, every table is keyed
--- by tenant and references include the tenant.
+-- Optional R2 executor (feature executor): tools, agent keys, budgets,
+-- invocations and reservations (specification 2.5, Part 2). Applied only by
+-- roles that enable the executor, after the core catalog migrations. Every
+-- table is keyed by tenant and references include the tenant.
 
 -- API keys identify agents and approvers locally until identity providers
 -- are decided (D-04). Only the SHA-256 of a key is stored.
@@ -70,23 +71,6 @@ CREATE TABLE invocations (
     PRIMARY KEY (tenant, id),
     UNIQUE (tenant, idempotency_key),
     FOREIGN KEY (tenant, tool) REFERENCES tools (tenant, id)
-);
-
-CREATE TABLE approvals (
-    tenant           text        NOT NULL,
-    id               text        NOT NULL,
-    invocation       text        NOT NULL,
-    operation_digest text        NOT NULL,
-    summary          jsonb       NOT NULL,
-    requested_by     text        NOT NULL,
-    actor            text        NOT NULL,
-    state            text        NOT NULL,
-    approver         text        NOT NULL DEFAULT '',
-    expires_at       timestamptz NOT NULL,
-    decided_at       timestamptz,
-    consumed_at      timestamptz,
-    PRIMARY KEY (tenant, id),
-    FOREIGN KEY (tenant, invocation) REFERENCES invocations (tenant, id)
 );
 
 CREATE TABLE reservations (

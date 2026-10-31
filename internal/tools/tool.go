@@ -13,13 +13,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/strictjson"
 )
@@ -288,26 +291,20 @@ func OperationDigest(t Tool, a Args) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// Summary is what an approver sees. Every field is derived from the
-// registry and the canonical plan; the agent's note is kept apart and marked
-// unverified (APR-005).
-type Summary struct {
-	Tool            string            `json:"tool"`
-	Version         int               `json:"version"`
-	Description     string            `json:"description"`
-	Destination     string            `json:"destination"`
-	Endpoint        Endpoint          `json:"endpoint"`
-	Arguments       json.RawMessage   `json:"arguments"`
-	Resources       map[string]string `json:"resources"`
-	OperationDigest string            `json:"operation_digest"`
-	UnverifiedNote  string            `json:"unverified_agent_note,omitempty"`
-}
-
-// Summarize renders the approval summary for an invocation.
-func Summarize(t Tool, a Args, resources map[string]string, agentNote string) Summary {
-	return Summary{Tool: t.ID, Version: t.Version, Description: t.Description, Destination: t.Destination,
-		Endpoint: t.Endpoint, Arguments: a.Canonical(), Resources: resources, OperationDigest: OperationDigest(t, a),
-		UnverifiedNote: agentNote}
+// Summarize renders the approval summary of an invocation as a neutral
+// operation plan. Every field is derived from the registry and the
+// canonical arguments; the agent's note is kept apart and marked unverified
+// (APR-005). resources maps argument roles to the canonical resources they
+// were resolved to.
+func Summarize(t Tool, a Args, resources map[string]string, agentNote string) opplan.Summary {
+	s := opplan.Summary{Operation: "tool:" + t.ID, OperationDigest: OperationDigest(t, a), Action: "invoke",
+		Targets:     []opplan.Target{{Role: "tool", Type: "agent.tool", ID: t.ID, Version: strconv.Itoa(t.Version)}},
+		Destination: t.Destination, Details: a.Canonical(), UnverifiedNote: agentNote,
+		Changes: map[string]string{"endpoint": t.Endpoint.Method + " " + t.Endpoint.Path}}
+	for _, role := range slices.Sorted(maps.Keys(resources)) {
+		s.Targets = append(s.Targets, opplan.Target{Role: role, ID: resources[role]})
+	}
+	return s
 }
 
 // Destination is a registered downstream service. The connector reaches it

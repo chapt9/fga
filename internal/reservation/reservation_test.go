@@ -10,16 +10,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fga/internal/catalog"
 	"fga/internal/pgtest"
 	"fga/internal/tools"
+	"fga/internal/toolstore"
 )
 
 func eur(minor int64) tools.Money { return tools.Money{Currency: "EUR", Minor: minor} }
 
 func setup(t *testing.T, invocations ...string) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	pool := pgtest.Pool(t, catalog.Migrate)
+	pool := pgtest.Pool(t, toolstore.Migrate)
 	pgtest.Invocations(t, pool, invocations...)
 	return New(pool), pool
 }

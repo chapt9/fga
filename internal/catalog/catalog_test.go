@@ -187,3 +187,18 @@ func TestCapabilities(t *testing.T) {
 		t.Error("unregistered capability allowed")
 	}
 }
+
+// TestCoreMigrationsHaveNoExecutorTables: the executor's tables are created
+// only by roles that enable the executor (feature executor).
+func TestCoreMigrationsHaveNoExecutorTables(t *testing.T) {
+	_, pool := testStore(t)
+	for _, table := range []string{"tools", "invocations", "reservations", "budgets", "agent_keys", "destinations"} {
+		var exists bool
+		if err := pool.QueryRow(context.Background(), `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Errorf("core migrations created executor table %s", table)
+		}
+	}
+}

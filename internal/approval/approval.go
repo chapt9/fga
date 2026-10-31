@@ -1,7 +1,10 @@
-// Package approval stores approvals of prepared invocations in PostgreSQL
+// Package approval stores operation-bound approvals in PostgreSQL
 // (specification 2.5, APR-001 to APR-005). An approval is bound to one exact
-// operation digest, cannot be given by the requester or the acting agent,
-// expires, and is consumed exactly once at the dispatch checkpoint.
+// operation instance and digest, cannot be given by the requester or the
+// acting agent, expires, and is consumed exactly once, in the transaction of
+// the protected operation's checkpoint. It shows the approver a summary
+// rendered by the platform (opplan) and depends on no tool-execution code
+// (MOD-004).
 package approval
 
 import (
@@ -15,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fga/internal/tools"
+	"fga/internal/opplan"
 )
 
 // Errors returned by the store.
@@ -37,13 +40,15 @@ const (
 	StateConsumed State = "CONSUMED"
 )
 
-// Approval of one invocation.
+// Approval of one operation instance.
 type Approval struct {
-	Tenant          string
-	ID              string
-	Invocation      string
+	Tenant string
+	ID     string
+	// Operation is the operation instance the approval is for, such as a
+	// storage operation ID or an executor invocation ID.
+	Operation       string
 	OperationDigest string
-	Summary         tools.Summary
+	Summary         opplan.Summary
 	// RequestedBy is the represented subject (or the actor acting for
 	// itself); Actor is the executing agent. Neither may approve.
 	RequestedBy string
@@ -70,9 +75,9 @@ func (s *Store) Request(ctx context.Context, a Approval) (Approval, error) {
 		return Approval{}, err
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO approvals (tenant, id, invocation, operation_digest, summary, requested_by, actor, state, expires_at)
+		INSERT INTO approvals (tenant, id, operation, operation_digest, summary, requested_by, actor, state, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		a.Tenant, a.ID, a.Invocation, a.OperationDigest, summary, a.RequestedBy, a.Actor, string(a.State), a.ExpiresAt)
+		a.Tenant, a.ID, a.Operation, a.OperationDigest, summary, a.RequestedBy, a.Actor, string(a.State), a.ExpiresAt)
 	return a, err
 }
 
@@ -82,9 +87,9 @@ func (s *Store) Get(ctx context.Context, tenant, id string) (Approval, error) {
 	var summary []byte
 	var state string
 	err := s.pool.QueryRow(ctx, `
-		SELECT invocation, operation_digest, summary, requested_by, actor, state, approver, expires_at
+		SELECT operation, operation_digest, summary, requested_by, actor, state, approver, expires_at
 		  FROM approvals WHERE tenant = $1 AND id = $2`, tenant, id).
-		Scan(&a.Invocation, &a.OperationDigest, &summary, &a.RequestedBy, &a.Actor, &state, &a.Approver, &a.ExpiresAt)
+		Scan(&a.Operation, &a.OperationDigest, &summary, &a.RequestedBy, &a.Actor, &state, &a.Approver, &a.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, ErrNotFound
 	}
@@ -134,9 +139,9 @@ func (s *Store) Usable(ctx context.Context, tenant, id, operationDigest string) 
 	return ok, err
 }
 
-// ConsumeTx consumes an approval inside the caller's dispatch transaction,
-// so consumption and the invocation's ownership transition commit together
-// (APR-003, INV-002). Only one transaction can consume it.
+// ConsumeTx consumes an approval inside the caller's transaction, so
+// consumption and the protected operation's transition commit together
+// (APR-002, APR-003). Only one transaction can consume it.
 func ConsumeTx(ctx context.Context, tx pgx.Tx, tenant, id, operationDigest string, now time.Time) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE approvals SET state = 'CONSUMED', consumed_at = $4

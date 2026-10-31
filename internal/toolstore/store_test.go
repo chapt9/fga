@@ -8,14 +8,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fga/internal/catalog"
 	"fga/internal/pgtest"
 	"fga/internal/tools"
 )
 
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	pool := pgtest.Pool(t, catalog.Migrate)
+	pool := pgtest.Pool(t, Migrate)
 	pgtest.Exec(t, pool, `INSERT INTO identities VALUES ('t-acme','agent-7',12,false,'{agent}','{}')`)
 	return New(pool), pool
 }

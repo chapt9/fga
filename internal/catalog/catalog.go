@@ -84,24 +84,31 @@ func New(pool *pgxpool.Pool, outboxCapacity int) *Store {
 	return &Store{pool: pool, outboxCapacity: outboxCapacity}
 }
 
-// Migrate applies the embedded migrations that have not been applied yet,
-// in name order, each in its own transaction. Concurrent migrators are
+// Migrate applies the core catalog migrations that have not been applied
+// yet, in name order, each in its own transaction. Concurrent migrators are
 // serialized by an advisory lock.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	names, err := fs.Glob(migrations, "migrations/*.sql")
+	return ApplyMigrations(ctx, pool, migrations, "migrations", "")
+}
+
+// ApplyMigrations applies the *.sql files of dir in fsys in name order,
+// recording each under prefix + its path. An optional feature applies its
+// own migrations this way after Migrate.
+func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, dir, prefix string) error {
+	names, err := fs.Glob(fsys, dir+"/*.sql")
 	if err != nil {
 		return err
 	}
 	slices.Sort(names)
 	for _, name := range names {
-		if err := migrateOne(ctx, pool, name); err != nil {
-			return fmt.Errorf("catalog: migration %s: %w", name, err)
+		if err := migrateOne(ctx, pool, fsys, name, prefix+name); err != nil {
+			return fmt.Errorf("catalog: migration %s: %w", prefix+name, err)
 		}
 	}
 	return nil
 }
 
-func migrateOne(ctx context.Context, pool *pgxpool.Pool, name string) error {
+func migrateOne(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, path, name string) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -120,7 +127,7 @@ func migrateOne(ctx context.Context, pool *pgxpool.Pool, name string) error {
 	if done {
 		return tx.Commit(ctx)
 	}
-	sql, err := migrations.ReadFile(name)
+	sql, err := fs.ReadFile(fsys, path)
 	if err != nil {
 		return err
 	}
