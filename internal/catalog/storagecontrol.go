@@ -28,6 +28,9 @@ func (s *Store) EnsureTenant(ctx context.Context, tenant string) (cryptowire.UUI
 	if _, err := s.pool.Exec(ctx, `INSERT INTO tenants (name, id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`, tenant, id); err != nil {
 		return id, err
 	}
+	if err := ensureEpochRow(ctx, s.pool, tenant); err != nil {
+		return id, err
+	}
 	err := s.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE name = $1`, tenant).Scan(&id)
 	return id, err
 }
@@ -79,10 +82,21 @@ func (s *Store) PutIdentity(ctx context.Context, tenant, id string, roles []stri
 	if err != nil {
 		return err
 	}
+	if err := ensureEpochRow(ctx, s.pool, tenant); err != nil {
+		return err
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO identities (tenant, id, revision, disabled, roles, attributes, expires_at) VALUES ($1, $2, 1, false, $3, $4, $5)
 		ON CONFLICT (tenant, id) DO UPDATE SET roles = excluded.roles, attributes = excluded.attributes,
 		       expires_at = excluded.expires_at, revision = identities.revision + 1`, tenant, id, roles, a, expires)
+	return err
+}
+
+// ensureEpochRow gives a tenant its permanent epoch row (required epoch 0)
+// when it first appears, so the authority fence always has a row to lock
+// against an epoch raise (review finding 4).
+func ensureEpochRow(ctx context.Context, q Querier, tenant string) error {
+	_, err := q.Exec(ctx, `INSERT INTO tenant_epochs (tenant, required_epoch) VALUES ($1, 0) ON CONFLICT (tenant) DO NOTHING`, tenant)
 	return err
 }
 

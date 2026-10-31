@@ -302,10 +302,14 @@ func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string
 		return ErrIncarnation
 	}
 
-	// 2. Tenant epoch. A tenant without a row requires no epoch.
+	// 2. Tenant epoch. Every tenant has a permanent row; without one there
+	// is nothing to order an epoch raise against, so the fence refuses.
 	var required uint64
 	err := tx.QueryRow(ctx, `SELECT required_epoch FROM tenant_epochs WHERE tenant = $1 FOR SHARE`, b.Tenant).Scan(&required)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEpoch
+	}
+	if err != nil {
 		return fmt.Errorf("fence: tenant epoch: %w", err)
 	}
 	if required > b.PolicyEpoch {

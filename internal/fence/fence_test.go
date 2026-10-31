@@ -221,3 +221,56 @@ func TestCheckIsReadOnly(t *testing.T) {
 		t.Fatalf("Check after revocation = %v", err)
 	}
 }
+
+// TestFirstEpochRaiseIsOrdered is the regression test of review finding 4:
+// a tenant without an epoch row gave the fence nothing to lock, so a first
+// epoch raise could commit while an older decision's transition was inside
+// the fence. Every tenant now has a permanent row, the fence refuses a
+// tenant without one, and the first raise waits for the fence.
+func TestFirstEpochRaiseIsOrdered(t *testing.T) {
+	f, s, pool := setup(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM tenant_epochs WHERE tenant = 't-acme'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Run(ctx, binding(t, "d-0"), nil, effect("no-row")); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("fence for a tenant without an epoch row: %v, want %v", err, ErrEpoch)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_epochs VALUES ('t-acme', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	inside, release := make(chan struct{}), make(chan struct{})
+	fenceDone := make(chan error, 1)
+	go func() {
+		fenceDone <- f.Run(ctx, binding(t, "d-1"), nil, func(ctx context.Context, tx pgx.Tx) error {
+			close(inside)
+			<-release
+			return effect("admitted")(ctx, tx)
+		})
+	}()
+	<-inside
+	var raised atomic.Bool
+	raiseDone := make(chan error, 1)
+	go func() {
+		err := s.RaiseEpoch(ctx, "t-acme", 9)
+		raised.Store(true)
+		raiseDone <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if raised.Load() {
+		t.Fatal("the first epoch raise committed while the fence held the tenant's epoch")
+	}
+	close(release)
+	if err := <-fenceDone; err != nil {
+		t.Fatalf("admitted fence: %v", err)
+	}
+	if err := <-raiseDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Run(ctx, binding(t, "d-2"), nil, effect("after")); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("fence after the raise: %v, want %v", err, ErrEpoch)
+	}
+	if n := effects(t, pool); n != 1 {
+		t.Fatalf("effects = %d, want only the admitted one", n)
+	}
+}

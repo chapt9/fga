@@ -31,7 +31,7 @@ All fences and all authority changers acquire rows in this order. A transaction 
 | # | Rows | Lock | Checked against the record |
 |---|---|---|---|
 | 1 | `authority_state` (one row) | `FOR SHARE` | `admission_open` is true; `incarnation` equals the record's recovery incarnation |
-| 2 | `tenant_epochs` (the tenant's row) | `FOR SHARE` | `required_epoch` is not above the record's policy epoch |
+| 2 | `tenant_epochs` (the tenant's row) | `FOR SHARE` | The row exists (every tenant gets one, at required epoch 0, when it first appears; without it nothing orders a first epoch raise, so the fence refuses) and `required_epoch` is not above the record's policy epoch |
 | 3 | `identities`: actor, subject and every check principal, sorted by id | `FOR SHARE` | Same revision; not disabled; not expired |
 | 4 | `delegations`: every link of the chain, sorted by id | `FOR SHARE` | Same revision; not revoked; not expired |
 | 5 | `recipient_keys`: every recipient fingerprint, sorted | `FOR SHARE` | Same revision; status ACTIVE |
