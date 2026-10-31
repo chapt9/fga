@@ -2502,6 +2502,24 @@
         "core"
       ],
       "status": "scenario_only"
+    },
+    {
+      "id": "V-179",
+      "test": "T-16",
+      "requirements": [
+        "AVL-008"
+      ],
+      "given": [
+        "A backup is restored onto a catalog that keeps no record of how far the security journal reached",
+        "The journal at hand may lack a revocation made after the backup, and no operator has stated that it is complete"
+      ],
+      "expect": "DENY",
+      "note": "Nothing local shows the journal complete; admission stays closed until an explicit operator statement or an accepted loss.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
     }
   ]
 }

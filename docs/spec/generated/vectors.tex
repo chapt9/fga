@@ -165,6 +165,7 @@ V-123 & A client cancels while the primary waits for synchronous replication; Th
 V-124 & Same transaction; A WAL-generating synchronous barrier commit is acknowledged after the uncertain commit on the same fenced timeline, or qualified standby flush evidence covers that commit & \code{EXECUTED_ONCE} & \rr{AVL-004}\\
 \multicolumn{4}{@{}l}{\footnotesize R1-B; core}\\
 V-144$^{f}$ & Restore a backup predating recipient revocation; fresh delivery remains closed until current revocations are reconciled & \code{DENY} & \rr{AVL-008}\\
+V-179 & A backup is restored onto a catalog that keeps no record of how far the security journal reached; The journal at hand may lack a revocation made after the backup, and no operator has stated that it is complete\newline\textit{Nothing local shows the journal complete; admission stays closed until an explicit operator statement or an accepted loss.} & \code{DENY} & \rr{AVL-008}\\
 \midrule
 \multicolumn{4}{@{}l}{\textbf{T-20} (R1-A, R1-B, R1-C, R2, R3)}\\
 \multicolumn{4}{@{}l}{\footnotesize R1-A; core}\\

@@ -1,3 +1,19 @@
+Specification 2.6.2 document validation - 31 October 2026
+
+Version 2.6.2 changes AVL-008, the Part 1 resource type table (text.entry approve), adds
+case V-179 (T-16, scenario-only) and updates the version markers (ERRATA-2.6.1-to-2.6.2.md).
+For this revision:
+Structural checker: PASS, 289 requirements, 24 test families, 140 cases (one added).
+Checker regression tests: passed.
+Standalone source: expanded from main.tex, no unresolved local input directives.
+Tectonic standalone compilation: PASS, 111 pages; no overfull or underfull boxes, no
+undefined references. All 289 requirement markers present in the extracted PDF text.
+Pages 17 (resource type table), 29 (AVL-008) and 100 (review appendix, 2.6.2 section) were
+located in the extracted text; pages 29 and 100 were inspected as rendered images.
+The qualification-mode counts below were not rerun; V-179 is scenario-only.
+
+The validation of 2.6.1 follows.
+
 Specification 2.6.1 document validation - 31 October 2026
 
 Version 2.6.1 changes the Part 1 resource type table, SHR-001, the V-177 note and the

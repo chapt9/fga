@@ -10,7 +10,7 @@
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric}
 \usepackage{xurl}
 \usepackage[colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!45!black,citecolor=blue!45!black,pdfborder={0 0 0}]{hyperref}
-\hypersetup{hypertexnames=false,pdftitle={Object Storage and Fine-Grained Access Control: Specification 2.6.1},pdfauthor={Engineering design specification},pdfsubject={Storage-first Go platform with shared authorization; MCP as a subsequent service}}
+\hypersetup{hypertexnames=false,pdftitle={Object Storage and Fine-Grained Access Control: Specification 2.6.2},pdfauthor={Engineering design specification},pdfsubject={Storage-first Go platform with shared authorization; MCP as a subsequent service}}
 \definecolor{ink}{HTML}{163447}
 \definecolor{accent}{HTML}{187F86}
 \definecolor{pale}{HTML}{EEF4F6}
@@ -26,7 +26,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\color{ink}OBJECT STORAGE AND ACCESS CONTROL}
-\fancyhead[R]{\small Specification 2.6.1 (draft)}
+\fancyhead[R]{\small Specification 2.6.2 (draft)}
 \fancyfoot[L]{\small 31 October 2026}
 \fancyfoot[R]{\small\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
@@ -57,7 +57,7 @@
 \vspace{15mm}
 \begin{tabularx}{\textwidth}{@{}P{34mm}Y@{}}
 \toprule
-Version & 2.6.1 (revised draft), 31 October 2026. Supersedes 2.6, which it corrects only in the grant targets and grantable actions of share grants. Version 2.6 superseded 2.5 and added decision D-12: every payload is encrypted, by the platform under decision-bound keys by default or by the client in buckets that opt into client mode, and share grants let a user name a reader where policy honors them. Earlier changes are recorded in Appendix~\ref{app:review}.\\
+Version & 2.6.2 (revised draft), 31 October 2026. Supersedes 2.6.1, which it corrects in recovery onto a catalog without a journal record and in approvals for collection entries; 2.6.1 corrected the grant targets of 2.6. Version 2.6 superseded 2.5 and added decision D-12: every payload is encrypted, by the platform under decision-bound keys by default or by the client in buckets that opt into client mode, and share grants let a user name a reader where policy honors them. Earlier changes are recorded in Appendix~\ref{app:review}.\\
 Status & Specification and document checks only. Implementation, cryptographic interoperability and qualification remain open; scenario descriptions alone are not passing evidence.\\
 Structure & R1: encrypted object storage in server or client mode, fine-grained access, decision-bound key release, recipient envelopes, share grants and document/text units. R2: a separate MCP service, with compatible decrypting clients for client-mode content; optional client-side model/tool services. R3: S3 and optional custom replication. Requirements retain stable identifiers, phases and verification links.\\
 Core language & Go; one module; roles built from role-specific entrypoints.\\

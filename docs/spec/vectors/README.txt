@@ -1,4 +1,4 @@
-Specification 2.6.1 acceptance inputs
+Specification 2.6.2 acceptance inputs
 
 The catalogue separates scenario_only obligations from fixture_ready cases.
 A fixture is concrete input for an implementation test harness, not evidence that

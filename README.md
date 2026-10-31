@@ -1,6 +1,6 @@
 # fga: Fine-Grained Access Platform
 
-An implementation of the Fine-Grained Access Platform specification 2.6.1 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 added encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)), and 2.6.1 corrects which resources and actions a share grant can name; server mode is built (see Known gaps for KEK custody). `fga` is a placeholder name (decision D-11).
+An implementation of the Fine-Grained Access Platform specification 2.6.2 (draft), which is kept in [docs/spec](docs/spec) with its handoff, errata, test vectors and consistency check. Specification 2.6 added encryption modes (decision [D-12](docs/decisions/D-12-encryption-modes.md)), 2.6.1 corrected which resources and actions a share grant can name, and 2.6.2 how recovery reopens without a journal record and approvals for collection entries; server mode is built (see Known gaps for KEK custody). `fga` is a placeholder name (decision D-11).
 
 The policy engine and the object storage are our own code. MinIO and Cerbos are studied for ideas only (decisions D-01 to D-03 in [docs/decisions](docs/decisions)); the [mechanism matrix](docs/research/mechanism-matrix.md) records what was taken and what was rejected. Everything runs locally.
 
