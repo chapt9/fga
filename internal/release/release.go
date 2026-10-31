@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"fga/internal/labels"
 	"fga/internal/policy"
 	"fga/internal/policy/engine"
 	"fga/internal/policy/format"
@@ -303,7 +304,7 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 	m.record(digest, b.Epoch, StatePrepared, nil)
 
 	for _, s := range b.Sentinels {
-		got, err := evaluate(ctx, eng, digest, s)
+		got, err := evaluate(ctx, eng, digest, b.Info.LabelOrder, s)
 		if err != nil {
 			return nil, fmt.Errorf("release: sentinel %q: %w", s.Name, err)
 		}
@@ -315,9 +316,12 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 	return &Snapshot{Digest: digest, Epoch: b.Epoch, Info: b.Info, Engine: eng}, nil
 }
 
-func evaluate(ctx context.Context, eng *engine.Engine, digest string, s Sentinel) (policy.Effect, error) {
+// evaluate decides a sentinel as the decision role would, with the label
+// ranks the release's order gives.
+func evaluate(ctx context.Context, eng *engine.Engine, digest string, order []string, s Sentinel) (policy.Effect, error) {
 	req := s.Request
 	req.SnapshotDigest, req.Set = digest, s.Set
+	req.Principal, req.Resource = labels.Ranked(order, req.Principal, req.Resource)
 	if len(req.Actions) != 1 {
 		return policy.EffectUnknown, errors.New("a sentinel names exactly one action")
 	}
@@ -407,11 +411,11 @@ type Change struct {
 func EffectChanges(ctx context.Context, active, candidate *Snapshot, sentinels []Sentinel) ([]Change, error) {
 	var changes []Change
 	for _, s := range sentinels {
-		before, err := evaluate(ctx, active.Engine, active.Digest, s)
+		before, err := evaluate(ctx, active.Engine, active.Digest, active.Info.LabelOrder, s)
 		if err != nil {
 			return nil, err
 		}
-		after, err := evaluate(ctx, candidate.Engine, candidate.Digest, s)
+		after, err := evaluate(ctx, candidate.Engine, candidate.Digest, candidate.Info.LabelOrder, s)
 		if err != nil {
 			return nil, err
 		}

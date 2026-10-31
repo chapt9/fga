@@ -162,6 +162,19 @@ func New(pool *pgxpool.Pool, margin time.Duration, now func() time.Time) *Fence 
 // names the resources the operation changes; they are locked for update
 // rather than share. Any failure rolls everything back.
 func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	return f.RunAll(ctx, []Binding{b}, mutate, fn)
+}
+
+// RunAll is Run for an operation authorized by several decisions, such as
+// a document publication whose checks are split into batches (DEC-009).
+// Every decision's facts are checked together in the one lock order, and
+// every decision is consumed in the same transaction, so the operation
+// commits only if all of them still hold.
+func (f *Fence) RunAll(ctx context.Context, bs []Binding, mutate []string, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	b, err := merge(bs)
+	if err != nil {
+		return err
+	}
 	return pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
 		if err := f.check(ctx, tx, b, mutate, true); err != nil {
 			return err
@@ -180,9 +193,12 @@ func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx
 				return ErrApproval
 			}
 		}
-		if b.SingleUse {
+		for _, d := range bs {
+			if !d.SingleUse {
+				continue
+			}
 			tag, err := tx.Exec(ctx, `INSERT INTO consumed_decisions (decision_id, valid_until, incarnation) VALUES ($1, $2, $3)
-			                          ON CONFLICT DO NOTHING`, b.DecisionID, b.ValidUntil, b.Incarnation)
+			                          ON CONFLICT DO NOTHING`, d.DecisionID, d.ValidUntil, d.Incarnation)
 			if err != nil {
 				return err
 			}
@@ -192,6 +208,62 @@ func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx
 		}
 		return f.checkTime(b)
 	})
+}
+
+// merge combines bindings of one operation into the binding the fence
+// checks: same tenant and incarnation, the earliest expiry, the lowest
+// policy epoch, and the union of every bound fact, which must agree where
+// bindings share one. At most one approval may be bound.
+func merge(bs []Binding) (Binding, error) {
+	if len(bs) == 0 {
+		return Binding{}, errors.New("fence: no decision")
+	}
+	m := bs[0]
+	m.Identities, m.Delegations, m.Keys, m.Resources = nil, nil, nil, nil
+	ids, dels, keys := map[string]uint64{}, map[string]uint64{}, map[string]uint64{}
+	res := map[[2]string]Resource{}
+	add := func(into map[string]uint64, refs []Ref) error {
+		for _, r := range refs {
+			if old, ok := into[r.ID]; ok && old != r.Revision {
+				return fmt.Errorf("fence: %s is bound at two revisions", r.ID)
+			}
+			into[r.ID] = r.Revision
+		}
+		return nil
+	}
+	for i, b := range bs {
+		if b.Tenant != m.Tenant || b.Incarnation != m.Incarnation {
+			return Binding{}, errors.New("fence: decisions of one operation differ in tenant or incarnation")
+		}
+		if b.ValidUntil.Before(m.ValidUntil) {
+			m.ValidUntil = b.ValidUntil
+		}
+		m.PolicyEpoch = min(m.PolicyEpoch, b.PolicyEpoch)
+		if b.Approval != nil {
+			if i > 0 && m.Approval != nil {
+				return Binding{}, errors.New("fence: more than one approval is bound")
+			}
+			m.Approval = b.Approval
+		}
+		for _, err := range []error{add(ids, b.Identities), add(dels, b.Delegations), add(keys, b.Keys)} {
+			if err != nil {
+				return Binding{}, err
+			}
+		}
+		for _, r := range b.Resources {
+			k := [2]string{r.Type, r.ID}
+			if old, ok := res[k]; ok && old != r {
+				return Binding{}, fmt.Errorf("fence: %s %s is bound in two states", r.Type, r.ID)
+			}
+			res[k] = r
+		}
+	}
+	m.Identities, m.Delegations, m.Keys = sortedRefs(ids), sortedRefs(dels), sortedRefs(keys)
+	for _, r := range res {
+		m.Resources = append(m.Resources, r)
+	}
+	slices.SortFunc(m.Resources, func(x, y Resource) int { return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.ID, y.ID)) })
+	return m, nil
 }
 
 // Check rechecks b without a transition, holding its locks only for the

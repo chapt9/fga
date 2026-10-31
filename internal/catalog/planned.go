@@ -21,6 +21,8 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 	switch alias.Namespace {
 	case registry.PlannedObject:
 		return v.s.plannedObject(ctx, tenant, alias.Name)
+	case registry.PlannedDocumentVersion:
+		return v.s.plannedDocumentVersion(ctx, tenant, alias.Name)
 	case registry.PlannedEnvelope:
 		parts := strings.Split(alias.Name, "|")
 		if len(parts) != 3 || parts[2] == "" {
@@ -36,7 +38,7 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		if err != nil {
 			return registry.Resource{}, err
 		}
-		if object.Type != "storage.object" {
+		if object.Type != "storage.object" && object.Type != "document.text_unit" {
 			return registry.Resource{}, registry.ErrUnknownResource
 		}
 		var principal string
@@ -70,16 +72,20 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 }
 
 // plannedObject is the object an open upload intent for a new key will
-// publish, with the protected attributes assigned at begin (RES-009).
+// publish, or the unit a unit intent will publish (a document.text_unit),
+// with the protected attributes assigned at begin (RES-009).
 func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (registry.Resource, error) {
 	r := registry.Resource{Tenant: tenant, Type: "storage.object"}
 	var attrs []byte
-	var label, floor string
+	var label, floor, kind string
 	err := s.pool.QueryRow(ctx, `
-		SELECT i.object::text, i.planned_scope, i.planned_attributes, i.label, b.default_label
+		SELECT i.object::text, i.planned_scope, i.planned_attributes, i.label, b.default_label, i.kind
 		  FROM upload_intents i JOIN buckets b ON b.tenant = i.tenant AND b.id = i.bucket
 		 WHERE i.tenant = $1 AND i.id::text = $2 AND i.new_object AND i.state IN ('RESERVED', 'STAGED')`, tenant, intent).
-		Scan(&r.ID, &r.Scope, &attrs, &label, &floor)
+		Scan(&r.ID, &r.Scope, &attrs, &label, &floor, &kind)
+	if kind == "unit" {
+		r.Type = "document.text_unit"
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
@@ -95,4 +101,21 @@ func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (regis
 		r.Attributes["new_label"], r.Attributes["floor"] = label, floor
 	}
 	return r, nil
+}
+
+// plannedDocumentVersion is the document version an open document intent
+// will publish, with the attributes assigned at begin.
+func (s *Store) plannedDocumentVersion(ctx context.Context, tenant, intent string) (registry.Resource, error) {
+	r := registry.Resource{Tenant: tenant, Type: "document.version"}
+	var attrs []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT document_version::text, planned_scope, planned_attributes FROM document_intents
+		 WHERE tenant = $1 AND id::text = $2 AND state = 'RESERVED'`, tenant, intent).Scan(&r.ID, &r.Scope, &attrs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return registry.Resource{}, registry.ErrUnknownResource
+	}
+	if err != nil {
+		return registry.Resource{}, err
+	}
+	return r, json.Unmarshal(attrs, &r.Attributes)
 }

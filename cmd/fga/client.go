@@ -41,6 +41,7 @@ import (
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
+//	fga put-document   -bucket B -key K -in FILE [-to FP,...]   UTF-8 text, one unit per paragraph
 //	fga get            -bucket B -key K -out FILE [-version V]
 //	fga ls             -bucket B [-prefix P]
 //	fga rm             -bucket B -key K [-version V] [-approval A]
@@ -331,6 +332,25 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		fmt.Printf("published %s version %s etag %s\n", *key, p.Version, p.ETag)
+		return nil
+	case "put-document":
+		text, err := os.ReadFile(*in)
+		if err != nil {
+			return err
+		}
+		recipients := []crypto.Recipient{{Fingerprint: c.Recipient.Fingerprint(), KeyVersion: c.KeyVersion}}
+		for _, fp := range split(*to) {
+			d, err := cryptowire.ParseDigest(fp)
+			if err != nil {
+				return err
+			}
+			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
+		}
+		p, err := c.PutDocument(ctx, *bucket, *key, text, recipients)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("published document %s version %s: %d units, manifest %s\n", *key, p.DocumentVersion, p.Units, p.ManifestDigest)
 		return nil
 	case "finalize":
 		body, err := os.ReadFile(*request)

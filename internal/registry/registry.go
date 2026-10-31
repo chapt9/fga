@@ -179,6 +179,9 @@ const (
 	PlannedEnvelope = "planned.envelope"
 	// PlannedRecipient: "<principal>|<recipient fingerprint>".
 	PlannedRecipient = "planned.recipient"
+	// PlannedDocumentVersion: the document intent ID. A unit intent's
+	// object resolves under PlannedObject as a document.text_unit.
+	PlannedDocumentVersion = "planned.document-version"
 )
 
 // Planner resolves planned resources from authoritative state, never from

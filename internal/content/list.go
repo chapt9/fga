@@ -135,7 +135,7 @@ func (s *Service) candidates(ctx context.Context, tenant string, bucket cryptowi
 	rows, err := s.d.Catalog.Pool().Query(ctx, `
 		SELECT o.key, o.id, v.id, v.ciphertext_length, v.created_at
 		  FROM objects o JOIN object_versions v ON v.tenant = o.tenant AND v.id = o.current_version
-		 WHERE o.tenant = $1 AND o.bucket = $2 AND o.key > $3 AND starts_with(o.key, $4)
+		 WHERE o.tenant = $1 AND o.bucket = $2 AND o.kind = 'object' AND o.key > $3 AND starts_with(o.key, $4)
 		   AND v.state = 'LIVE' AND NOT v.delete_marker
 		 ORDER BY o.key LIMIT $5`, tenant, bucket, after, prefix, n)
 	if err != nil {

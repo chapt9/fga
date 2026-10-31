@@ -40,7 +40,8 @@ import (
 // executor's tables are not part of an R1 backup.
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases",
-	"recipient_keys", "signing_keys", "buckets", "objects", "object_versions", "upload_intents", "envelopes",
+	"recipient_keys", "signing_keys", "buckets", "objects", "object_versions", "document_versions", "document_units",
+	"document_intents", "upload_intents", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox",
 	"label_orders", "label_order_active", "label_proposals",
 }

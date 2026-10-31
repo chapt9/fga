@@ -75,7 +75,7 @@ func (s *Service) objectByKey(ctx context.Context, q catalog.Querier, tenant str
 	err := q.QueryRow(ctx, `
 		SELECT o.id, o.current_version, r.generation, r.metadata_revision, r.scope, r.attributes
 		  FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
-		 WHERE o.tenant = $1 AND o.bucket = $2 AND o.key = $3`, tenant, b, key).
+		 WHERE o.tenant = $1 AND o.bucket = $2 AND o.kind = 'object' AND o.key = $3`, tenant, b, key).
 		Scan(&o.ID, &o.Current, &o.Generation, &o.Meta, &o.Scope, &o.Attributes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound

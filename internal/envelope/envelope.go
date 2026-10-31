@@ -90,16 +90,24 @@ type EnvelopeIn struct {
 // PublishRecipientEnvelope both use it, inside their fences.
 func InsertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
 	ctxv cryptowire.EnvelopeContext, keyVersion uint64, e EnvelopeIn, digest cryptowire.Digest, now time.Time) error {
+	return InsertUnitEnvelope(ctx, tx, tenant, scope, objectAttrs, id, object, version, nil, ctxv, keyVersion, e, digest, now)
+}
+
+// InsertUnitEnvelope is InsertEnvelope for a unit envelope, which belongs
+// to one document version (profile 2); documentVersion is nil for an
+// ordinary object.
+func InsertUnitEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
+	documentVersion *cryptowire.UUID, ctxv cryptowire.EnvelopeContext, keyVersion uint64, e EnvelopeIn, digest cryptowire.Digest, now time.Time) error {
 	var principal string
 	if err := tx.QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`, tenant, ctxv.Recipient.String()).Scan(&principal); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO envelopes (tenant, id, object, version, recipient, key_version, generation, context, ciphertext, signature, signer, digest,
-		                       status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE', $13)`,
+		                       status, created_at, document_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE', $13, $14)`,
 		tenant, id, object, version, ctxv.Recipient.String(), int64(keyVersion), int64(ctxv.Generation), e.Context, e.Ciphertext, e.Signature,
-		ctxv.Sharer.String(), digest.String(), now); err != nil {
+		ctxv.Sharer.String(), digest.String(), now, documentVersion); err != nil {
 		if isUnique(err) {
 			return fmt.Errorf("%w: an active envelope exists for this recipient", ErrConflict)
 		}
@@ -107,6 +115,9 @@ func InsertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, object
 	}
 	attrs := map[string]any{"object": object.String(), "version": version.String(), "recipient": ctxv.Recipient.String(),
 		"recipient_principal": principal, "status": "ACTIVE"}
+	if documentVersion != nil {
+		attrs["document_version"] = documentVersion.String()
+	}
 	for _, k := range []string{"owner", "project", "label", "bucket"} {
 		if v, ok := objectAttrs[k]; ok {
 			attrs[k] = v

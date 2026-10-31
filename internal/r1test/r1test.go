@@ -55,6 +55,8 @@ var LabelOrder = []string{"public", "internal", "confidential", "restricted"}
 //     nothing is allowed without a rule (ruling 7).
 //   - An owner may set or raise its object's label, and lower it only with
 //     an approval; members may propose labels; project leads approve.
+//   - A document's owner may use its versions and units; members may read
+//     units of their projects below restricted and the versions' units.
 //   - The ceiling forbids receive-key for a key that is not active.
 var Policies = map[string]string{
 	"buckets.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
@@ -87,6 +89,16 @@ var Policies = map[string]string{
 	"signing-keys.json": `{"format":"fga.policy/v1","set":"business","resource":"crypto.signing-key","scope":"","rules":[
   {"id":"members-verify-signers","effect":"allow","actions":["discover"],"roles":["member"]},
   {"id":"own-signing-key","effect":"allow","actions":["discover"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}`,
+	"documents.json": `{"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
+	  {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","share","export"],"roles":["*"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"members-read-versions","effect":"allow","actions":["read-units","discover"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
+	"units.json": `{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+	  {"id":"owner-units","effect":"allow","actions":["read","share","label","export-key"],"roles":["*"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"members-read-units-below-restricted","effect":"allow","actions":["read"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects && resource.attributes.label_rank < 3"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
 	   "when":"resource.attributes.status != \"ACTIVE\""}]}`,
@@ -98,6 +110,8 @@ var UserActions = map[string][]string{
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
 		"label", "relabel", "propose-label", "approve"},
 	"crypto.envelope":    {"create", "release", "retire"},
+	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
+	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
 }

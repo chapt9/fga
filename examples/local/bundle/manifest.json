@@ -1,7 +1,7 @@
 {
   "epoch": 0,
   "audience": "fga-decision",
-  "business": ["buckets.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json"],
+  "business": ["buckets.json", "documents.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json", "units.json"],
   "ceiling": ["ceiling-recipients.json"],
   "cost_limit": 10000,
   "label_order": ["public", "internal", "confidential", "restricted"],
@@ -41,6 +41,14 @@
     {"name": "a project lead approves", "set": "business",
      "principal": {"id": "user-5", "roles": ["member", "lead"], "attributes": {"projects": ["p1"]}},
      "resource": {"type": "storage.object", "id": "obj-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9"}},
-     "action": "approve", "want": "allow"}
+     "action": "approve", "want": "allow"},
+    {"name": "a member reads an internal unit of their project", "set": "business",
+     "principal": {"id": "user-42", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "document.text_unit", "id": "u-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9", "label": "internal"}},
+     "action": "read", "want": "allow"},
+    {"name": "a member does not read a restricted unit", "set": "business",
+     "principal": {"id": "user-42", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "document.text_unit", "id": "u-2", "scope": "", "attributes": {"project": "p1", "owner": "user-9", "label": "restricted"}},
+     "action": "read", "want": "deny"}
   ]
 }

@@ -1,0 +1,5 @@
+{"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
+  {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","share","export"],"roles":["*"],
+   "when":"resource.attributes.owner == principal.id"},
+  {"id":"members-read-versions","effect":"allow","actions":["read-units","discover"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"}]}

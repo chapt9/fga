@@ -13,7 +13,7 @@ Status: design record, 31 October 2026, updated with the implementation of R1-C 
   - `new_label_rank` and `floor_rank` when the resource carries `new_label` and `floor` (below);
   - `principal.attributes.clearance_rank` when the principal's `clearance` attribute is in the order. A principal without a known clearance has no `clearance_rank`, so a condition on it errors and denies (POL-005).
 
-  Stored attributes with these names are dropped first, so a policy only ever sees computed ranks. With no order (generation 0), no ranks are added.
+  Stored attributes with these names are dropped first, so a policy only ever sees computed ranks. With no order (generation 0), no ranks are added. A release's sentinels are evaluated with the same ranks (`labels.Ranked`), so they test what the decision role decides.
 - *The enforcing roles* need the order to tell a raise from a lowering and to apply the floor. On activation, the decision role publishes the release's order to the catalog (`label_orders`, `label_order_active`); an order never changes within its generation. The storage role reads it. Inside the fence, it checks that the active generation equals the generation the signed decision binds (`context_revisions.label_order_generation`); otherwise the operation fails with a conflict.
 
 **Proposed changes.** A label change is decided on the namespace `change.label`, named `<resource ID>|<new label>`. It resolves to the existing object with its current binding and attributes, plus:

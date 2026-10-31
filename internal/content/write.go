@@ -72,6 +72,12 @@ type Intent struct {
 	principal        string
 	result           []byte
 	label            string
+	// A unit intent (kind "unit") belongs to a document intent; its upload
+	// is authorized like its document's.
+	kind      string
+	docIntent *cryptowire.UUID
+	docNew    bool
+	docObject cryptowire.UUID
 }
 
 // ValidKey reports whether key is a valid object key: 1 to 1024 bytes of
@@ -185,6 +191,12 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 // intentChecks are the checks that authorize an intent's upload: create on
 // the bucket for a new key, new-version on the object otherwise.
 func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
+	if in.kind == "unit" {
+		if in.docNew {
+			return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
+		}
+		return version, []check{{id: "object", role: registry.RoleObject, action: "new-version", ref: canonical("storage.object", in.docObject.String())}}
+	}
 	if in.newObject {
 		return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
 	}
@@ -220,8 +232,10 @@ func (s *Service) intent(ctx context.Context, q interface {
 	var sum *string
 	sql := `SELECT i.id, t.id, i.object, i.version, i.crypto_version, i.blob, i.attempt, i.expires_at, i.state, i.new_object, i.bucket,
 	               i.key, i.expected_generation, i.if_match, i.if_none_match, i.planned_scope, i.planned_attributes, i.principal,
-	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label
+	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label,
+	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object)
 	          FROM upload_intents i JOIN tenants t ON t.name = i.tenant
+	          LEFT JOIN document_intents d ON d.tenant = i.tenant AND d.id = i.document_intent
 	         WHERE i.tenant = $1 AND i.id = $2 AND i.principal = $3`
 	if lock {
 		sql += ` FOR UPDATE OF i`
@@ -229,7 +243,8 @@ func (s *Service) intent(ctx context.Context, q interface {
 	var result string
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Object, &in.LogicalVersion, &in.CryptoVersion,
 		&in.Blob, &in.Attempt, &in.ExpiresAt, &in.state, &in.newObject, &in.bucket, &in.key, &in.expectedGen, &in.ifMatch, &in.ifNoneMatch,
-		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label)
+		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label,
+		&in.kind, &in.docIntent, &in.docNew, &in.docObject)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -368,6 +383,9 @@ func (s *Service) Finalize(ctx context.Context, c Caller, intentID cryptowire.UU
 	if err != nil {
 		return Published{}, err
 	}
+	if in.kind != "object" {
+		return Published{}, ErrNotFound
+	}
 	if in.state == "COMMITTED" {
 		var p Published
 		if err := json.Unmarshal(in.result, &p); err != nil {
@@ -420,6 +438,10 @@ func (s *Service) PreparePublish(ctx context.Context, c Caller, intentID cryptow
 }
 
 func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r FinalizeRequest) (Prepared, error) {
+	if in.kind != "object" {
+		// A unit is published only with its document.
+		return Prepared{}, ErrNotFound
+	}
 	if in.state != "STAGED" {
 		return Prepared{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
 	}

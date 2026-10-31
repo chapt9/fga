@@ -1,5 +1,6 @@
 #!/bin/bash
-# Smoke test of the R1-B roles, with R1-C labels and approvals, on one host
+# Smoke test of the R1-B roles, with R1-C labels, approvals and document
+# publication, on one host
 # (development profile): builds the binaries, creates a throwaway database,
 # starts fga-decision, fga-keys and fga-storage on loopback, and drives them
 # with fga and fga-admin.
@@ -109,6 +110,17 @@ as alice; if $B/fga label -bucket reports -key q3/report.bin -label internal -ap
 echo "approval used twice: $(cat err.txt)"
 as bob;   check $B/fga propose-label -bucket reports -key q3/report.bin -label public -classifier smoke-classifier
 as bob;   $B/fga get -bucket reports -key q3/report.bin -out bob.out && cmp plain.bin bob.out && echo "bob still reads after the label changes"
+
+# Documents (R1-C): the client splits text into paragraph units, encrypts
+# each with its own key and publishes them with a signed manifest at once.
+printf 'First paragraph.\n\nSecond paragraph, with a line\nbreak.\n\nThird paragraph.\n' > notes.txt
+as alice; check $B/fga put-document -bucket reports -key q3/notes.md -in notes.txt -to $BOBFP
+UNITS=$(psql "$URL" -tAc "SELECT count(*) FROM document_units u JOIN document_versions d ON d.id = u.document_version WHERE d.state = 'LIVE'")
+ENVS=$(psql "$URL" -tAc "SELECT count(*) FROM envelopes WHERE document_version IS NOT NULL")
+[ "$UNITS" = 3 ] && [ "$ENVS" = 6 ] || { echo "SMOKE FAILED: $UNITS units, $ENVS unit envelopes"; exit 1; }
+echo "document published: $UNITS units, $ENVS unit envelopes"
+as bob; if $B/fga get -bucket reports -key q3/notes.md -out x.out 2>err.txt; then echo "UNEXPECTED: a document read through the object API"; exit 1; fi
+echo "object API on a document key: $(cat err.txt)"
 
 
 $ADMIN audit export -dir audit

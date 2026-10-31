@@ -41,6 +41,19 @@ const (
 	// approval's target.
 	OpApproveObject = "storage.object.approve"
 	OpApproveBucket = "storage.bucket.approve"
+	// Documents (DOC-001 to DOC-004). A publication's checks are split
+	// into batches of at most 50 (DEC-009): the document itself, explicit
+	// unit labels, reused units, the document version per recipient, and
+	// each unit per recipient. The fence admits all of them together.
+	OpDocBeginCreate    = "document.begin-create"
+	OpDocBeginVersion   = "document.begin-version"
+	OpDocPublishCreate  = "document.publish-create"
+	OpDocPublishVersion = "document.publish-version"
+	OpDocLabelUnits     = "document.label-units"
+	OpDocReuseUnits     = "document.reuse-units"
+	OpDocShareVersion   = "document.share-version"
+	OpDocShareUnits     = "document.share-units"
+	OpDocDiscover       = "document.version.discover"
 )
 
 // Check roles shared by several operations.
@@ -55,6 +68,9 @@ const (
 	RoleRecipientRead = "recipient-read"
 	RoleRecipientKey  = "recipient-key"
 	RoleLabel         = "label"
+	RoleDocument      = "document"
+	RoleVersion       = "version"
+	RoleUnit          = "unit"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -122,6 +138,23 @@ func r1Operations() []Operation {
 		}, envelopeChecks(true)...)},
 		one(OpApproveObject, RoleObject, "storage.object", "approve"),
 		one(OpApproveBucket, RoleBucket, "storage.bucket", "approve"),
+		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
+		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
+		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),
+		one(OpDocPublishVersion, RoleDocument, "storage.object", "new-version"),
+		{Name: OpDocLabelUnits, Checks: []CheckSpec{{Role: RoleLabel, ResourceType: "document.text_unit", Action: "label", Repeated: true}}},
+		{Name: OpDocReuseUnits, Checks: []CheckSpec{{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true}}},
+		{Name: OpDocShareVersion, Checks: []CheckSpec{
+			{Role: RoleShare, ResourceType: "document.version", Action: "share", Repeated: true},
+			{Role: RoleRecipientRead, ResourceType: "document.version", Action: "read-units", Kind: KindRecipientEligibility, Repeated: true},
+		}},
+		{Name: OpDocShareUnits, Checks: []CheckSpec{
+			{Role: RoleShare, ResourceType: "document.text_unit", Action: "share", Repeated: true},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create", Repeated: true},
+			{Role: RoleRecipientRead, ResourceType: "document.text_unit", Action: "read", Kind: KindRecipientEligibility, Repeated: true},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},
+		}},
+		one(OpDocDiscover, RoleVersion, "document.version", "discover"),
 	}
 }
 

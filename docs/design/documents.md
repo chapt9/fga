@@ -1,6 +1,6 @@
 # Documents and text units (DOC-001 to DOC-008, CNT-003, DSC-001 to DSC-005, SRH-001 to SRH-004)
 
-Status: design record, 31 October 2026. Our own design; no upstream mapping. Default deny (ruling 7) applies to every operation below.
+Status: design record, 31 October 2026. Our own design; no upstream mapping. Default deny (ruling 7) applies to every operation below. Publication of text units is implemented (R1-C step 3, see "Implementation" below). The original file, disclosure, export, search and text entries follow in steps 4 and 6.
 
 ## Model
 
@@ -58,3 +58,54 @@ Search filters documents by permitted catalog metadata only: bucket, key prefix,
 ## Text entries (DOC-005)
 
 A text collection or conversation is a document whose units have type `text.entry` (read, use-in-model, update). An update is a new document version that replaces or appends entries; there is no separate transcript store.
+
+## Implementation (step 3)
+
+**Catalog.**
+- `objects.kind` is `object`, `document` or `unit`.
+  - Keys are unique among objects and documents only. A unit has an empty key and is reached only through a document version.
+  - The object API, listings and sharing select `kind = 'object'`, so a document key is invisible to them. An object upload over a document key, and a document over an object key, conflict.
+- A document is a `storage.object` resource with `kind: document`. Its head is `objects.current_document_version`, which is deferrable like the object head so that restore can load it.
+- `document_versions`, `document_units` (position, unit version, document-specific descriptor) and `envelopes.document_version` hold the rest. Envelope uniqueness includes the document version, so a reused unit gets envelopes of its own per document version (V-152).
+
+**Intents.** `document_intents` reserves the document version and records the unit plan per position. Each new unit gets an `upload_intents` row of kind `unit`, which the client stages with the ordinary ciphertext route. Staging needs the document's right (`create-object` on the bucket, or `new-version` on the document), decided fresh and consumed in the fence like any upload. Object finalize refuses unit intents.
+
+**Decisions.** Finalize verifies:
+- the manifest's signature by an active signing key of the caller, and that it names exactly the intent's document version and units in order;
+- each unit's staged receipt (or, for a reused unit, its LIVE version);
+- each unit descriptor, signed by the same key and bound to the manifest digest;
+- each profile-2 envelope, with generation 1, distinct recipients and the recipient's current key version.
+
+It then asks for these registered operations, packing check groups into batches of at most 50 checks without splitting a group:
+
+| Operation | Checks |
+|---|---|
+| `document.publish-create` or `document.publish-version` | `create-object` on the bucket or `new-version` on the document |
+| `document.label-units` | `label` on each new unit with an explicit label |
+| `document.reuse-units` | `read` on each reused unit |
+| `document.share-version` | Per recipient: `share` on the planned document version, and the recipient's `read-units` on it |
+| `document.share-units` | Per unit and recipient: `share` on the unit, `create` on the planned envelope, the recipient's `read` on the unit and `receive-key` on its key |
+
+**Commit.** The fence admits all batches together (`fence.RunAll`): every decision's facts are checked in one lock order and every decision is consumed in the same transaction. The commit then:
+- creates or advances the document;
+- inserts the document version, the new units (objects, resources and LIVE versions) and the membership;
+- inserts the envelopes and moves the head;
+- consumes the intents;
+- checks that reused unit versions are still LIVE.
+
+One `DOCUMENT_PUBLISHED` audit event names the document, the version and every unit version. Envelopes are not listed in it individually.
+
+**Labels.**
+- A new unit takes the document's label, or an explicit label in the order and not below the bucket's floor (checked with `label`).
+- A reused unit keeps its label.
+- A new document takes the bucket's default.
+- The decision and release sentinels see the computed ranks, so a policy can keep restricted units from a recipient. A document with such a unit cannot be published to that recipient at all (V-063).
+
+**Not yet.**
+- The encrypted original file (step 4, with `raw-read`).
+- Approvals for document publication: no plan is sent, so `NEEDS_APPROVAL` there is a denial.
+- Withdrawing documents or units. Reclamation already refuses to remove a unit version that a LIVE document version references (V-064).
+
+**Client.** `crypto.SplitText` normalizes to NFC and splits at blank lines (`fga.text/nfc-paragraphs-v1`, at most 64 MiB and 1,000 units). Each unit is encrypted with its own keyset (`crypto.EncryptUnit`). `crypto.SealDocument` signs the manifest, the descriptors and the envelopes. `crypto.DecryptUnit` verifies one unit from its descriptor without the manifest. `client.PutDocument` and `fga put-document` run the whole flow.
+
+**API.** `POST /v1/buckets/{bucket}/documents` (begin), then `PUT /v1/uploads/{unit intent}/ciphertext` per new unit, then `POST /v1/document-uploads/{intent}/finalize`. The finalize body may be up to 48 MiB.

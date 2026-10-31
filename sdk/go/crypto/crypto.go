@@ -258,48 +258,9 @@ func Encrypt(dst io.Writer, src io.Reader, p Params, recipients []Recipient, sig
 		pubs[i] = pub
 	}
 
-	params, err := payloadParameters()
-	if err != nil {
-		return Sealed{}, err
-	}
-	km := keyset.NewManager()
-	id, err := km.AddNewKeyFromParameters(params)
-	if err != nil {
-		return Sealed{}, err
-	}
-	if err := km.SetPrimary(id); err != nil {
-		return Sealed{}, err
-	}
-	handle, err := km.Handle()
-	if err != nil {
-		return Sealed{}, err
-	}
-	aead, err := streamingaead.New(handle)
-	if err != nil {
-		return Sealed{}, err
-	}
 	aad := cryptowire.PayloadAAD(p.Tenant, p.Object, p.CryptoVersion, cryptowire.Suite1, cryptowire.Format1)
-	counted := &digestWriter{w: dst, h: sha256.New()}
-	enc, err := aead.NewEncryptingWriter(counted, aad)
-	if err != nil {
-		return Sealed{}, err
-	}
-	if _, err := io.Copy(enc, src); err != nil {
-		return Sealed{}, err
-	}
-	if err := enc.Close(); err != nil {
-		return Sealed{}, err
-	}
 	var sealed Sealed
-	copy(sealed.CiphertextSHA256[:], counted.h.Sum(nil))
-	sealed.CiphertextLength = counted.n
-
-	var ks bytes.Buffer
-	if err := insecurecleartextkeyset.Write(handle, keyset.NewBinaryWriter(&ks)); err != nil {
-		return Sealed{}, err
-	}
-	defer clear(ks.Bytes())
-	pkg, err := cryptowire.EncodeKeyPackage(aad, ks.Bytes())
+	pkg, err := seal(dst, src, aad, &sealed.CiphertextSHA256, &sealed.CiphertextLength)
 	if err != nil {
 		return Sealed{}, err
 	}
@@ -328,6 +289,51 @@ func Encrypt(dst io.Writer, src io.Reader, p Params, recipients []Recipient, sig
 		return Sealed{}, err
 	}
 	return sealed, nil
+}
+
+// seal encrypts src under a fresh single-key keyset bound to aad, writes
+// the ciphertext to dst, records its digest and length, and returns the
+// key package. The caller clears the package after use.
+func seal(dst io.Writer, src io.Reader, aad []byte, sum *cryptowire.Digest, length *uint64) ([]byte, error) {
+	params, err := payloadParameters()
+	if err != nil {
+		return nil, err
+	}
+	km := keyset.NewManager()
+	id, err := km.AddNewKeyFromParameters(params)
+	if err != nil {
+		return nil, err
+	}
+	if err := km.SetPrimary(id); err != nil {
+		return nil, err
+	}
+	handle, err := km.Handle()
+	if err != nil {
+		return nil, err
+	}
+	aead, err := streamingaead.New(handle)
+	if err != nil {
+		return nil, err
+	}
+	counted := &digestWriter{w: dst, h: sha256.New()}
+	enc, err := aead.NewEncryptingWriter(counted, aad)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(enc, src); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	copy(sum[:], counted.h.Sum(nil))
+	*length = counted.n
+	var ks bytes.Buffer
+	if err := insecurecleartextkeyset.Write(handle, keyset.NewBinaryWriter(&ks)); err != nil {
+		return nil, err
+	}
+	defer clear(ks.Bytes())
+	return cryptowire.EncodeKeyPackage(aad, ks.Bytes())
 }
 
 // wrap encrypts pkg to one recipient under ctx and signs the result.
@@ -411,7 +417,7 @@ func Decrypt(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *Recipien
 	if err != nil {
 		return err
 	}
-	if err := checkCiphertext(ciphertext, desc); err != nil {
+	if err := checkCiphertext(ciphertext, desc.CiphertextSHA256, desc.CiphertextLength); err != nil {
 		return err
 	}
 	if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, pkg.Envelope.Signature,
@@ -425,11 +431,17 @@ func Decrypt(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *Recipien
 	if !contextMatches(ctx, desc) || ctx.Recipient != key.fingerprint {
 		return ErrBinding
 	}
+	return open(dst, ciphertext, pkg.Envelope, ctx, key)
+}
+
+// open unwraps an envelope whose context was checked and decrypts the
+// complete ciphertext with its single-key keyset (KEY-006).
+func open(dst io.Writer, ciphertext io.ReadSeeker, env Envelope, ctx cryptowire.EnvelopeContext, key *RecipientKey) error {
 	dec, err := hybrid.NewHybridDecrypt(key.handle)
 	if err != nil {
 		return err
 	}
-	keyPackage, err := dec.Decrypt(pkg.Envelope.Ciphertext, cryptowire.HPKEInfo(pkg.Envelope.Context))
+	keyPackage, err := dec.Decrypt(env.Ciphertext, cryptowire.HPKEInfo(env.Context))
 	if err != nil {
 		return ErrBinding
 	}
@@ -458,19 +470,19 @@ func Decrypt(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *Recipien
 }
 
 // checkCiphertext reads the complete ciphertext once and compares it with
-// the signed descriptor.
-func checkCiphertext(ciphertext io.ReadSeeker, desc cryptowire.Descriptor) error {
+// the digest and length of a signed descriptor.
+func checkCiphertext(ciphertext io.ReadSeeker, sum string, length uint64) error {
 	if _, err := ciphertext.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(ciphertext, int64(desc.CiphertextLength)+1))
+	n, err := io.Copy(h, io.LimitReader(ciphertext, int64(length)+1))
 	if err != nil {
 		return err
 	}
 	var got cryptowire.Digest
 	copy(got[:], h.Sum(nil))
-	if uint64(n) != desc.CiphertextLength || got.String() != desc.CiphertextSHA256 {
+	if uint64(n) != length || got.String() != sum {
 		return ErrIntegrity
 	}
 	return nil

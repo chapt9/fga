@@ -71,6 +71,21 @@ type (
 	approvalDecisionBody struct {
 		Decision string `json:"decision"`
 	}
+	documentBeginBody struct {
+		Key            string                     `json:"key"`
+		IdempotencyKey string                     `json:"idempotency_key"`
+		Units          []content.DocumentUnitSpec `json:"units"`
+	}
+	unitFinalBody struct {
+		Descriptor          []byte                 `json:"descriptor"`
+		DescriptorSignature string                 `json:"descriptor_signature"`
+		Envelopes           []httpapi.EnvelopeBody `json:"envelopes"`
+	}
+	documentFinalizeBody struct {
+		Manifest          []byte          `json:"manifest"`
+		ManifestSignature string          `json:"manifest_signature"`
+		Units             []unitFinalBody `json:"units"`
+	}
 	approvalsBody struct {
 		Approvals []content.ApprovalView `json:"approvals"`
 		Next      string                 `json:"next,omitempty"`
@@ -346,6 +361,43 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, v)
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/documents", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var b documentBeginBody
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		in, err := svc.BeginDocument(r.Context(), c, content.DocumentBeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
+			IdempotencyKey: b.IdempotencyKey, Units: b.Units})
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusCreated, in)
+	}))
+	mux.HandleFunc("POST /v1/document-uploads/{intent}/finalize", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		if _, err := cryptowire.ParseUUID(r.PathValue("intent")); err != nil {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		var b documentFinalizeBody
+		if !httpapi.DecodeJSONLimit(w, r, &b, httpapi.MaxDocumentJSONBody) {
+			return
+		}
+		req := content.DocumentFinalizeRequest{Manifest: b.Manifest, ManifestSignature: b.ManifestSignature}
+		for _, u := range b.Units {
+			uf := content.UnitFinal{Descriptor: u.Descriptor, DescriptorSignature: u.DescriptorSignature}
+			for _, e := range u.Envelopes {
+				uf.Envelopes = append(uf.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
+			}
+			req.Units = append(req.Units, uf)
+		}
+		p, err := svc.FinalizeDocument(r.Context(), c, r.PathValue("intent"), req)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, p)
 	}))
 	return mux
 }

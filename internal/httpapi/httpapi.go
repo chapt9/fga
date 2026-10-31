@@ -101,9 +101,19 @@ func Authed(tokens TokenVerifier, audience string, h func(http.ResponseWriter, *
 	}
 }
 
+// MaxDocumentJSONBody bounds a document finalize request: up to 1,000
+// units, each with its descriptor and up to 16 envelopes, plus the
+// manifest.
+const MaxDocumentJSONBody = 48 << 20
+
 // DecodeJSON reads a bounded, strict JSON body into v.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxJSONBody))
+	return DecodeJSONLimit(w, r, v, MaxJSONBody)
+}
+
+// DecodeJSONLimit is DecodeJSON with another bound.
+func DecodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		WriteError(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
 		return false

@@ -56,6 +56,17 @@ func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now tim
 			if state != "WITHDRAWN" {
 				return errSkip
 			}
+			// A unit version a LIVE document version references keeps its
+			// ciphertext (DOC-002, V-064).
+			var referenced bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM document_units u JOIN document_versions d ON d.tenant = u.tenant AND d.id = u.document_version
+			                                            WHERE u.tenant = $1 AND u.unit_version = $2 AND d.state = 'LIVE' FOR SHARE OF d)`,
+				it.tenant, it.version).Scan(&referenced); err != nil {
+				return err
+			}
+			if referenced {
+				return errSkip
+			}
 			if err := blobs.Remove(blob.Ref{Tenant: it.tenantID, Blob: it.blob}); err != nil {
 				return err
 			}

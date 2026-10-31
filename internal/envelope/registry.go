@@ -335,7 +335,7 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 		  JOIN object_versions v ON v.tenant = o.tenant AND v.object = o.id
 		  JOIN tenants t ON t.name = o.tenant
 		  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
-		 WHERE o.tenant = $1 AND b.name = $2 AND o.key = $3 AND v.id::text = $4`, c.Tenant, bucketName, key, versionID).
+		 WHERE o.tenant = $1 AND b.name = $2 AND o.kind = 'object' AND o.key = $3 AND v.id::text = $4`, c.Tenant, bucketName, key, versionID).
 		Scan(&objectID, &cryptoVersion, &tenantID, &vstate, &marker, &sum, &length, &scope, &attrs)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && (vstate != "LIVE" || marker) {
 		return EnvelopeRef{}, ErrNotFound

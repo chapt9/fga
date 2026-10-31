@@ -13,9 +13,10 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 - **R1-C:** in progress. Built so far:
   - default deny for every user action, key lookups included (ruling 7);
   - labels on storage objects (label order, ranks, label, relabel, advisory proposals);
-  - approvals of storage operations.
+  - approvals of storage operations;
+  - document publication: client-side splitting into separately encrypted text units, signed manifest and unit descriptors (wire profile 2), batched decisions admitted together by the fence.
 
-  Documents and text units, disclosure, derived outputs, export and metadata search are not built yet.
+  The encrypted original file, disclosure of units, derived outputs, export and metadata search are not built yet.
 - **R2 and R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
@@ -85,7 +86,7 @@ make spec
 
 ## Run the storage roles locally
 
-`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing. It covers a label raise, a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), a label proposal, and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing. It covers a label raise, a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), a label proposal, a document publication, and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke

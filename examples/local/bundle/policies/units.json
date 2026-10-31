@@ -1,0 +1,5 @@
+{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+  {"id":"owner-units","effect":"allow","actions":["read","share","label","export-key"],"roles":["*"],
+   "when":"resource.attributes.owner == principal.id"},
+  {"id":"members-read-units-below-restricted","effect":"allow","actions":["read"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects && resource.attributes.label_rank < 3"}]}
