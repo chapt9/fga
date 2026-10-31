@@ -10,7 +10,9 @@ import (
 
 	"fga/internal/content"
 	"fga/internal/cryptowire"
+	"fga/internal/decisionsvc"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 )
 
 // TestServerDerived covers DRV-001, DRV-002, DRV-007 and DRV-009 in server
@@ -165,5 +167,79 @@ func TestServerDerivedApproval(t *testing.T) {
 	defer s.Close()
 	if got, err := io.ReadAll(s); err != nil || string(got) != "derived" {
 		t.Fatalf("the approved output: %q %v", got, err)
+	}
+}
+
+// TestDerivedVersionKeepsRaisedLabel is the regression test of review v3
+// finding F06: a new derived version's label was computed from the
+// output's label saved at begin and from source labels read before the
+// decisions, and the commit checked only the generation, so a raise of
+// the output or of a source in between was lowered again by publication.
+// The commit now recomputes the label from current state and refuses a
+// publication whose label it no longer matches; a retry publishes at the
+// higher label.
+func TestDerivedVersionKeepsRaisedLabel(t *testing.T) {
+	st := r1test.New(t)
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	src, err := putPlain(st, alice.Caller, "vault", "src.txt", "", []byte("source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := []cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}
+	put := func(key, idem string) error {
+		_, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: key, IdempotencyKey: idem},
+			sources, -1, strings.NewReader("derived "+idem))
+		return err
+	}
+	for _, key := range []string{"out.txt", "out2.txt"} {
+		if err := put(key, key+"/v1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	label := func(key string) string {
+		var l string
+		if err := st.Pool.QueryRow(ctx, `SELECT r.attributes->>'label' FROM resources r JOIN objects o ON o.tenant = r.tenant AND o.id::text = r.id
+		                                   WHERE o.key = $1`, key).Scan(&l); err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	for _, c := range []struct {
+		name, idem string
+		raise      func() error
+		key, want  string
+	}{
+		{"the output raised", "v2", func() error {
+			_, err := st.Content.SetDerivedLabel(ctx, alice.Caller, "vault", "out.txt", "restricted")
+			return err
+		}, "out.txt", "restricted"},
+		{"a source raised", "v3", func() error {
+			_, err := st.Content.SetLabel(ctx, alice.Caller, "vault", "src.txt", "confidential")
+			return err
+		}, "out2.txt", "confidential"},
+	} {
+		raised := false
+		st.BeforeDecide = func(req decisionsvc.Request) {
+			if req.Operation == registry.OpDerivedPublishServerVersion && !raised {
+				raised = true
+				if err := c.raise(); err != nil {
+					t.Errorf("%s: %v", c.name, err)
+				}
+			}
+		}
+		if err := put(c.key, c.idem); !errors.Is(err, content.ErrConflict) {
+			t.Fatalf("%s before the publication decision: %v", c.name, err)
+		}
+		st.BeforeDecide = nil
+		if got := label(c.key); got == "internal" && c.key == "out.txt" || c.key == "out2.txt" && got != "internal" {
+			t.Fatalf("%s: the refused publication changed the output's label to %s", c.name, got)
+		}
+		if err := put(c.key, c.idem); err != nil {
+			t.Fatalf("%s: the retry: %v", c.name, err)
+		}
+		if got := label(c.key); got != c.want {
+			t.Fatalf("%s: after the retry the output's label is %s, want %s", c.name, got, c.want)
+		}
 	}
 }

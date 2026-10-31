@@ -14,7 +14,9 @@ It stores the lineage edges in `lineage(derived, source)`.
 
 ## Effective label (DRV-007, LAB-004)
 
-The effective label is the maximum, under the label order, of the collection default and every source's effective label. A proposed lower label is ignored unless the same request carries a `relabel` allow for this output (V-148). The effective label is stored as the derived resource's protected label.
+The effective label is the maximum, under the label order, of the collection default and every source's effective label. A proposed lower label is ignored unless the same request carries a `relabel` allow for this output (V-148). The effective label is stored as the derived resource's protected label. A new version also keeps at least the output's current label: it never lowers it implicitly (lowering is relabel).
+
+The label is computed once to plan the publication, and again in the fence from current state. The second computation uses the output's current label, the sources' labels with their rows held by the fence, and the active label order. If the two differ, because a raise of the output or of a source committed in between, the publication is refused with `409 CONFLICT`; a retry plans again at the higher label (review v3 F06). The fence locks an existing output for update from the start, since the commit updates it.
 
 ## Delivery (DRV-002)
 

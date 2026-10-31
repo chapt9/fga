@@ -205,29 +205,9 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 	if err != nil {
 		return Published{}, err
 	}
-	_, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
+	effective, raised, err := s.derivedLabel(ctx, s.d.Catalog.Pool(), c.Tenant, in, sources, false)
 	if err != nil {
-		return Published{}, fmt.Errorf("%w: no label order is active", ErrInvalid)
-	}
-	// The label is at least the bucket's floor, the lineage maximum and,
-	// for a new version, the output's current label: a version never
-	// lowers it implicitly (lowering is relabel).
-	var floor string
-	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT default_label FROM buckets WHERE tenant = $1 AND id = $2`, c.Tenant, in.bucket).Scan(&floor); err != nil {
 		return Published{}, err
-	}
-	effective, rank := floor, rankOf(order, floor)
-	if current, _ := in.attributes["label"].(string); !in.newObject && rankOf(order, current) > rank {
-		effective, rank = current, rankOf(order, current)
-	}
-	for _, src := range sources {
-		if r := rankOf(order, src.label); r > rank {
-			effective, rank = order[r], r
-		}
-	}
-	raised := in.label != "" && rankOf(order, in.label) > rank
-	if raised {
-		effective = in.label
 	}
 
 	// Initial envelopes go to the caller's own keys only; others receive
@@ -285,7 +265,13 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 		}
 	}
 	var result Published
-	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+	// An existing output is locked for update from the start, since the
+	// commit updates it (review v3 F13).
+	var mutate []string
+	if !in.newObject {
+		mutate = []string{in.Object.String()}
+	}
+	err = mapFence(s.d.Fence.RunAll(ctx, bindings, mutate, func(ctx context.Context, tx pgx.Tx) error {
 		if !server {
 			if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
 				return fmt.Errorf("%w: %w", ErrInvalid, err)
@@ -296,8 +282,21 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 				return err
 			}
 		}
-		if _, _, err := s.lineageSources(ctx, tx, c.Tenant, l); err != nil {
+		current, _, err := s.lineageSources(ctx, tx, c.Tenant, l)
+		if err != nil {
 			return fmt.Errorf("%w: a lineage source is no longer live", ErrConflict)
+		}
+		// The label the plan names must still be the one current state
+		// gives: the output's label, the sources' labels as the fence sees
+		// them and the active order. Otherwise a raise since the plan was
+		// read would be lowered by this version; a retry plans again
+		// (review v3 F06).
+		again, raisedAgain, err := s.derivedLabel(ctx, tx, c.Tenant, in, current, true)
+		if err != nil {
+			return err
+		}
+		if again != effective || raisedAgain != raised {
+			return fmt.Errorf("%w: a label of the output or its lineage changed since the publication was planned", ErrConflict)
 		}
 		var st string
 		if err := tx.QueryRow(ctx, `SELECT state FROM upload_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, c.Tenant, in.IntentID).Scan(&st); err != nil {
@@ -401,6 +400,44 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 		return Published{}, err
 	}
 	return result, nil
+}
+
+// derivedLabel is the label a derived version is published with (DRV-007,
+// LAB-004): at least the bucket's floor, the maximum of its direct
+// sources' labels and, for a new version, the output's current label, so
+// a version never lowers it implicitly (lowering is relabel). An explicit
+// proposal can only raise it; raised reports that it did. In the fence
+// (lock), the label order is read under a share lock.
+func (s *Service) derivedLabel(ctx context.Context, q catalog.Querier, tenant string, in storedIntent, sources []source, lock bool) (string, bool, error) {
+	_, order, err := catalog.LabelOrder(ctx, q, lock)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: no label order is active", ErrInvalid)
+	}
+	var floor string
+	if err := q.QueryRow(ctx, `SELECT default_label FROM buckets WHERE tenant = $1 AND id = $2`, tenant, in.bucket).Scan(&floor); err != nil {
+		return "", false, err
+	}
+	effective, rank := floor, rankOf(order, floor)
+	if !in.newObject {
+		var current string
+		if err := q.QueryRow(ctx, `SELECT coalesce(attributes->>'label', '') FROM resources WHERE tenant = $1 AND id = $2`,
+			tenant, in.Object.String()).Scan(&current); err != nil {
+			return "", false, err
+		}
+		if rankOf(order, current) > rank {
+			effective, rank = current, rankOf(order, current)
+		}
+	}
+	for _, src := range sources {
+		if r := rankOf(order, src.label); r > rank {
+			effective, rank = order[r], r
+		}
+	}
+	raised := in.label != "" && rankOf(order, in.label) > rank
+	if raised {
+		effective = in.label
+	}
+	return effective, raised, nil
 }
 
 func rankOf(order []string, label string) int {
