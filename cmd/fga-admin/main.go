@@ -332,6 +332,11 @@ func run(args []string) error {
 		if err := need(*keyFile); err != nil {
 			return err
 		}
+		unlock, err := kek.Lock(*keyFile)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		if _, err := os.Stat(*keyFile); err == nil {
 			return fmt.Errorf("%s already exists", *keyFile)
 		}
@@ -348,6 +353,13 @@ func run(args []string) error {
 		if err := need(*tenant, *keyFile); err != nil {
 			return err
 		}
+		// One rotation at a time per ring, from reading it to the catalog
+		// step, so no rotation overwrites another's version (review v3 F07).
+		unlock, err := kek.Lock(*keyFile)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		raw, err := os.ReadFile(*keyFile)
 		if err != nil {
 			return err

@@ -189,8 +189,10 @@ func Read(path string, passphrase func() ([]byte, error)) ([]byte, error) {
 	return Open(data, p)
 }
 
-// Write writes a key file with mode 0600, replacing path atomically: a
-// temporary file in the same directory is flushed and renamed.
+// Write writes a key file with mode 0600, replacing path atomically and
+// durably: a temporary file in the same directory is flushed and renamed,
+// and the directory is flushed, so the new file survives a crash before a
+// change that depends on it commits (review v3 F14).
 func Write(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -212,5 +214,13 @@ func Write(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	d, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

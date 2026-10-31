@@ -30,6 +30,8 @@ A ring holds, per tenant, numbered versions of 32-byte AES-256-GCM keys. The cat
 
 If step 2 fails, the ring holds an unused version and nothing refers to it. Old versions stay in the ring. The keys role reads the ring file again when asked for a version it does not hold, so a rotation needs no restart.
 
+`kek init` and `kek rotate` hold an exclusive lock on `<ring>.lock` from reading the ring until the catalog step is done. So two rotations, of one tenant or of different tenants sharing the ring, cannot write different keys for the same version or drop each other's versions (review v3 F07). The ring file is replaced atomically and its directory is flushed before the catalog commits the resealed keys, so the new version survives a crash in between (F14).
+
 ## Sealing and release
 
 A data key is 32 random bytes; the keys role does not know which payload cipher uses it. It is sealed with AES-256-GCM (Tink, no output prefix) under the KEK version. The associated data is the domain `fga-kek-seal/v1`, a zero byte, the KEK version (4 bytes, big-endian), and the tenant, object, logical version, crypto version and blob IDs (16 bytes each). A sealed key moved to another version, object or tenant does not open (SSE-001).
