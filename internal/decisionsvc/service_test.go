@@ -130,7 +130,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Operations: ops, Signer: signer,
+	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Operations: ops, Authority: FixedAuthority{Incarnation: 4}, Signer: signer,
 		Outbox: outbox, Audiences: []string{"storage"}, MaxAge: 30 * time.Second, Limits: DefaultLimits, Now: clock})
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +227,9 @@ func TestAllowReturnsAVerifiableSignedDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rec.DecisionID != resp.DecisionID || rec.Checks[0].ResourceID != "u-1" || rec.Checks[0].Generation != 17 ||
-		rec.Subject.ID != "user-42" || len(rec.DelegationRevisions) != 1 || rec.PolicyEpoch != 1 {
+		rec.Subject.ID != "user-42" || len(rec.DelegationChain) != 1 || rec.DelegationChain[0] != (signing.Ref{ID: "dlg-5", Revision: 3}) ||
+		rec.PolicyEpoch != 1 || rec.RecoveryIncarnation != 4 || rec.Adapter != "tools-gw-1" || rec.Operation != "unit.read" ||
+		rec.EvaluatorVersion != engine.EvaluatorVersion || rec.Checks[0].BusinessEffect != "ALLOW" || rec.Checks[0].CeilingEffect != "PASS" {
 		t.Fatalf("signed record = %+v", rec)
 	}
 	events, _ := f.outbox.Pending(context.Background(), 10)
@@ -381,5 +383,16 @@ func TestPublicProjection(t *testing.T) {
 	}
 	if p := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#overview")).Public(); p.Outcome != "ALLOW" {
 		t.Errorf("allow: %+v", p)
+	}
+}
+
+// TestNoDecisionWhileAdmissionClosed covers AVL-008: during recovery the
+// service decides nothing.
+func TestNoDecisionWhileAdmissionClosed(t *testing.T) {
+	f := newFixture(t, 10)
+	f.svc.d.Authority = FixedAuthority{Incarnation: 5, Closed: true}
+	resp := f.svc.Decide(context.Background(), "tools-gw-1", request("doc://q3#overview"))
+	if resp.Outcome != "ERROR" || resp.Reason != string(ReasonAdmissionClosed) || resp.Signed != nil {
+		t.Fatalf("response = %+v, want ERROR ADMISSION_CLOSED", resp)
 	}
 }

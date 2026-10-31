@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,9 +60,13 @@ func (f *fixture) verifier(audience string, c Consumption) *Verifier {
 func record(singleUse bool) Record {
 	return Record{
 		DecisionID: "d-1", Audience: "storage", Tenant: "t-acme",
-		Actor: Ref{ID: "agent-7", Revision: 12}, Subject: Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5", DelegationRevisions: []uint64{3},
-		OperationDigest: "sha256:op", BundleDigest: "sha256:bundle", PolicyEpoch: 5, SingleUse: singleUse,
-		Checks:   []Check{{ID: "c1", ResourceType: "document.text_unit", ResourceID: "u-1", Generation: 17, MetadataRevision: 2, Action: "read"}},
+		RecoveryIncarnation: 1, Adapter: "storage-1",
+		Actor: Ref{ID: "agent-7", Revision: 12}, Subject: Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5",
+		DelegationChain: []Ref{{ID: "dlg-5", Revision: 3}}, Operation: "storage.object.read", OperationID: "op-1",
+		OperationDigest: "sha256:op", BundleDigest: "sha256:bundle", PolicyEpoch: 5, EvaluatorVersion: "fga.evaluator/1", SingleUse: singleUse,
+		Checks: []Check{{ID: "c1", Kind: "OPERATION", Principal: Ref{ID: "user-42", Revision: 88}, ResourceType: "storage.object",
+			ResourceID: "o-1", Version: "v-1", Generation: 17, MetadataRevision: 2, Action: "read", BusinessEffect: "ALLOW", CeilingEffect: "PASS",
+			Requires: []string{}}},
 		IssuedAt: issued, ValidUntil: issued.Add(30 * time.Second),
 	}
 }
@@ -209,6 +215,70 @@ func TestRotationOverlap(t *testing.T) {
 	for name, s := range map[string]Signed{"old key": oldSigned, "new key": newSigned} {
 		if _, err := v.Verify(context.Background(), s); err != nil {
 			t.Errorf("%s during overlap: %v", name, err)
+		}
+	}
+}
+
+// TestTransmittedGrantIsBound covers V-141 and DEC-008: the verifier
+// accepts the exact transmitted bytes, and removing or widening a check,
+// adding an obligation or changing any other field after signing fails.
+func TestTransmittedGrantIsBound(t *testing.T) {
+	f := newFixture(t)
+	signed, err := f.signer.Sign(record(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := f.verifier("storage", NewMemoryConsumption())
+	rec, err := v.Verify(context.Background(), signed)
+	if err != nil || rec.ObligationMappingVersion != NoObligations || rec.ResourceBindingsDigest != ResourceBindingsDigest(rec.Checks) {
+		t.Fatalf("original grant: %+v, %v", rec, err)
+	}
+	alter := func(edit func(*Record)) Signed {
+		r := rec
+		r.Checks = slices.Clone(rec.Checks)
+		edit(&r)
+		payload, _ := json.Marshal(r)
+		return Signed{Payload: payload, JWS: signed.JWS}
+	}
+	for name, edit := range map[string]func(*Record){
+		"remove a check":    func(r *Record) { r.Checks = nil },
+		"widen the action":  func(r *Record) { r.Checks[0].Action = "delete-version" },
+		"other version":     func(r *Record) { r.Checks[0].Version = "v-2" },
+		"add an obligation": func(r *Record) { r.Obligations = []Obligation{{Type: "redact", Version: 1}} },
+		"older incarnation": func(r *Record) { r.RecoveryIncarnation = 0 },
+	} {
+		if _, err := v.Verify(context.Background(), alter(edit)); !errors.Is(err, ErrSignature) {
+			t.Errorf("%s: %v, want %v", name, err, ErrSignature)
+		}
+	}
+}
+
+// TestRecordContentRules covers DEC-002 and DEC-003 for correctly signed
+// records: an obligation the enforcement point cannot apply, a check that
+// is not an unconditional allow and an inconsistent check kind reject.
+func TestRecordContentRules(t *testing.T) {
+	f := newFixture(t)
+	v := f.verifier("storage", NewMemoryConsumption())
+	for name, tc := range map[string]struct {
+		edit func(*Record)
+		want error
+	}{
+		"obligation":            {func(r *Record) { r.Obligations = []Obligation{{Type: "watermark", Version: 1}} }, ErrObligation},
+		"other mapping":         {func(r *Record) { r.ObligationMappingVersion = "fga.obligations/v9" }, ErrObligation},
+		"business deny":         {func(r *Record) { r.Checks[0].BusinessEffect = "DENY" }, ErrRecord},
+		"ceiling objection":     {func(r *Record) { r.Checks[0].CeilingEffect = "DENY" }, ErrRecord},
+		"unmet prerequisite":    {func(r *Record) { r.Checks[0].Requires = []string{"approval"} }, ErrRecord},
+		"recipient w/o binding": {func(r *Record) { r.Checks[0].Kind = "RECIPIENT_ELIGIBILITY" }, ErrRecord},
+		"no checks":             {func(r *Record) { r.Checks = nil }, ErrRecord},
+	} {
+		r := record(false)
+		tc.edit(&r)
+		signed, err := f.signer.Sign(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.Verify(context.Background(), signed); !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
 }

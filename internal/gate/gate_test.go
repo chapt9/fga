@@ -204,8 +204,8 @@ func TestBindValidUntil(t *testing.T) {
 	if !short.ValidUntil.Equal(start.Add(30*time.Second)) || !long.ValidUntil.Equal(start.Add(time.Hour)) {
 		t.Fatalf("valid_until = %v and %v, want +30s and the delegation expiry +1h", short.ValidUntil, long.ValidUntil)
 	}
-	if !slices.Equal(short.DelegationRevisions, []uint64{3}) {
-		t.Errorf("delegation revisions = %v, want [3]", short.DelegationRevisions)
+	if !slices.Equal(short.DelegationChain, []delegation.Link{{ID: "dlg-5", Revision: 3}}) {
+		t.Errorf("delegation chain = %v, want [dlg-5@3]", short.DelegationChain)
 	}
 }
 

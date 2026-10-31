@@ -165,8 +165,23 @@ func covers(grants []Grant, resourceType, action string) bool {
 	return false
 }
 
-// Revisions returns each link's revision, leaf first, for binding into a
-// decision and rechecking at admission and commit (DEC-006).
+// Links returns the chain's delegation IDs and revisions, leaf first, for
+// binding into a decision and rechecking at admission and commit (DEC-006).
+func (c Chain) Links() []Link {
+	out := make([]Link, len(c))
+	for i, d := range c {
+		out[i] = Link{ID: d.ID, Revision: d.Revision}
+	}
+	return out
+}
+
+// Link names one delegation of a chain at a revision.
+type Link struct {
+	ID       ID
+	Revision uint64
+}
+
+// Revisions returns each link's revision, leaf first.
 func (c Chain) Revisions() []uint64 {
 	revs := make([]uint64, len(c))
 	for i, d := range c {

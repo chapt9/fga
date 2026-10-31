@@ -267,11 +267,11 @@ func (g *Gate) chain(ctx context.Context, env decision.Envelope) (delegation.Cha
 // points recheck it at read admission and immediately before a mutation's
 // irreversible checkpoint (DEC-006).
 type Binding struct {
-	Envelope            decision.Envelope
-	DelegationRevisions []uint64
-	Resources           []registry.Resource
-	PolicyEpoch         uint64
-	ValidUntil          time.Time
+	Envelope        decision.Envelope
+	DelegationChain []delegation.Link
+	Resources       []registry.Resource
+	PolicyEpoch     uint64
+	ValidUntil      time.Time
 }
 
 // Bind records the authority behind an allowed decision. ValidUntil is the
@@ -297,7 +297,7 @@ func (g *Gate) Bind(ctx context.Context, env decision.Envelope, resources []regi
 		if err != nil {
 			return Binding{}, err
 		}
-		b.DelegationRevisions = chain.Revisions()
+		b.DelegationChain = chain.Links()
 		for _, d := range chain {
 			if d.ExpiresAt.Before(b.ValidUntil) {
 				b.ValidUntil = d.ExpiresAt
@@ -328,7 +328,7 @@ func (g *Gate) Recheck(ctx context.Context, b Binding) error {
 		if err != nil {
 			return err
 		}
-		if !slices.Equal(chain.Revisions(), b.DelegationRevisions) {
+		if !slices.Equal(chain.Links(), b.DelegationChain) {
 			return reject(ReasonDelegationChanged)
 		}
 	}

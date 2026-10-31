@@ -218,6 +218,15 @@ func (s *Store) Recipient(ctx context.Context, tenant, fingerprint string) (gate
 	return k, err
 }
 
+// AuthorityState implements decisionsvc.Authority: the current recovery
+// incarnation and whether admission is open.
+func (s *Store) AuthorityState(ctx context.Context) (uint64, bool, error) {
+	var incarnation uint64
+	var open bool
+	err := s.pool.QueryRow(ctx, `SELECT incarnation, admission_open FROM authority_state WHERE id = 1`).Scan(&incarnation, &open)
+	return incarnation, open, err
+}
+
 // Allows implements gate.Capabilities.
 func (s *Store) Allows(ctx context.Context, tenant, actor, resourceType, action string) (bool, error) {
 	var ok bool

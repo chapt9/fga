@@ -11,9 +11,12 @@ package signing
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -22,7 +25,14 @@ import (
 )
 
 // RecordVersion identifies the record format.
-const RecordVersion = "fga.decision/v1"
+const RecordVersion = "fga.decision/v2"
+
+// NoObligations is the obligation mapping of release R1: no policy output is
+// mapped to an obligation (POL-011), so a signed allow carries an empty
+// obligation set. A record with any obligation, or another mapping version,
+// is rejected, because an enforcement point must not act on obligations it
+// does not understand (DEC-002).
+const NoObligations = "fga.obligations/none-v1"
 
 // MaxClockSkew is tolerated between the signer's and verifier's clocks.
 const MaxClockSkew = 5 * time.Second
@@ -38,6 +48,8 @@ var (
 	ErrExpired     = errors.New("decision expired")
 	ErrNotYetValid = errors.New("decision issued in the future")
 	ErrReplayed    = errors.New("single-use decision already consumed")
+	ErrObligation  = errors.New("decision carries obligations this enforcement point cannot apply")
+	ErrBinding     = errors.New("decision's binding digests do not match its content")
 )
 
 // Ref names an identity at a revision.
@@ -46,8 +58,8 @@ type Ref struct {
 	Revision uint64 `json:"revision"`
 }
 
-// Check is one allowed check, the principal it was evaluated for and the
-// resource state it was bound to.
+// Check is one allowed check, the principal it was evaluated for, its
+// effects and the resource state it was bound to.
 type Check struct {
 	ID string `json:"id"`
 	// Kind is OPERATION or RECIPIENT_ELIGIBILITY. A recipient check names
@@ -60,36 +72,91 @@ type Check struct {
 	ResourceID       string `json:"resource_id"`
 	// Version is the exact immutable version the check is bound to, when
 	// the operation names one.
-	Version          string `json:"version"`
-	Generation       uint64 `json:"generation"`
-	MetadataRevision uint64 `json:"metadata_revision"`
-	Action           string `json:"action"`
+	Version          string   `json:"version"`
+	Generation       uint64   `json:"generation"`
+	MetadataRevision uint64   `json:"metadata_revision"`
+	Action           string   `json:"action"`
+	BusinessEffect   string   `json:"business_effect"`
+	CeilingEffect    string   `json:"ceiling_effect"`
+	Requires         []string `json:"requires"`
 }
 
-// Record is the signed content of an allowed decision.
+// Context holds the revisions of the decision's context facts beyond
+// identities, delegation and resources (DEC-008).
+type Context struct {
+	LabelOrderGeneration uint64 `json:"label_order_generation"`
+	// Approval names a satisfied approval the decision relied on, if any
+	// (DEC-002).
+	Approval Ref `json:"approval"`
+}
+
+// Obligation is one platform obligation of a decision (APR-007).
+type Obligation struct {
+	Type                string `json:"type"`
+	Version             uint64 `json:"version"`
+	ParametersDigest    string `json:"parameters_digest"`
+	ReferencedRevisions []Ref  `json:"referenced_revisions"`
+}
+
+// Record is the signed content of an allowed decision (DEC-008): audience,
+// tenant and recovery incarnation; actor, subject, delegation chain and
+// context with revisions; the registered operation and its digest; every
+// check with its principal, effects and bound resource state; the policy
+// snapshot; the complete obligation set; and the validity window.
 type Record struct {
-	Version             string   `json:"version"`
-	DecisionID          string   `json:"decision_id"`
-	Audience            string   `json:"audience"`
-	Tenant              string   `json:"tenant"`
-	Actor               Ref      `json:"actor"`
-	Subject             Ref      `json:"subject"`
-	Delegation          string   `json:"delegation"`
-	DelegationRevisions []uint64 `json:"delegation_revisions"`
-	OperationDigest     string   `json:"operation_digest"`
-	Checks              []Check  `json:"checks"`
-	BundleDigest        string   `json:"bundle_digest"`
-	PolicyEpoch         uint64   `json:"policy_epoch"`
-	SingleUse           bool     `json:"single_use"`
-	// Adapter is the executor that presented the request; delegation
-	// rechecks need it (DLG-001).
-	Adapter string `json:"adapter"`
-	// ApprovalID and InvocationID name the satisfied prerequisites the
-	// decision relied on (DEC-002).
-	ApprovalID   string    `json:"approval_id"`
-	InvocationID string    `json:"invocation_id"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ValidUntil   time.Time `json:"valid_until"`
+	Version             string `json:"version"`
+	DecisionID          string `json:"decision_id"`
+	Audience            string `json:"audience"`
+	Tenant              string `json:"tenant"`
+	RecoveryIncarnation uint64 `json:"recovery_incarnation"`
+	// Adapter is the authenticated workload that requested the decision.
+	Adapter         string  `json:"adapter"`
+	Actor           Ref     `json:"actor"`
+	Subject         Ref     `json:"subject"`
+	Delegation      string  `json:"delegation"`
+	DelegationChain []Ref   `json:"delegation_chain"`
+	Context         Context `json:"context_revisions"`
+	Operation       string  `json:"operation"`
+	OperationID     string  `json:"operation_id"`
+	OperationDigest string  `json:"operation_digest"`
+	Checks          []Check `json:"checks"`
+	// ResourceBindingsDigest covers every check's resource binding; it
+	// lets an enforcement point compare one value with its own plan.
+	ResourceBindingsDigest   string       `json:"resource_bindings_digest"`
+	BundleDigest             string       `json:"bundle_digest"`
+	PolicyEpoch              uint64       `json:"policy_epoch"`
+	EvaluatorVersion         string       `json:"evaluator_version"`
+	ObligationMappingVersion string       `json:"obligation_mapping_version"`
+	ObligationsDigest        string       `json:"obligations_digest"`
+	Obligations              []Obligation `json:"obligations"`
+	SingleUse                bool         `json:"single_use"`
+	IssuedAt                 time.Time    `json:"issued_at"`
+	ValidUntil               time.Time    `json:"valid_until"`
+}
+
+// ResourceBindingsDigest is the digest of the checks' resource bindings, in
+// check order.
+func ResourceBindingsDigest(checks []Check) string {
+	h := sha256.New()
+	h.Write([]byte("fga.resource-bindings/v1\n"))
+	for _, c := range checks {
+		fmt.Fprintf(h, "%q %q %q %q %d %d\n", c.ID, c.ResourceType, c.ResourceID, c.Version, c.Generation, c.MetadataRevision)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// ObligationsDigest is the digest of an obligation set under a mapping
+// version.
+func ObligationsDigest(mapping string, obligations []Obligation) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "fga.obligations/v1\n%q\n", mapping)
+	for _, o := range obligations {
+		fmt.Fprintf(h, "%q %d %q %d\n", o.Type, o.Version, o.ParametersDigest, len(o.ReferencedRevisions))
+		for _, r := range o.ReferencedRevisions {
+			fmt.Fprintf(h, "%q %d\n", r.ID, r.Revision)
+		}
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // Signed is a record's exact bytes and its detached compact JWS.
@@ -114,9 +181,19 @@ func NewSigner(keyID string, key ed25519.PrivateKey) (*Signer, error) {
 	return &Signer{signer: s}, nil
 }
 
-// Sign serializes rec once and signs those bytes.
+// Sign fills in the record's version and digests, serializes it once and
+// signs those bytes. A record without an obligation mapping gets the R1
+// mapping and an empty obligation set.
 func (s *Signer) Sign(rec Record) (Signed, error) {
 	rec.Version = RecordVersion
+	if rec.ObligationMappingVersion == "" {
+		rec.ObligationMappingVersion = NoObligations
+	}
+	if rec.Obligations == nil {
+		rec.Obligations = []Obligation{}
+	}
+	rec.ObligationsDigest = ObligationsDigest(rec.ObligationMappingVersion, rec.Obligations)
+	rec.ResourceBindingsDigest = ResourceBindingsDigest(rec.Checks)
 	payload, err := json.Marshal(rec)
 	if err != nil {
 		return Signed{}, fmt.Errorf("signing: encode record: %w", err)
@@ -211,8 +288,26 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 	}
 
 	var rec Record
-	if err := strictjson.Decode(s.Payload, &rec); err != nil || rec.Version != RecordVersion || rec.DecisionID == "" {
+	if err := strictjson.Decode(s.Payload, &rec); err != nil || rec.Version != RecordVersion || rec.DecisionID == "" || len(rec.Checks) == 0 {
 		return Record{}, fmt.Errorf("%w: %v", ErrRecord, err)
+	}
+	switch {
+	case rec.ObligationMappingVersion != NoObligations || len(rec.Obligations) != 0:
+		return Record{}, ErrObligation
+	case rec.ObligationsDigest != ObligationsDigest(rec.ObligationMappingVersion, rec.Obligations),
+		rec.ResourceBindingsDigest != ResourceBindingsDigest(rec.Checks):
+		return Record{}, ErrBinding
+	}
+	for _, c := range rec.Checks {
+		if c.BusinessEffect != "ALLOW" || c.CeilingEffect != "PASS" || len(c.Requires) != 0 {
+			return Record{}, fmt.Errorf("%w: check %q is not an unconditional allow", ErrRecord, c.ID)
+		}
+		if (c.Kind == "RECIPIENT_ELIGIBILITY") != (c.PrincipalBinding != "") || (c.Kind != "OPERATION" && c.Kind != "RECIPIENT_ELIGIBILITY") {
+			return Record{}, fmt.Errorf("%w: check %q has an inconsistent kind", ErrRecord, c.ID)
+		}
+	}
+	if slices.ContainsFunc(rec.Checks, func(c Check) bool { return c.ID == "" }) {
+		return Record{}, fmt.Errorf("%w: a check has no ID", ErrRecord)
 	}
 	now := v.now()
 	switch {

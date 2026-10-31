@@ -19,6 +19,7 @@ import (
 	"fga/internal/audit"
 	"fga/internal/decision"
 	"fga/internal/gate"
+	"fga/internal/policy"
 	"fga/internal/registry"
 	"fga/internal/release"
 	"fga/internal/signing"
@@ -35,6 +36,7 @@ const (
 	ReasonCatalogUnavailable decision.Reason = "CATALOG_UNAVAILABLE"
 	ReasonAuditUnavailable   decision.Reason = "AUDIT_UNAVAILABLE"
 	ReasonSigningFailed      decision.Reason = "SIGNING_FAILED"
+	ReasonAdmissionClosed    decision.Reason = "ADMISSION_CLOSED"
 )
 
 // Ref names an identity at the revision the adapter built the request from.
@@ -115,6 +117,24 @@ type Response struct {
 	Signed       *SignedDecision `json:"signed,omitempty"`
 }
 
+// Authority reports the deployment's recovery incarnation and whether
+// admission is open (AVL-008).
+type Authority interface {
+	AuthorityState(ctx context.Context) (incarnation uint64, admissionOpen bool, err error)
+}
+
+// FixedAuthority is an Authority with a constant state, for tests and the
+// development profile without a catalog.
+type FixedAuthority struct {
+	Incarnation uint64
+	Closed      bool
+}
+
+// AuthorityState implements Authority.
+func (f FixedAuthority) AuthorityState(context.Context) (uint64, bool, error) {
+	return f.Incarnation, !f.Closed, nil
+}
+
 // Limits bound a request (DEC-009).
 type Limits struct {
 	MaxChecks int
@@ -132,6 +152,7 @@ type Deps struct {
 	Resolver   *registry.Resolver
 	Types      *registry.Types
 	Operations *registry.Operations
+	Authority  Authority
 	Signer     *signing.Signer
 	Outbox     audit.Outbox
 	Audiences  []string
@@ -148,7 +169,7 @@ type Service struct {
 
 // New returns a Service.
 func New(d Deps) (*Service, error) {
-	if d.Decider == nil || d.Gate == nil || d.Releases == nil || d.Resolver == nil || d.Types == nil || d.Operations == nil ||
+	if d.Decider == nil || d.Gate == nil || d.Releases == nil || d.Resolver == nil || d.Types == nil || d.Operations == nil || d.Authority == nil ||
 		d.Signer == nil || d.Outbox == nil || d.Now == nil || d.MaxAge <= 0 || d.Limits.MaxChecks <= 0 || d.Limits.Deadline <= 0 {
 		return nil, errors.New("decisionsvc: every dependency and limit is required")
 	}
@@ -210,6 +231,16 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !ok {
 		return deny(ReasonUnknownOperation)
 	}
+	// Recovery closes admission until security-critical changes are
+	// reconciled; no decision is made meanwhile, and every decision binds
+	// the incarnation it was made in (AVL-008, DEC-011).
+	incarnation, open, err := s.d.Authority.AuthorityState(ctx)
+	switch {
+	case err != nil:
+		return fail(ReasonCatalogUnavailable)
+	case !open:
+		return fail(ReasonAdmissionClosed)
+	}
 
 	snap, err := s.d.Releases.Snapshot(ctx, req.Tenant)
 	if err != nil {
@@ -248,7 +279,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
 	for _, r := range d.Results {
 		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, PrincipalID: r.Principal.ID, Business: r.Business.String(),
-			Ceiling: r.Ceiling.String(), Effect: effectName(r.Effect), Reason: string(r.Reason)})
+			Ceiling: ceilingName(r.Ceiling), Effect: effectName(r.Effect), Reason: string(r.Reason)})
 	}
 	if d.Outcome != decision.OutcomeAllow {
 		return resp, bound
@@ -270,7 +301,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !s.d.Now().Before(binding.ValidUntil) {
 		return deny(gate.ReasonDecisionExpired)
 	}
-	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, req, binding, bound, snap, d.Results))
+	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation))
 	if err != nil {
 		return fail(ReasonSigningFailed)
 	}
@@ -279,22 +310,41 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	return resp, bound
 }
 
-func (s *Service) record(id string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot, results []decision.CheckResult) signing.Record {
+func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot,
+	results []decision.CheckResult, incarnation uint64) signing.Record {
 	rec := signing.Record{
-		DecisionID: id, Audience: req.Audience, Tenant: req.Tenant,
+		DecisionID: id, Audience: req.Audience, Tenant: req.Tenant, RecoveryIncarnation: incarnation, Adapter: adapter,
 		Actor: signing.Ref(b.Envelope.Actor), Subject: signing.Ref(b.Envelope.Subject), Delegation: req.Delegation,
-		DelegationRevisions: b.DelegationRevisions, OperationDigest: req.OperationDigest,
-		BundleDigest: snap.Digest, PolicyEpoch: snap.Epoch, SingleUse: req.SingleUse,
+		DelegationChain: []signing.Ref{}, Context: signing.Context{LabelOrderGeneration: snap.Info.LabelGeneration},
+		Operation: req.Operation, OperationID: req.OperationID, OperationDigest: req.OperationDigest,
+		BundleDigest: snap.Digest, PolicyEpoch: snap.Epoch, EvaluatorVersion: snap.Info.EvaluatorVersion, SingleUse: req.SingleUse,
 		IssuedAt: s.d.Now(), ValidUntil: b.ValidUntil,
+	}
+	for _, l := range b.DelegationChain {
+		rec.DelegationChain = append(rec.DelegationChain, signing.Ref{ID: string(l.ID), Revision: l.Revision})
 	}
 	for i, c := range req.Checks {
 		action, _ := s.d.Types.CanonicalAction(bound[i].Type, c.Action)
 		r := results[i]
 		rec.Checks = append(rec.Checks, signing.Check{ID: c.ID, Kind: string(kindOf(c.Kind)), PrincipalBinding: c.PrincipalBinding,
 			Principal: signing.Ref(r.Principal), KeyRevision: r.KeyRevision, ResourceType: bound[i].Type, ResourceID: bound[i].ID,
-			Version: c.Version, Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision, Action: action})
+			Version: c.Version, Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision, Action: action,
+			BusinessEffect: r.Business.String(), CeilingEffect: ceilingName(r.Ceiling), Requires: append([]string{}, r.Requires...)})
 	}
 	return rec
+}
+
+// ceilingName reports a ceiling result as the Decision API names it: an
+// absence of objection is PASS, never ALLOW (POL-007).
+func ceilingName(e policy.Effect) string {
+	switch e {
+	case policy.EffectAllow:
+		return "PASS"
+	case policy.EffectDeny:
+		return "DENY"
+	default:
+		return "NOT_EVALUATED"
+	}
 }
 
 func kindOf(k string) decision.CheckKind {
