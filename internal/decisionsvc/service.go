@@ -764,7 +764,7 @@ func newID() string {
 // approvable are the resource types an approval can target in R1-C
 // (ruling 6; storage-role operations only).
 var approvable = map[string]bool{"storage.object": true, "storage.bucket": true, "document.text_unit": true, "document.derived": true,
-	"document.version": true, "text.entry": true, "agent.tool": true}
+	"document.version": true, "text.entry": true, "agent.tool": true, "crypto.envelope": true, "crypto.recipient": true}
 
 // operationFacts are a verified plan's arguments and amount, which policy
 // conditions see as request.operation (AGT-003 step 3): the plan's digest

@@ -213,7 +213,13 @@ func (s *Store) AddRecipientKey(ctx context.Context, tenant, principal string, p
 // InsertRecipientResource records an active recipient key as a
 // crypto.recipient resource, so policies and the fence can bind it.
 func InsertRecipientResource(ctx context.Context, tx pgx.Tx, tenant, fingerprint, principal string) error {
-	attrs, _ := json.Marshal(map[string]any{"principal": principal, "status": "ACTIVE"})
+	return InsertRecipientResourceWith(ctx, tx, tenant, fingerprint, principal, "ACTIVE")
+}
+
+// InsertRecipientResourceWith records a recipient key in status as a
+// crypto.recipient resource.
+func InsertRecipientResourceWith(ctx context.Context, tx pgx.Tx, tenant, fingerprint, principal, status string) error {
+	attrs, _ := json.Marshal(map[string]any{"principal": principal, "status": status})
 	_, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.recipient', '', 1, 1, 1, $3)`, tenant, fingerprint, attrs)
 	return err
 }

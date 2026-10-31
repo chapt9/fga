@@ -3,10 +3,13 @@ package envelope_test
 import (
 	"context"
 	"errors"
+	"maps"
+	"strings"
 	"testing"
 	"time"
 
 	"fga/internal/content"
+	"fga/internal/enforce"
 	"fga/internal/envelope"
 	"fga/internal/r1test"
 	"fga/sdk/go/crypto"
@@ -162,5 +165,92 @@ func TestLookupNeedsRule(t *testing.T) {
 	}
 	if k, err := st.Envelopes.SigningKey(ctx, bob, alice.Signer.Fingerprint.String()); err != nil || k.Status != "ACTIVE" {
 		t.Fatalf("signing-key lookup with a rule = %+v, %v", k, err)
+	}
+}
+
+// TestKeyApprovals covers APR-001 to APR-003 for the keys role: under a
+// policy that holds activating and revoking a recipient key and retiring
+// an envelope for an approval, each answers with an approval of exactly
+// that plan; once a lead approves it in the inbox, the repeated call
+// carries it out and consumes the approval; the requester cannot approve
+// its own.
+func TestKeyApprovals(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["recipients.json"] = `{"format":"fga.policy/v1","set":"business","resource":"crypto.recipient","scope":"","rules":[
+	  {"id":"own-key","effect":"allow","actions":["enroll","receive-key","discover"],"roles":["*"],"when":"resource.attributes.principal == principal.id"},
+	  {"id":"own-key-approved","effect":"allow","actions":["activate","revoke"],"roles":["*"],"requires":["approval"],
+	   "when":"resource.attributes.principal == principal.id"},
+	  {"id":"leads-approve-keys","effect":"allow","actions":["approve"],"roles":["lead"]}]}`
+	policies["envelopes.json"] = strings.Replace(policies["envelopes.json"],
+		`{"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},`,
+		`{"id":"owner-retires","effect":"allow","actions":["retire"],"roles":["*"],"requires":["approval"],"when":"resource.attributes.owner == principal.id"},
+		 {"id":"leads-approve-envelopes","effect":"allow","actions":["approve"],"roles":["lead"]},`, 1)
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	ctx := context.Background()
+	st.User("lena", []string{"member", "lead"}, "p1")
+	st.User("erin", []string{"member"}, "p1")
+	erin := st.KeysCaller("erin")
+	approve := func(id string) {
+		t.Helper()
+		if _, err := st.Content.DecideApproval(ctx, st.Caller("erin"), id, true); err == nil {
+			t.Fatal("the requester approved its own")
+		}
+		if _, err := st.Content.DecideApproval(ctx, st.Caller("lena"), id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held := func(err error) string {
+		t.Helper()
+		var need *enforce.ApprovalRequired
+		if !errors.As(err, &need) {
+			t.Fatalf("not held for an approval: %v", err)
+		}
+		return need.ID
+	}
+	with := func(c enforce.Caller, id string) enforce.Caller { c.Approval = id; return c }
+
+	key, _ := crypto.NewRecipientKey()
+	ch, err := st.Envelopes.EnrollRecipient(ctx, erin, key.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, _ := key.Prove(ch.EphemeralPublic, ch.Nonce, ch.ID, r1test.Tenant, "erin")
+	_, err = st.Envelopes.ActivateRecipient(ctx, erin, ch.Fingerprint, ch.ID, proof)
+	id := held(err)
+	approve(id)
+	if rec, err := st.Envelopes.ActivateRecipient(ctx, with(erin, id), ch.Fingerprint, ch.ID, proof); err != nil || rec.Status != "ACTIVE" {
+		t.Fatalf("activation with the approval: %+v %v", rec, err)
+	}
+	err = st.Envelopes.RevokeRecipient(ctx, erin, ch.Fingerprint)
+	id = held(err)
+	approve(id)
+	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint); err != nil {
+		t.Fatalf("revocation with the approval: %v", err)
+	}
+	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint); err == nil {
+		t.Fatal("a consumed approval served again")
+	}
+
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	alice.Pin(bob)
+	if _, err := alice.Put("reports", "doc", []byte("payroll")); err != nil {
+		t.Fatal(err)
+	}
+	envID, err := alice.Share("reports", "doc", "", bob, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Envelopes.Retire(ctx, st.KeysCaller("alice"), envID)
+	id = held(err)
+	if _, err := st.Content.DecideApproval(ctx, st.Caller("lena"), id, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Envelopes.Retire(ctx, with(st.KeysCaller("alice"), id), envID); err != nil {
+		t.Fatalf("retirement with the approval: %v", err)
+	}
+	if n := st.Count(`SELECT count(*) FROM approvals WHERE state = 'CONSUMED'`); n != 3 {
+		t.Fatalf("%d approvals consumed, want 3", n)
 	}
 }

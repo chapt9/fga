@@ -99,6 +99,9 @@ var ApproverPreset = map[string][]string{
 	"document.derived":   {"approve"},
 	"document.version":   {"approve"},
 	"text.entry":         {"approve"},
+	"crypto.envelope":    {"approve"},
+	"crypto.recipient":   {"approve"},
+	"agent.tool":         {"approve"},
 }
 
 type env struct {

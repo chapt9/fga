@@ -103,8 +103,7 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 - A new document takes the bucket's default.
 - The decision and release sentinels see the computed ranks, so a policy can keep restricted units from a recipient. A document with such a unit cannot be published to that recipient at all (V-063).
 
-**Not yet.**
-- Approvals for document publication: no plan is sent, so `NEEDS_APPROVAL` there is a denial.
+**Approvals.** Publication sends its plan on the document's create-object or new-version check ([labels-and-approvals.md](labels-and-approvals.md)). Its other batches (unit labels, reused units) send none, so a policy that holds them for an approval denies them.
 
 **Client.** `crypto.SplitText` normalizes to NFC and splits at blank lines (`fga.text/nfc-paragraphs-v1`, at most 64 MiB and 1,000 units). Each unit is encrypted with its own keyset (`crypto.EncryptUnit`). `crypto.SealDocument` signs the manifest, the descriptors and the envelopes. `crypto.DecryptUnit` verifies one unit from its descriptor without the manifest. `client.PutDocument` and `fga put-document` run the whole flow.
 

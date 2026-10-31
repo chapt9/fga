@@ -17,8 +17,8 @@ Status: design record, 31 October 2026. Mechanism-matrix row "Client-side envelo
 
 | Operation | Caller | Authority | Effect |
 |---|---|---|---|
-| Enroll recipient | Client | Decision for `crypto.recipient` `enroll` (planned resource: the caller's own new key) | PENDING record and challenge |
-| Activate recipient | Client | Decision for `activate` on the PENDING record, valid proof, unused unexpired challenge | ACTIVE, revision + 1; challenge deleted |
+| Enroll recipient | Client | Decision for `crypto.recipient` `enroll` (planned resource: the caller's own new key) | PENDING record and its PENDING `crypto.recipient` resource; challenge |
+| Activate recipient | Client | Decision for `activate` on the PENDING key's resource (approvable), valid proof, unused unexpired challenge | ACTIVE, revision + 1, resource status ACTIVE; challenge deleted |
 | Revoke recipient | Client or `fga-admin` | `revoke` decision, or local administrator | Security-journal entry first, then REVOKED, revision + 1 (fence step 5) |
 | Provision / retire signing key | `fga-admin` | Local administrator, trusted provisioning (RCP-002); no registered resource type exists for self-service | ACTIVE or RETIRED; history kept for verification (RCP-011) |
 | Mark signer compromised | `fga-admin` | Local administrator (ADM-003) | Journal entry, then COMPROMISED |

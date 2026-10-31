@@ -75,13 +75,13 @@ The operation digest is SHA-256 over `fga.opplan/v1`, a zero byte and the plan's
    - it was requested under the current policy epoch and the same resource revisions.
 
    The decision role then removes the `approval` prerequisite, binds the approval's ID and revision into the signed decision (`context_revisions.approval`, DEC-008), and limits the decision's validity to the approval's expiry. A pending approval answers `202` again. Anything else answers `409 APPROVAL_NOT_USABLE`.
-5. Verifiers accept a check whose only prerequisite is `approval`, and only when the record binds an approval; a reservation is never satisfied by a record. The fence locks the bound approval (step 6a), requires it APPROVED at that revision, and consumes it in the operation's own transaction (step 7a, APR-002, APR-003). The mutation's audit event names the approval. A changed operation has another digest and needs a new approval (APR-001).
+5. Verifiers accept a check whose prerequisites are met by the record: `approval` only when the record binds an approval, `reservation` only by the record's signed reservation obligation, which the enforcing role applies ([obligations.md](obligations.md)). The fence locks the bound approval (step 6a), requires it APPROVED at that revision, and consumes it in the operation's own transaction (step 7a, APR-002, APR-003). The mutation's audit event names the approval. A changed operation has another digest and needs a new approval (APR-001).
 
 **Scope in R1-C.** These operations send a plan:
 - in the storage role: object finalize, delete, version delete, and label changes of objects, units and derived outputs;
 - document publication (on the document's create-object or new-version check, with the manifest digest and recipients in the plan), document deletion and version withdrawal, and derived publication;
-- in the keys role: sharing, whose `202 APPROVAL_REQUIRED` and `409 APPROVAL_NOT_USABLE` the keys API answers like the storage API.
+- in the keys role: sharing, envelope retirement, and the activation and revocation of a recipient key, whose `202 APPROVAL_REQUIRED` and `409 APPROVAL_NOT_USABLE` the keys API answers like the storage API. An approver decides `approve` on the envelope or the key (`crypto.envelope.approve`, `crypto.recipient.approve`) in the same inbox.
 
-Envelope retirement, enrollment and revocation send none, so `NEEDS_APPROVAL` there stays a denial. So do the other batches of a document publication.
+Enrollment sends none: it records a PENDING key, which receives nothing, and its activation is the step a policy holds for an approval. A recipient key is a `crypto.recipient` resource from its enrollment on, in status PENDING until activation. The other batches of a document publication send none either.
 
 **Preparatory operations.** Begin and stage (of objects, documents and derived outputs) decide the same rights as their commit. They are marked preparatory in the registry, and for them the decision role defers an `approval` prerequisite to the commit: it signs an ALLOW without it, and the commit decides the rights again and needs the approval there (APR-003). Without this, a policy that makes `create-object` subject to an approval would block the upload before the approval could be requested. Nothing a preparatory operation creates is visible.

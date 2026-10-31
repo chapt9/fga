@@ -60,14 +60,32 @@ type KeyRecord struct {
 }
 
 func (s *Service) authorize(ctx context.Context, c enforce.Caller, op string, checks []enforce.Check) (signing.Record, error) {
-	_, rec, err := enforce.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, enforce.KeysAudience, true, checks)
-	if errors.Is(err, enforce.ErrNotFound) {
+	return s.authorizePlanned(ctx, c, op, checks, nil)
+}
+
+// authorizePlanned is authorize for an operation a policy may hold for an
+// approval: plan is what the approver is shown and what the approval
+// binds, and the caller's approval goes with it (APR-001, APR-005). A
+// required approval and an approval that cannot be used come back as
+// enforce reports them.
+func (s *Service) authorizePlanned(ctx context.Context, c enforce.Caller, op string, checks []enforce.Check, plan *opplan.Summary) (signing.Record, error) {
+	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, enforce.KeysAudience, true, checks,
+		enforce.Options{Plan: plan})
+	var need *enforce.ApprovalRequired
+	switch {
+	case err == nil:
+		return rec, nil
+	case errors.Is(err, enforce.ErrNotFound):
 		return rec, ErrNotFound
+	case errors.As(err, &need), errors.Is(err, enforce.ErrApprovalNotUsable):
+		return rec, err
 	}
-	if err != nil {
-		return rec, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	return rec, nil
+	return rec, fmt.Errorf("%w: %v", ErrUnavailable, err)
+}
+
+// keyPlan is the plan of an action on one target of the keys role.
+func keyPlan(action, role, typ, id string) *opplan.Summary {
+	return &opplan.Summary{Action: action, Targets: []opplan.Target{{Role: role, Type: typ, ID: id}}}
 }
 
 func (s *Service) fenced(ctx context.Context, rec signing.Record, mutate []string, fn func(context.Context, pgx.Tx) error) error {
@@ -132,9 +150,14 @@ func (s *Service) EnrollRecipient(ctx context.Context, c enforce.Caller, public 
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO enrollment_challenges VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			c.Tenant, ch.ID, c.Principal, fp, ch.Nonce, eph.Bytes(), ch.ExpiresAt)
-		return err
+		if _, err := tx.Exec(ctx, `INSERT INTO enrollment_challenges VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			c.Tenant, ch.ID, c.Principal, fp, ch.Nonce, eph.Bytes(), ch.ExpiresAt); err != nil {
+			return err
+		}
+		// The pending key is a resource from now on, so its activation can
+		// be decided, and held for an approval, on the key itself. A
+		// PENDING key receives nothing (the ceiling admits ACTIVE keys).
+		return catalog.InsertRecipientResourceWith(ctx, tx, c.Tenant, fp, c.Principal, "PENDING")
 	})
 	return ch, err
 }
@@ -178,9 +201,8 @@ func (s *Service) ActivateRecipient(ctx context.Context, c enforce.Caller, fp, c
 	if err != nil || !hmac.Equal(want, proof) {
 		return KeyRecord{}, fmt.Errorf("%w: possession proof", ErrInvalid)
 	}
-	check := plannedRecipient(c.Principal, fp)
-	check.Action = "activate"
-	rec, err := s.authorize(ctx, c, registry.OpActivateRecipient, []enforce.Check{check})
+	rec, err := s.authorizePlanned(ctx, c, registry.OpActivateRecipient, []enforce.Check{{ID: "recipient", Role: registry.RoleRecipient,
+		Action: "activate", Resource: canonical("crypto.recipient", fp)}}, keyPlan("activate", registry.RoleRecipient, "crypto.recipient", fp))
 	if err != nil {
 		return KeyRecord{}, err
 	}
@@ -198,7 +220,9 @@ func (s *Service) ActivateRecipient(ctx context.Context, c enforce.Caller, fp, c
 			c.Tenant, fp).Scan(&out.KeyVersion, &out.Revision); err != nil {
 			return err
 		}
-		return catalog.InsertRecipientResource(ctx, tx, c.Tenant, fp, c.Principal)
+		_, err = tx.Exec(ctx, `UPDATE resources SET generation = generation + 1, attributes = attributes || '{"status":"ACTIVE"}'
+		                        WHERE tenant = $1 AND type = 'crypto.recipient' AND id = $2`, c.Tenant, fp)
+		return err
 	})
 	return out, err
 }
@@ -207,8 +231,8 @@ func (s *Service) ActivateRecipient(ctx context.Context, c enforce.Caller, fp, c
 // sharing to it stop at the fence (KEY-008, KEY-010). The change is
 // journaled before it is committed.
 func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp string) error {
-	rec, err := s.authorize(ctx, c, registry.OpRevokeRecipient, []enforce.Check{{ID: "recipient", Role: registry.RoleRecipient,
-		Action: "revoke", Resource: canonical("crypto.recipient", fp)}})
+	rec, err := s.authorizePlanned(ctx, c, registry.OpRevokeRecipient, []enforce.Check{{ID: "recipient", Role: registry.RoleRecipient,
+		Action: "revoke", Resource: canonical("crypto.recipient", fp)}}, keyPlan("revoke", registry.RoleRecipient, "crypto.recipient", fp))
 	if err != nil {
 		return err
 	}
@@ -265,8 +289,7 @@ func (s *Service) lookup(ctx context.Context, c enforce.Caller, op string, check
 }
 
 // Recipient looks up a recipient key in the caller's tenant directory. It
-// needs discover on the key; a PENDING key is not a resource yet and is
-// decided as its planned resource, so the fence also sees an activation.
+// needs discover on the key, a resource from its enrollment on.
 func (s *Service) Recipient(ctx context.Context, c enforce.Caller, fp string) (KeyRecord, error) {
 	k := KeyRecord{Fingerprint: fp}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal, public_key, key_version, status, revision FROM recipient_keys
@@ -279,9 +302,6 @@ func (s *Service) Recipient(ctx context.Context, c enforce.Caller, fp string) (K
 		return KeyRecord{}, err
 	}
 	check := enforce.Check{ID: registry.RoleRecipient, Role: registry.RoleRecipient, Resource: canonical("crypto.recipient", fp)}
-	if k.Status == "PENDING" {
-		check = plannedRecipient(k.Principal, fp)
-	}
 	if err := s.lookup(ctx, c, registry.OpLookupRecipient, check); err != nil {
 		return KeyRecord{}, err
 	}
@@ -443,8 +463,8 @@ func (s *Service) Retire(ctx context.Context, c enforce.Caller, envelopeID strin
 	if err != nil {
 		return EnvelopeRef{}, ErrInvalid
 	}
-	rec, err := s.authorize(ctx, c, registry.OpRetireEnvelope, []enforce.Check{{ID: "envelope", Role: registry.RoleEnvelope, Action: "retire",
-		Resource: canonical("crypto.envelope", envelopeID)}})
+	rec, err := s.authorizePlanned(ctx, c, registry.OpRetireEnvelope, []enforce.Check{{ID: "envelope", Role: registry.RoleEnvelope, Action: "retire",
+		Resource: canonical("crypto.envelope", envelopeID)}}, keyPlan("retire", registry.RoleEnvelope, "crypto.envelope", envelopeID))
 	if err != nil {
 		return EnvelopeRef{}, err
 	}

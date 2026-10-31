@@ -151,8 +151,13 @@ const (
 	OpApproveVersion = "document.version.approve"
 	// OpApproveEntry decides an approval whose target is a collection
 	// entry (specification 2.6.2).
-	OpApproveEntry   = "collection.entry.approve"
-	OpApproveDerived = "derived.approve"
+	OpApproveEntry = "collection.entry.approve"
+	// OpApproveEnvelope and OpApproveRecipient decide approvals whose
+	// target is an envelope (its retirement) or a recipient key (its
+	// activation or revocation).
+	OpApproveEnvelope  = "crypto.envelope.approve"
+	OpApproveRecipient = "crypto.recipient.approve"
+	OpApproveDerived   = "derived.approve"
 	// Withdrawal of documents (PUB-005, DOC-002): deleting the key clears
 	// its head; withdrawing a version also withdraws units no live version
 	// references any more.
@@ -487,6 +492,8 @@ func baseOperations() []Operation {
 		one(OpApproveUnit, RoleUnit, "document.text_unit", "approve"),
 		one(OpApproveVersion, RoleVersion, "document.version", "approve"),
 		one(OpApproveEntry, RoleUnit, "text.entry", "approve"),
+		one(OpApproveEnvelope, RoleEnvelope, "crypto.envelope", "approve"),
+		one(OpApproveRecipient, RoleRecipient, "crypto.recipient", "approve"),
 		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
 		{Name: OpObjectExport, Checks: []CheckSpec{
 			{Role: RoleObject, ResourceType: "storage.object", Action: "export"},
