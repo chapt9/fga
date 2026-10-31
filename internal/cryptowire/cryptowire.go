@@ -33,6 +33,11 @@ const (
 	MaxSignatureBytes     = 1 << 10
 	BindingSize           = 60
 	keyPackageHeaderBytes = 2 + 2 + BindingSize + 4
+	// MaxExportBytes bounds the content one export carries: the
+	// ciphertext of an export package, or the plaintext of a server-mode
+	// export. The storage role enforces it and the SDK reads exports of
+	// that size (review v4 F12).
+	MaxExportBytes = 32 << 20
 )
 
 // ErrFormat is returned for any malformed or unsupported wire value.

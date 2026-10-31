@@ -1,8 +1,10 @@
 package content_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"fga/internal/content"
 	"fga/internal/r1test"
@@ -96,5 +98,71 @@ func TestDocumentWithdrawal(t *testing.T) {
 	}
 	if page, err := st.Content.ListUnits(ctx, alice.Caller, "reports", "q4.md", v3.DocumentVersion, 10, ""); err != nil || len(page.Units) != 1 {
 		t.Fatalf("a deleted key's version by ID: %+v, %v", page, err)
+	}
+}
+
+// TestWithdrawalLockOrder is the regression test of review v4 F11: a
+// withdrawal takes a unit's resource before its version, as a publication
+// that reuses the unit does, so the two wait for each other in one order
+// and never deadlock.
+func TestWithdrawalLockOrder(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	up, err := alice.PrepareDocument("reports", "q3.md", []string{"a"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := alice.FinalizeDocument(up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitVersion := up.Intent.Units[0].UnitVersion
+	var unitObject string
+	if err := st.Pool.QueryRow(ctx, `SELECT object::text FROM object_versions WHERE id::text = $1`, unitVersion).Scan(&unitObject); err != nil {
+		t.Fatal(err)
+	}
+	// A publication reusing the unit holds its resource in its fence...
+	tx, err := st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var pid int
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM resources WHERE id = $1 FOR SHARE`, unitObject); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.Content.WithdrawDocumentVersion(ctx, alice.Caller, "reports", "q3.md", v.DocumentVersion)
+		done <- err
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting int
+		if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the withdrawal never waited for the publication")
+		}
+	}
+	// ...and then takes the unit's version, which the withdrawal must not
+	// hold while it waits.
+	lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, err := tx.Exec(lockCtx, `SELECT 1 FROM object_versions WHERE id::text = $1 FOR SHARE`, unitVersion); err != nil {
+		t.Fatalf("the publication's version lock: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the withdrawal after the publication: %v", err)
 	}
 }

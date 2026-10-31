@@ -132,6 +132,17 @@ func (s *Service) WithdrawDocumentVersion(ctx context.Context, c Caller, bucketN
 		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND document_version = $2 AND status = 'ACTIVE'`, c.Tenant, dv); err != nil {
 			return err
 		}
+		// Lock the units' resources, then their versions, in that order
+		// and sorted: a publication that reuses a unit holds its resource
+		// in its fence before it takes the version, so the opposite order
+		// could deadlock with it (review v4 F11).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM resources WHERE tenant = $1 AND id IN (
+		      SELECT v.object::text FROM object_versions v JOIN document_units u ON u.tenant = v.tenant AND u.unit_version = v.id
+		       WHERE u.tenant = $1 AND u.document_version = $2
+		      UNION SELECT v.object::text FROM object_versions v WHERE v.tenant = $1 AND v.id = $3)
+		    ORDER BY id FOR UPDATE`, c.Tenant, dv, original); err != nil {
+			return err
+		}
 		// Lock the version's unit versions before looking for other
 		// references, so a concurrent publication that reuses one is
 		// either seen here or fails on the withdrawn state.

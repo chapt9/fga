@@ -555,13 +555,15 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 		if err := errors.Join(err1, err2, err3); err != nil {
 			return 0, err
 		}
+		// A local blob that fails the backup's receipt is replaced by the
+		// backup's verified bytes, not kept (review v4 F09).
 		r, c, err := openFile(dir, b.File, sealer)
 		if err != nil {
 			return 0, err
 		}
-		_, err = blobs.Put(blob.Ref{Tenant: tenant, Blob: id}, r, b.Length, sum)
+		_, err = blobs.Repair(blob.Ref{Tenant: tenant, Blob: id}, r, b.Length, sum)
 		c.Close()
-		if err != nil && !errors.Is(err, blob.ErrConflict) {
+		if err != nil {
 			return 0, err
 		}
 	}

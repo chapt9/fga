@@ -238,8 +238,42 @@ func (s *Store) Remove(r Ref) error {
 	return s.syncDir(r.dir())
 }
 
-// Put writes a complete blob from src, for restore. It is Begin, copy and
-// Finalize.
+// Repair stores src under ref as Put does, but where ref already holds
+// bytes that fail the receipt, it replaces them with src once src is
+// checked: the one place a blob is overwritten, for a restore from a
+// verified backup while admission is closed (review v4 F09). Bytes that
+// match are kept, as Put keeps them.
+func (s *Store) Repair(ref Ref, src io.Reader, length int64, sum cryptowire.Digest) (Receipt, error) {
+	w, err := s.Begin(ref, length)
+	if err != nil {
+		return Receipt{}, err
+	}
+	defer w.Abort()
+	if _, err := io.Copy(w, src); err != nil {
+		return Receipt{}, err
+	}
+	var got cryptowire.Digest
+	copy(got[:], w.h.Sum(nil))
+	if w.n != length || got != sum {
+		return Receipt{}, ErrMismatch
+	}
+	if err := w.f.Sync(); err != nil {
+		return Receipt{}, err
+	}
+	rec := Receipt{Ref: ref, Length: length, SHA256: sum}
+	if err := s.mkdirs(ref.dir()); err != nil {
+		return Receipt{}, err
+	}
+	if s.Verify(rec) == nil {
+		return rec, nil
+	}
+	if err := s.root.Rename(w.tmp, ref.name()); err != nil {
+		return Receipt{}, err
+	}
+	return rec, s.syncDir(ref.dir())
+}
+
+// Put writes a complete blob from src: Begin, copy and Finalize.
 func (s *Store) Put(ref Ref, src io.Reader, length int64, sum cryptowire.Digest) (Receipt, error) {
 	w, err := s.Begin(ref, length)
 	if err != nil {

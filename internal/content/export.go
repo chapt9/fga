@@ -25,8 +25,9 @@ import (
 // Export of document units (Table "Compound operations", KEY-012,
 // V-132 to V-136) and metadata search (SRH-001 to SRH-004).
 
-// MaxExportBytes bounds the ciphertext one export package carries.
-const MaxExportBytes = 32 << 20
+// MaxExportBytes bounds the content one export carries
+// (cryptowire.MaxExportBytes).
+const MaxExportBytes = cryptowire.MaxExportBytes
 
 // ExportUnit is one exported unit: its descriptor, its exact ciphertext and
 // the target recipient's existing envelope with a delivery receipt.

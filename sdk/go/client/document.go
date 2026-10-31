@@ -297,7 +297,19 @@ func (c *Client) GetOriginal(ctx context.Context, bucket, key, version string, d
 	if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/original/package", key, version, extra), c.StorageToken, nil, -1, nil, &p); err != nil {
 		return err
 	}
-	resp, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/original/ciphertext", key, version, nil), c.StorageToken, nil, -1, nil, nil)
+	// The envelope names the document version the original belongs to; it
+	// must be the requested one (review finding 8), and the ciphertext is
+	// fetched from it, not from whatever is current by then (review v4
+	// F13).
+	ectx, err := cryptowire.ParseEnvelopeContext(p.Envelope.Context)
+	if err != nil {
+		return err
+	}
+	if ectx.DocumentVersion.IsZero() || version != "" && ectx.DocumentVersion.String() != version {
+		return ErrIdentity
+	}
+	resp, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/original/ciphertext", key, ectx.DocumentVersion.String(), nil),
+		c.StorageToken, nil, -1, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -312,13 +324,7 @@ func (c *Client) GetOriginal(ctx context.Context, bucket, key, version string, d
 	if err != nil || n != p.Version.CiphertextLength {
 		return fmt.Errorf("fga: incomplete original transfer: %v", err)
 	}
-	// The envelope names the document version the original belongs to; it
-	// must be the requested one (review finding 8).
-	ectx, err := cryptowire.ParseEnvelopeContext(p.Envelope.Context)
-	if err != nil {
-		return err
-	}
-	if err := checkVersion(p.Descriptor, p.Version.Version, ""); err != nil || version != "" && ectx.DocumentVersion.String() != version {
+	if err := checkVersion(p.Descriptor, p.Version.Version, ""); err != nil {
 		return ErrIdentity
 	}
 	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
@@ -455,8 +461,8 @@ func (c *Client) ExportUnitsPlain(ctx context.Context, bucket, key, version stri
 		Units []UnitText `json:"units"`
 	}
 	body, n := jsonBody(map[string][]string{"units": units})
-	_, err := c.do(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export/content", key, version, nil), c.StorageToken, body, n,
-		map[string]string{"Content-Type": "application/json"}, &out)
+	_, err := c.doLimit(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export/content", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out, maxExportResponse)
 	return out.Units, err
 }
 
@@ -547,22 +553,19 @@ func (c *Client) GetDocument(ctx context.Context, bucket, key, version string, d
 	if err != nil {
 		return 0, err
 	}
-	// Every unit must come from one document version: the requested one,
-	// or the version the first unit names. A server-mode unit has no
-	// client descriptor and is read as plaintext from the listed version;
-	// its content is the server's word, as in all of server mode (N-09).
+	// Every unit is read from the version listed, never from whatever is
+	// current by the time it is fetched (review v4 F13): a client-mode
+	// unit's signed descriptor must name that version. A server-mode unit
+	// has no client descriptor and is read as plaintext; its content is the
+	// server's word, as in all of server mode (N-09).
 	for i, u := range units {
 		var plain bytes.Buffer
 		if len(u.Descriptor) == 0 {
 			if err := c.GetUnitPlain(ctx, bucket, key, listed, u.Unit, &plain); err != nil {
 				return i, err
 			}
-		} else {
-			dv, err := c.getUnit(ctx, bucket, key, version, u.Unit, &plain)
-			if err != nil {
-				return i, err
-			}
-			version = dv
+		} else if _, err := c.getUnit(ctx, bucket, key, listed, u.Unit, &plain); err != nil {
+			return i, err
 		}
 		if i > 0 {
 			if _, err := io.WriteString(dst, "\n\n"); err != nil {
@@ -671,8 +674,8 @@ func (c *Client) Export(ctx context.Context, bucket, key, version string, units 
 		Units []ExportedUnit `json:"units"`
 	}
 	body, n := jsonBody(map[string]any{"unit_ids": units, "recipient": recipient.String()})
-	_, err := c.do(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
-		map[string]string{"Content-Type": "application/json"}, &out)
+	_, err := c.doLimit(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out, maxExportResponse)
 	return out.Units, err
 }
 
@@ -696,8 +699,8 @@ type ExportedObject struct {
 func (c *Client) ExportObject(ctx context.Context, bucket, key, version string, recipient cryptowire.Digest) (ExportedObject, error) {
 	var out ExportedObject
 	body, n := jsonBody(map[string]string{"recipient": recipient.String()})
-	_, err := c.do(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
-		map[string]string{"Content-Type": "application/json"}, &out)
+	_, err := c.doLimit(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out, maxExportResponse)
 	if err == nil {
 		err = checkVersion(out.Descriptor, out.Version.Version, version)
 	}

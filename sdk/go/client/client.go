@@ -87,6 +87,21 @@ type Client struct {
 }
 
 func (c *Client) do(ctx context.Context, method, url, token string, body io.Reader, length int64, header map[string]string, out any) (*http.Response, error) {
+	return c.doLimit(ctx, method, url, token, body, length, header, out, maxResponse)
+}
+
+// maxResponse bounds a JSON response; maxExportResponse an export's, whose
+// content of up to cryptowire.MaxExportBytes travels base64 encoded (4/3
+// of it) or as JSON text, with descriptors and envelopes besides (review
+// v4 F12).
+const (
+	maxResponse       = 16 << 20
+	maxExportResponse = 2*cryptowire.MaxExportBytes + 8<<20
+)
+
+// doLimit is do with a bound on the JSON response it decodes.
+func (c *Client) doLimit(ctx context.Context, method, url, token string, body io.Reader, length int64, header map[string]string, out any,
+	limit int64) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
@@ -126,7 +141,7 @@ func (c *Client) do(ctx context.Context, method, url, token string, body io.Read
 		return resp, nil
 	}
 	defer resp.Body.Close()
-	return resp, json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out)
+	return resp, json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out)
 }
 
 func jsonBody(v any) (io.Reader, int64) {

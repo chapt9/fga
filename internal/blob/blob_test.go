@@ -110,6 +110,32 @@ func TestVerifyAndRemove(t *testing.T) {
 	}
 }
 
+// TestRepair covers review v4 F09: Repair replaces bytes that fail the
+// receipt, keeps bytes that match it, and refuses source bytes that do not
+// match, leaving the blob as it was.
+func TestRepair(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	ref := Ref{Tenant: cryptowire.NewUUID(), Blob: cryptowire.NewUUID()}
+	data := []byte("abcdef")
+	rec, _ := put(t, s, ref, data)
+	if _, err := s.Repair(ref, bytes.NewReader([]byte("abcdeX")), 6, digestOf(data)); !errors.Is(err, ErrMismatch) || s.Verify(rec) != nil {
+		t.Fatalf("repair from wrong bytes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ref.name()), []byte("abcdeX"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ref, bytes.NewReader(data), 6, digestOf(data)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Put over damaged bytes: %v", err)
+	}
+	if _, err := s.Repair(ref, bytes.NewReader(data), 6, digestOf(data)); err != nil || s.Verify(rec) != nil {
+		t.Fatalf("repair of damaged bytes: %v", err)
+	}
+	if _, err := s.Repair(ref, bytes.NewReader(data), 6, digestOf(data)); err != nil || s.Verify(rec) != nil {
+		t.Fatalf("repair of intact bytes: %v", err)
+	}
+}
+
 // TestSymlinkCannotEscape covers BKD-003: a planted symlink in the store
 // does not lead outside it.
 func TestSymlinkCannotEscape(t *testing.T) {

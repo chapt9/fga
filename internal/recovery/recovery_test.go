@@ -121,6 +121,43 @@ func TestReconcileQuarantines(t *testing.T) {
 	}
 }
 
+// TestRestoreRepairsDamagedBlob is the regression test of review v4 F09: a
+// local blob that fails the backup's receipt is replaced by the backup's
+// verified bytes, so the version is served again instead of quarantined.
+func TestRestoreRepairsDamagedBlob(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("payroll")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	damaged := 0
+	err := filepath.WalkDir(filepath.Join(st.BlobDir, "blobs"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		damaged++
+		return os.WriteFile(p, []byte("damaged"), 0o600)
+	})
+	if err != nil || damaged == 0 {
+		t.Fatalf("damaging %d blobs: %v", damaged, err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal)
+	if err != nil || rep.Quarantined != 0 {
+		t.Fatalf("reconcile after repair = %+v, %v", rep, err)
+	}
+	if got, err := alice.Get("reports", "doc", ""); err != nil || string(got) != "payroll" {
+		t.Fatalf("the repaired version: %q %v", got, err)
+	}
+}
+
 // TestBackupIntegrity: a backup file changed after the backup is refused.
 func TestBackupIntegrity(t *testing.T) {
 	st := r1test.New(t)
