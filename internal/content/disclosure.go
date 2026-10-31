@@ -442,23 +442,25 @@ func (s *Service) original(ctx context.Context, tenant string, d docVersion) (cr
 
 // completeContent decides raw-read on the version and read on every unit
 // (CNT-003): the original discloses everything, so it needs everything.
-// Any denial is ErrNotFound.
-func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, singleUse bool) ([]signing.Record, error) {
+// Any denial is ErrNotFound. The decisions are for audience: the storage
+// role's own, or the keys role's when they go with an envelope release.
+func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, singleUse bool, audience string) ([]signing.Signed, []signing.Record, error) {
 	ms, err := s.members(ctx, c.Tenant, d.id, -1, cryptowire.MaxUnits, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var signed []signing.Signed
 	var recs []signing.Record
 	for start := 0; start < len(ms); start += maxBatch - 1 {
 		checks := selectChecks(d.id, ms[start:min(len(ms), start+maxBatch-1)])
 		checks[0].action = "raw-read"
-		_, rec, err := s.decide(ctx, c, registry.OpDocRawRead, Audience, singleUse, checks)
+		sg, rec, err := s.decide(ctx, c, registry.OpDocRawRead, audience, singleUse, checks)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		recs = append(recs, rec)
+		signed, recs = append(signed, sg), append(recs, rec)
 	}
-	return recs, nil
+	return signed, recs, nil
 }
 
 // OriginalPackage returns the original file's signed object descriptor and
@@ -477,14 +479,11 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 	if err != nil {
 		return Package{}, err
 	}
-	recs, err := s.completeContent(ctx, c, d, false)
+	// The complete-content decisions are for the keys role, which binds
+	// them in its delivery fence (review finding 3).
+	complete, _, err := s.completeContent(ctx, c, d, true, KeysAudience)
 	if err != nil {
 		return Package{}, err
-	}
-	for _, rec := range recs {
-		if err := s.checked(ctx, rec); err != nil {
-			return Package{}, err
-		}
 	}
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
@@ -505,7 +504,7 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 	if err != nil {
 		return Package{}, err
 	}
-	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
+	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, complete...)
 	if err != nil {
 		return Package{}, err
 	}
@@ -524,7 +523,7 @@ func (s *Service) ReadOriginal(ctx context.Context, c Caller, bucketName, key, v
 	if err != nil {
 		return nil, err
 	}
-	recs, err := s.completeContent(ctx, c, d, true)
+	_, recs, err := s.completeContent(ctx, c, d, true, Audience)
 	if err != nil {
 		return nil, err
 	}

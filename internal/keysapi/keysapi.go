@@ -51,6 +51,14 @@ type (
 		Payload    []byte `json:"payload"`
 		JWS        string `json:"jws"`
 		EnvelopeID string `json:"envelope_id"`
+		// Extra holds further decisions the release needs, such as the
+		// complete-content decisions of an original file.
+		Extra []SignedBody `json:"extra,omitempty"`
+	}
+	// SignedBody is one signed decision.
+	SignedBody struct {
+		Payload []byte `json:"payload"`
+		JWS     string `json:"jws"`
 	}
 	// DeliveredBody is the internal delivery response.
 	DeliveredBody struct {
@@ -153,7 +161,11 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		if !httpapi.DecodeJSON(w, r, &b) {
 			return
 		}
-		d, err := svc.Deliver(r.Context(), signingSigned(b), b.EnvelopeID)
+		var extra []signing.Signed
+		for _, x := range b.Extra {
+			extra = append(extra, signing.Signed{Payload: x.Payload, JWS: x.JWS})
+		}
+		d, err := svc.Deliver(r.Context(), signingSigned(b), b.EnvelopeID, extra...)
 		if err != nil {
 			httpapi.Fail(w, r, err, classify)
 			return

@@ -165,10 +165,10 @@ func (d Decider) Decide(ctx context.Context, req decisionsvc.Request) (decisions
 	return d.Service.Decide(ctx, d.Adapter, req), nil
 }
 
-type deliveryFunc func(ctx context.Context, decision signing.Signed, envelopeID string) (content.Delivered, error)
+type deliveryFunc func(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (content.Delivered, error)
 
-func (f deliveryFunc) Deliver(ctx context.Context, d signing.Signed, id string) (content.Delivered, error) {
-	return f(ctx, d, id)
+func (f deliveryFunc) Deliver(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
+	return f(ctx, d, id, extra...)
 }
 
 // Options change the fixture.
@@ -276,8 +276,8 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	_, _ = rand.Read(tokenKey)
 	st.Content, err = content.New(content.Deps{Catalog: st.Catalog, Blobs: st.Blobs, Fence: st.Fence,
 		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide}, Verifier: st.Verifier(content.Audience),
-		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string) (content.Delivered, error) {
-			return st.Keys.Deliver(ctx, d, id)
+		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
+			return st.Keys.Deliver(ctx, d, id, extra...)
 		}), TokenKey: tokenKey, Limits: limits(), Now: now})
 	if err != nil {
 		t.Fatal(err)

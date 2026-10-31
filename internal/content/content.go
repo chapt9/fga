@@ -71,7 +71,7 @@ var Authorize = enforce.Authorize
 // EnvelopeDelivery is the keys role's internal delivery endpoint (TB3,
 // TRU-005).
 type EnvelopeDelivery interface {
-	Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (Delivered, error)
+	Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error)
 }
 
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are

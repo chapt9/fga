@@ -51,9 +51,13 @@ type KeysClient struct {
 var ErrDelivery = errors.New("rpc: the keys role refused the delivery")
 
 // Deliver implements content.EnvelopeDelivery.
-func (c KeysClient) Deliver(ctx context.Context, d signing.Signed, envelopeID string) (envelope.Delivered, error) {
+func (c KeysClient) Deliver(ctx context.Context, d signing.Signed, envelopeID string, extra ...signing.Signed) (envelope.Delivered, error) {
 	var out keysapi.DeliveredBody
-	err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/deliver", keysapi.DeliverBody{Payload: d.Payload, JWS: d.JWS, EnvelopeID: envelopeID}, &out)
+	body := keysapi.DeliverBody{Payload: d.Payload, JWS: d.JWS, EnvelopeID: envelopeID}
+	for _, x := range extra {
+		body.Extra = append(body.Extra, keysapi.SignedBody{Payload: x.Payload, JWS: x.JWS})
+	}
+	err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/deliver", body, &out)
 	var se statusError
 	if errors.As(err, &se) && se == http.StatusNotFound {
 		return envelope.Delivered{}, enforce.ErrNotFound

@@ -185,7 +185,13 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // ACTIVE, and records the delivery. It returns the exact stored envelope
 // with a signed receipt; it never selects another recipient or creates an
 // envelope (RCP-005, KEY-015).
-func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (Delivered, error) {
+//
+// The original file's envelope also needs the complete-content decisions
+// (raw-read on the version and read on every unit) as extra, signed for
+// the keys role; they must cover every unit of the version and are
+// admitted in the same fence, so a change to any unit between the storage
+// role's checks and the release is seen (review finding 3).
+func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
 	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope, rec.Operation == registry.OpDocGetOriginalEnvelope
 	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original) ||
@@ -231,9 +237,20 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	if err != nil {
 		return Delivered{}, ErrDecision
 	}
+	bindings := []fence.Binding{b}
+	if original != (len(extra) > 0) {
+		return Delivered{}, ErrDecision
+	}
+	if original {
+		more, err := s.completeContent(ctx, rec, *e.DocumentVersion, extra)
+		if err != nil {
+			return Delivered{}, err
+		}
+		bindings = append(bindings, more...)
+	}
 	var tenantID cryptowire.UUID
 	var recipientPrincipal string
-	err = s.d.Fence.Run(ctx, b, nil, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM object_versions WHERE tenant = $1 AND id = $2 FOR SHARE`, rec.Tenant, e.Version).Scan(&state); err != nil {
 			return err
@@ -300,4 +317,63 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	}
 	return Delivered{EnvelopeID: e.ID.String(), Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature,
 		Receipt: receipt, ReceiptSignature: sig}, nil
+}
+
+// completeContent verifies the complete-content decisions of an original's
+// delivery: each is a single-use document.raw-read decision for the keys
+// role, by the same tenant and actor as the delivery decision, with
+// raw-read on this document version and read on units of it; together
+// they name every unit version of the version exactly once.
+func (s *Service) completeContent(ctx context.Context, primary signing.Record, documentVersion cryptowire.UUID, extra []signing.Signed) ([]fence.Binding, error) {
+	members := map[string]string{}
+	rows, err := s.d.Catalog.Pool().Query(ctx, `SELECT unit::text, unit_version::text FROM document_units WHERE tenant = $1 AND document_version = $2`,
+		primary.Tenant, documentVersion)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var unit, version string
+		if err := rows.Scan(&unit, &version); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		members[unit] = version
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	covered := map[string]bool{}
+	var out []fence.Binding
+	for _, x := range extra {
+		rec, err := s.d.Verifier.Check(x)
+		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+			return nil, ErrDecision
+		}
+		version := false
+		for _, c := range rec.Checks {
+			switch {
+			case c.Kind != string(registry.KindOperation):
+				return nil, ErrDecision
+			case c.ResourceType == "document.version" && c.Action == "raw-read" && c.ResourceID == documentVersion.String():
+				version = true
+			case c.ResourceType == "document.text_unit" && c.Action == "read" && members[c.ResourceID] == c.Version && !covered[c.ResourceID]:
+				covered[c.ResourceID] = true
+			default:
+				return nil, ErrDecision
+			}
+		}
+		if !version {
+			return nil, ErrDecision
+		}
+		b, err := fence.FromRecord(rec)
+		if err != nil {
+			return nil, ErrDecision
+		}
+		out = append(out, b)
+	}
+	if len(covered) != len(members) {
+		return nil, ErrDecision
+	}
+	return out, nil
 }

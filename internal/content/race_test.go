@@ -3,6 +3,7 @@ package content_test
 import (
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"fga/internal/content"
@@ -53,5 +54,47 @@ func TestOverwriteDuringReadKeepsHistoryRule(t *testing.T) {
 	// Without a concurrent write, the current version reads normally.
 	if _, err := st.Content.Stat(ctx, bob.Caller, "reports", "doc", ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestOriginalDeliveryBindsUnits is the regression test of review finding
+// 3: the original's envelope was released by a keys-role decision that
+// did not bind the per-unit read checks, so a unit's label raised after
+// the storage role's checks still let the envelope out. The unit checks
+// now reach the keys role's delivery fence.
+func TestOriginalDeliveryBindsUnits(t *testing.T) {
+	policies := map[string]string{}
+	for name, doc := range r1test.Policies {
+		policies[name] = doc
+	}
+	policies["documents.json"] = strings.Replace(policies["documents.json"], `"actions":["read-units","discover"],"roles":["member"]`,
+		`"actions":["read-units","discover","raw-read"],"roles":["member"]`, 1)
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	alice.Pin(bob)
+	up, err := alice.PrepareDocumentWithOriginal("reports", "q3.pdf", []string{"a", "b"}, []byte("original"), alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	unit := up.Intent.Units[1].Unit
+	st.BeforeDecide = func(req decisionsvc.Request) {
+		if req.Operation == registry.OpDocGetOriginalEnvelope {
+			st.BeforeDecide = nil
+			if _, err := st.Pool.Exec(ctx, `UPDATE resources SET attributes = attributes || '{"label":"restricted"}',
+			                                metadata_revision = metadata_revision + 1 WHERE id = $1`, unit); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	if _, err := st.Content.OriginalPackage(ctx, bob.Caller, "reports", "q3.pdf", "", bob.Recipient.Fingerprint().String()); err == nil {
+		t.Fatal("the original's envelope was delivered after bob lost read on a unit")
+	}
+	if _, err := st.Content.OriginalPackage(ctx, bob.Caller, "reports", "q3.pdf", "", bob.Recipient.Fingerprint().String()); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a fresh request after the change: %v", err)
 	}
 }
