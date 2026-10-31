@@ -98,7 +98,13 @@ func TestVersionModeGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Pool.Exec(ctx, `UPDATE object_versions SET encryption = 'server' WHERE id::text = $1`, p.Version); err != nil {
+	// A server-mode version carries a sealed data key under a KEK version
+	// (SSE-002); these bytes stand in for one.
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO kek_versions VALUES ($1, 1, 'ACTIVE', now())`, r1test.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE object_versions SET encryption = 'server', sealed_key = '\x00', kek_version = 1 WHERE id::text = $1`,
+		p.Version); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := alice.Get("reports", "a.txt", ""); !errors.Is(err, content.ErrEncryptionMode) {

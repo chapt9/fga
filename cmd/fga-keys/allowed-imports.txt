@@ -10,6 +10,34 @@ fga/internal/audit
 fga/internal/authn
 fga/internal/catalog
 fga/internal/cryptowire
+# Reviewed 2026-10-31 (D-12, SSE-002, SSE-003): server-mode data keys. The
+# keys role seals and opens 32-byte data keys with its tenants' KEKs
+# (AES-256-GCM through Tink's aead package) and reads its ring file, which
+# keyfile protects with Argon2id. No payload cipher (streamingaead) and no
+# HPKE (hybrid) is linked; CheckForbidden proves it.
+fga/internal/datakeys
+fga/internal/datakeysapi
+fga/internal/kek
+fga/internal/keyfile
+github.com/tink-crypto/tink-go/v2/aead
+github.com/tink-crypto/tink-go/v2/core
+github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess
+github.com/tink-crypto/tink-go/v2/internal
+github.com/tink-crypto/tink-go/v2/key
+github.com/tink-crypto/tink-go/v2/keyset
+github.com/tink-crypto/tink-go/v2/monitoring
+github.com/tink-crypto/tink-go/v2/prf
+github.com/tink-crypto/tink-go/v2/proto
+github.com/tink-crypto/tink-go/v2/secretdata
+github.com/tink-crypto/tink-go/v2/subtle
+github.com/tink-crypto/tink-go/v2/tink
+golang.org/x/crypto/argon2
+golang.org/x/crypto/blake2b
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/
 fga/internal/decision
 fga/internal/decisionsvc
 fga/internal/delegation

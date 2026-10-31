@@ -18,9 +18,12 @@
 //	epoch raise        -tenant T -epoch N                    (journaled)
 //	backup-key generate -out FILE [-encrypt]        create a backup key (keep it apart from catalog and backups)
 //	key protect|unprotect -file FILE                encrypt a backup key file with a passphrase, or decrypt it
+//	kek init           -file FILE [-encrypt]        create the ring of server-mode key-encryption keys (development custody, D-13)
+//	kek rotate         -tenant T -file FILE         add the tenant's next KEK version and reseal its data keys under it
 //
 // A protected backup key is opened with the passphrase from
-// -passphrase-file or $FGA_BACKUP_KEY_PASSPHRASE (docs/design/key-files.md).
+// -passphrase-file or $FGA_BACKUP_KEY_PASSPHRASE (docs/design/key-files.md),
+// a protected KEK ring with -passphrase-file or $FGA_KEK_PASSPHRASE.
 //
 //	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
 //	journal init                          create the security journal once, at setup
@@ -38,6 +41,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +53,7 @@ import (
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/journal"
+	"fga/internal/kek"
 	"fga/internal/keyfile"
 	"fga/internal/recovery"
 )
@@ -169,6 +174,7 @@ func run(args []string) error {
 		return nil
 	}
 	passphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_BACKUP_KEY_PASSPHRASE", *passphraseFile) }
+	kekPassphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_KEK_PASSPHRASE", *passphraseFile) }
 	backupKey := func() (*backupcrypt.Key, error) {
 		if *backupKeyFile == "" {
 			return nil, errors.New("backups are encrypted: -backup-key is required")
@@ -318,6 +324,59 @@ func run(args []string) error {
 			}
 		}
 		return keyfile.Write(*out, raw)
+	case "kek init":
+		if err := need(*keyFile); err != nil {
+			return err
+		}
+		if _, err := os.Stat(*keyFile); err == nil {
+			return fmt.Errorf("%s already exists", *keyFile)
+		}
+		var p []byte
+		if *encrypt {
+			var err error
+			if p, err = kekPassphrase(); err != nil {
+				return err
+			}
+			defer clear(p)
+		}
+		return kek.WriteRing(*keyFile, kek.NewRing(), p)
+	case "kek rotate":
+		if err := need(*tenant, *keyFile); err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return err
+		}
+		var p []byte
+		if keyfile.Protected(raw) {
+			if p, err = kekPassphrase(); err != nil {
+				return err
+			}
+			defer clear(p)
+		}
+		ring, err := kek.ReadRing(*keyFile, func() ([]byte, error) { return slices.Clone(p), nil })
+		if err != nil {
+			return err
+		}
+		// The ring gets the new version first: if the catalog step fails,
+		// the ring holds an unused version and nothing refers to it.
+		v, err := ring.Add(*tenant, time.Now())
+		if err != nil {
+			return err
+		}
+		if err := kek.WriteRing(*keyFile, ring, p); err != nil {
+			return err
+		}
+		n, err := e.store.RotateKEK(ctx, *tenant, v, time.Now(), func(k catalog.SealedKey) ([]byte, error) {
+			return ring.Reseal(*tenant, k.KEKVersion, v, k.Sealed,
+				kek.Binding{Tenant: k.Tenant, Object: k.Object, Version: k.Version, CryptoVersion: k.CryptoVersion, Blob: k.Blob})
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("tenant %s: KEK version %d is active; %d data keys resealed\n", *tenant, v, n)
+		return nil
 	case "key protect", "key unprotect":
 		if err := need(*keyFile); err != nil {
 			return err

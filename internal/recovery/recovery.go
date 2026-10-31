@@ -37,10 +37,12 @@ import (
 // Tables are the catalog tables a backup holds, in an order that satisfies
 // every foreign key except the deferred head pointer. Enrollment
 // challenges hold short-lived secrets and are not backed up. The optional
-// executor's tables are not part of an R1 backup.
+// executor's tables are not part of an R1 backup. kek_versions holds which
+// server-mode KEK versions exist, never a key: the keys live in the keys
+// role's ring and are recovered apart from backups (SSE-006).
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases",
-	"recipient_keys", "signing_keys", "buckets", "objects", "object_versions", "document_versions", "document_units",
+	"recipient_keys", "signing_keys", "kek_versions", "buckets", "objects", "object_versions", "document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox",
 	"label_orders", "label_order_active", "label_proposals", "journal_state",

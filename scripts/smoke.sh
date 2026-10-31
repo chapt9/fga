@@ -36,7 +36,8 @@ J
 COMMON="\"database_url\":\"$URL\",\"dev_adapter_id\":\"local-dev\",\"token_issuer\":{\"issuer\":\"fga-dev\",\"keys\":{\"tok-1\":\"$ISS\"}},\"decision\":{\"url\":\"http://127.0.0.1:17443\"},\"decision_keys\":{\"decision-1\":\"$DEC\"}"
 cat > keys.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18442",$COMMON,"journal_dir":"journal",
- "receipt_key_file":"receipt.key","receipt_key_id":"receipt-1","storage_adapter":"local-dev","outbox_capacity":100000}
+ "receipt_key_file":"receipt.key","receipt_key_id":"receipt-1","storage_adapter":"local-dev","outbox_capacity":100000,
+ "kek_file":"keks"}
 J
 cat > storage.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18441",$COMMON,"blob_dir":"blobs",
@@ -47,6 +48,13 @@ sleep 2
 # The security journal is created once, before the keys role opens it; a
 # missing journal is never recreated implicitly.
 $B/fga-admin -db $URL -journal journal journal init > /dev/null
+# Server-mode key-encryption keys (D-12, S2): a passphrase-protected
+# development ring with the tenant's first KEK version, which the keys role
+# opens at start. Server-mode uploads come with S3.
+export FGA_KEK_PASSPHRASE="smoke kek passphrase"
+$B/fga-admin -db $URL kek init -file keks -encrypt
+$B/fga-admin -db $URL kek rotate -tenant t-acme -file keks
+grep -q '"format":"fga.keyfile/v1"' keks && echo "KEK ring is passphrase-protected"
 $B/fga-keys -config keys.json > keys.log 2>&1 & echo $! >> pids
 $B/fga-storage -config storage.json > storage.log 2>&1 & echo $! >> pids
 trap 'kill $(cat pids) 2>/dev/null; sleep 1; dropdb -h localhost --if-exists '$DB'' EXIT

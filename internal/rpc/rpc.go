@@ -47,6 +47,46 @@ type KeysClient struct {
 	HTTP    *http.Client
 }
 
+// DataKey is a server-mode data key from the keys role. The caller owns Key
+// and clears it after use (SSE-004).
+type DataKey struct {
+	Key        []byte
+	Sealed     []byte
+	KEKVersion uint32
+}
+
+// SealDataKey asks the keys role for a server-mode upload intent's data key
+// against a decision for storage.key.seal-create or seal-version (SSE-003).
+func (c KeysClient) SealDataKey(ctx context.Context, d signing.Signed, intentID string) (DataKey, error) {
+	var out keysapi.DataKeyBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/seal",
+		keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, IntentID: intentID}, &out); err != nil {
+		return DataKey{}, keysError(err)
+	}
+	return DataKey{Key: out.Key, Sealed: out.Sealed, KEKVersion: out.KEKVersion}, nil
+}
+
+// ReleaseDataKey asks the keys role for a server-mode version's data key
+// against a decision for storage.key.release or release-history (SSE-003).
+func (c KeysClient) ReleaseDataKey(ctx context.Context, d signing.Signed, versionID string) ([]byte, error) {
+	var out keysapi.DataKeyBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/release",
+		keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, VersionID: versionID}, &out); err != nil {
+		return nil, keysError(err)
+	}
+	return out.Key, nil
+}
+
+// keysError maps the keys role's not-found to the shared one, so a denied
+// and an absent target look the same to the caller (CNT-004).
+func keysError(err error) error {
+	var se statusError
+	if errors.As(err, &se) && se == http.StatusNotFound {
+		return enforce.ErrNotFound
+	}
+	return err
+}
+
 // ErrDelivery is returned when the keys role refuses a delivery.
 var ErrDelivery = errors.New("rpc: the keys role refused the delivery")
 

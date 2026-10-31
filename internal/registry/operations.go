@@ -44,6 +44,15 @@ const (
 	// OpBucketSetEncryption changes a bucket's encryption mode for uploads
 	// begun afterwards (ENC-001).
 	OpBucketSetEncryption = "storage.bucket.set-encryption"
+	// Server-mode data keys (SSE-003), decided for the keys role and
+	// single-use. Sealing gives an upload intent its data key under the
+	// write's checks: create-object for a new key, new-version for an
+	// existing one. Releasing opens a version's data key under the read's
+	// checks; an older version also needs read-history.
+	OpKeySealCreate     = "storage.key.seal-create"
+	OpKeySealVersion    = "storage.key.seal-version"
+	OpKeyRelease        = "storage.key.release"
+	OpKeyReleaseHistory = "storage.key.release-history"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -173,6 +182,7 @@ var preparatory = map[string]bool{
 	OpBeginCreate: true, OpBeginVersion: true, OpStageCreate: true, OpStageVersion: true,
 	OpDocBeginCreate: true, OpDocBeginVersion: true,
 	OpDerivedBegin: true, OpDerivedBeginVersion: true, OpDerivedStageVersion: true,
+	OpKeySealCreate: true, OpKeySealVersion: true,
 }
 
 // entryTwins are the text-entry forms of the unit operations (DOC-005):
@@ -257,6 +267,11 @@ func baseOperations() []Operation {
 		one(OpApproveObject, RoleObject, "storage.object", "approve"),
 		one(OpApproveBucket, RoleBucket, "storage.bucket", "approve"),
 		one(OpBucketSetEncryption, RoleBucket, "storage.bucket", "manage"),
+		one(OpKeySealCreate, RoleBucket, "storage.bucket", "create-object"),
+		one(OpKeySealVersion, RoleObject, "storage.object", "new-version"),
+		one(OpKeyRelease, RoleObject, "storage.object", "read"),
+		{Name: OpKeyReleaseHistory, Checks: []CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "read"},
+			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history"}}},
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),

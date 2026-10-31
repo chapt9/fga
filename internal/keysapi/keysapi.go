@@ -82,14 +82,39 @@ type (
 		Receipt          []byte               `json:"receipt"`
 		ReceiptSignature string               `json:"receipt_signature"`
 	}
+	// DataKeyRequest asks the keys role to seal a data key for an upload
+	// intent or to release a version's data key (internal/datakeysapi,
+	// SSE-003); exactly one of IntentID and VersionID is set.
+	DataKeyRequest struct {
+		Payload   []byte `json:"payload"`
+		JWS       string `json:"jws"`
+		IntentID  string `json:"intent_id,omitempty"`
+		VersionID string `json:"version_id,omitempty"`
+	}
+	// DataKeyBody is a data key, and when sealed for an intent its sealed
+	// form and KEK version. It travels only between the keys and storage
+	// roles (SSE-004).
+	DataKeyBody struct {
+		Key        []byte `json:"key"`
+		Sealed     []byte `json:"sealed,omitempty"`
+		KEKVersion uint32 `json:"kek_version,omitempty"`
+	}
 )
 
 // Keys returns the keys role's handler. adapterOf identifies the workload
 // calling the internal delivery endpoint, which only storage may call
 // (TB3); its decision is verified as well (TRU-005).
+//
+// more registers further routes on the same mux; the keys role adds the
+// server-mode data-key routes this way (internal/datakeysapi), so that this
+// package, which the storage role links for its wire types, links no
+// key-encryption code (MOD-004).
 func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*http.Request) (string, error), storageAdapter string, ready func() bool,
-	limiter *admission.Limiter) http.Handler {
+	limiter *admission.Limiter, more ...func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
+	for _, register := range more {
+		register(mux)
+	}
 	httpapi.Health(mux, ready)
 	auth := func(h func(http.ResponseWriter, *http.Request, enforce.Caller)) http.HandlerFunc {
 		return httpapi.Authed(tokens, enforce.KeysAudience, httpapi.Admitted(limiter, false, h))

@@ -42,6 +42,9 @@ type Target struct {
 	Generation uint64 `json:"generation,omitempty"`
 	Signer     string `json:"signer,omitempty"`
 	Digest     string `json:"digest,omitempty"`
+	// KEKVersion is the key-encryption key version a server-mode data key
+	// was sealed or released under (SSE-003).
+	KEKVersion uint32 `json:"kek_version,omitempty"`
 }
 
 // Check summarizes one check. It names resources and actions but carries no

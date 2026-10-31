@@ -13,3 +13,14 @@ func TestImportAllowlist(t *testing.T) {
 	depcheck.Check(t)
 	depcheck.CheckForbidden(t)
 }
+
+// TestNoKeyEncryptionKeys covers SSE-002 and MOD-004: the storage role
+// links neither the key-encryption keys nor the code that seals and
+// releases data keys; it receives a data key only from the keys role.
+func TestNoKeyEncryptionKeys(t *testing.T) {
+	for _, dep := range depcheck.Deps(t) {
+		if dep == "fga/internal/kek" || dep == "fga/internal/datakeys" || dep == "fga/internal/datakeysapi" {
+			t.Errorf("the storage role links %s", dep)
+		}
+	}
+}
