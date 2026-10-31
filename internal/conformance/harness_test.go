@@ -29,7 +29,15 @@ type Fixture struct {
 		AtMost    string `json:"at_most"`
 	} `json:"assertions"`
 	digest string
+	// steps are the schedule steps the case executed, in order.
+	steps []string
 }
+
+// step records that the case executes the fixture's schedule step name
+// now. check fails a case whose executed steps differ from the schedule,
+// so a changed schedule is never reported PASS without being run (review
+// v4 F16).
+func (f *Fixture) step(name string) { f.steps = append(f.steps, name) }
 
 func load(t *testing.T, caseID string) *Fixture {
 	t.Helper()
@@ -65,6 +73,14 @@ func (f *Fixture) check(t *testing.T, observed map[string]any) {
 	t.Helper()
 	failed := false
 	norm := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	var schedule []string
+	for _, s := range f.Schedule {
+		schedule = append(schedule, s.Step)
+	}
+	if norm(f.steps) != norm(schedule) {
+		t.Errorf("%s: executed steps %v, schedule %v", f.CaseID, f.steps, schedule)
+		failed = true
+	}
 	for _, a := range f.Assertions {
 		got, ok := observed[a.Path]
 		switch {

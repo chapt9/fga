@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,7 @@ func TestV001(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.step("evaluate")
 	got := d.DecideBatch(ctx, decision.Batch{Envelope: decision.Envelope{Tenant: r1test.Tenant, Actor: decision.Ref{ID: p.ID}},
 		SnapshotDigest: "sha256:v001", Checks: []decision.Check{{ID: "c1", Action: "read", Resource: r}}})
 	ceiling := map[policy.Effect]string{policy.EffectAllow: "PASS", policy.EffectDeny: "DENY"}[got.Results[0].Ceiling]
@@ -122,31 +124,62 @@ func TestV141(t *testing.T) {
 		OperationID: "read-u1", Audience: content.Audience, Actor: decisionsvc.Ref{ID: "alice", Revision: id.Revision}, Evidence: alice.Caller.Token,
 		Checks: []decisionsvc.Check{{ID: "object", Role: registry.RoleObject, Action: "stat", Resource: decisionsvc.Alias{Type: "storage.object", ID: p.Object},
 			Version: p.Version}}})
-	obs := map[string]any{"issue.outcome": resp.Outcome, "protected_effect_count": 0}
+	f.step("issue_valid_grant")
+	obs := map[string]any{"issue.outcome": resp.Outcome}
 	if resp.Signed == nil {
 		f.check(t, obs)
 		return
 	}
+	// The issued grant carries the mapped projection, and nothing wider.
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	verifier := st.Verifier(content.Audience).Applying(content.Applies)
-	accepted := func(payload []byte) bool {
-		_, err := verifier.Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
-		return err == nil
+	issued, err := st.Verifier(content.Audience).Applying(content.Applies).Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+	if err != nil {
+		t.Fatal(err)
 	}
-	alter := func(obligations []signing.Obligation) []byte {
-		var rec map[string]any
-		if err := json.Unmarshal(payload, &rec); err != nil {
-			t.Fatal(err)
+	if o, ok := issued.Obligation(signing.MetadataProjection); !ok || string(o.Parameters) != `{"fields":["id"]}` {
+		t.Fatalf("the issued grant's projection: %+v %v", o, ok)
+	}
+	// Each grant the storage role receives, as transmitted or altered on
+	// the way, is presented to its own stat: the protected effect is the
+	// metadata it returns.
+	effects := 0
+	stat := func(alter func(map[string]any)) (content.VersionInfo, error) {
+		st.AlterDecision = func(r *decisionsvc.Response) {
+			if r.Signed == nil || alter == nil {
+				return
+			}
+			raw, _ := base64.StdEncoding.DecodeString(r.Signed.Payload)
+			var rec map[string]any
+			if err := json.Unmarshal(raw, &rec); err != nil {
+				t.Fatal(err)
+			}
+			alter(rec)
+			b, _ := json.Marshal(rec)
+			r.Signed.Payload = base64.StdEncoding.EncodeToString(b)
 		}
-		rec["obligations"] = obligations
-		b, _ := json.Marshal(rec)
-		return b
+		defer func() { st.AlterDecision = nil }()
+		return st.Content.Stat(ctx, alice.Caller, "objects", "u1", "")
 	}
+	f.step("verify_original_grant")
+	info, err := stat(nil)
+	obs["verify_original.accepted"] = err == nil && slices.Equal(info.Projection, []string{"id"})
 	widened := []byte(`{"fields":["id","title"]}`)
-	obs["verify_original.accepted"] = accepted(payload)
-	obs["remove.accepted"] = accepted(alter([]signing.Obligation{}))
-	obs["widen.accepted"] = accepted(alter([]signing.Obligation{{Type: signing.MetadataProjection, Version: 1, Parameters: widened,
-		ParametersDigest: signing.ParametersDigest(widened), ReferencedRevisions: []signing.Ref{}}}))
+	for _, c := range []struct {
+		step, obs string
+		set       []signing.Obligation
+	}{
+		{"verify_removed_obligation", "remove.accepted", []signing.Obligation{}},
+		{"verify_widened_obligation", "widen.accepted", []signing.Obligation{{Type: signing.MetadataProjection, Version: 1, Parameters: widened,
+			ParametersDigest: signing.ParametersDigest(widened), ReferencedRevisions: []signing.Ref{}}}},
+	} {
+		f.step(c.step)
+		_, err := stat(func(rec map[string]any) { rec["obligations"] = c.set })
+		obs[c.obs] = err == nil
+		if err == nil {
+			effects++
+		}
+	}
+	obs["protected_effect_count"] = effects
 	f.check(t, obs)
 }
 
@@ -175,10 +208,13 @@ func TestV142(t *testing.T) {
 		req.Envelopes = append(req.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 	}
 	obs := map[string]any{}
+	f.step("prepared")
 	prepared, err := st.Content.PreparePublish(ctx, alice.Caller, u.Intent.IntentID, req)
 	obs["prepare.outcome"], obs["prepare.publication_ready"] = outcome(err, "ALLOW"), err == nil
+	f.step("revocation_committed")
 	err = st.Catalog.DisableIdentity(ctx, r1test.Tenant, "alice")
 	obs["revoke.committed"] = err == nil
+	f.step("admission")
 	_, err = st.Content.CommitPublish(ctx, prepared)
 	obs["commit.outcome"] = outcome(err, "ALLOW")
 	if errors.Is(err, fence.ErrIdentity) || errors.Is(err, fence.ErrDelegation) || errors.Is(err, fence.ErrResource) {
@@ -235,6 +271,7 @@ func TestV143(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := map[string]any{}
+	f.step("decision")
 	_, rec, err := content.Authorize(ctx, r1test.Decider{Service: st.Decisions, Adapter: r1test.StorageAdapter}, st.Verifier(content.Audience),
 		st.Catalog, alice, registry.OpRead, content.Audience, true, []content.Check{{ID: "object", Role: registry.RoleObject, Action: "read",
 			Resource: canonicalObject(pub.Object), Version: pub.Version}})
@@ -242,11 +279,20 @@ func TestV143(t *testing.T) {
 	obs["decide.valid_until"] = rec.ValidUntil
 	b, ferr := fence.FromRecord(rec)
 	if err == nil && ferr == nil {
+		f.step("admission_before_cutoff")
 		obs["admit_before.outcome"] = outcome(st.Fence.Check(ctx, b), "ALLOW")
+		f.step("admission")
 		*st.Clock = mustTime(t, f.input(t, "admit")["now"])
 		obs["admit.outcome"] = outcome(st.Fence.Run(ctx, b, nil, noop), "ALLOW")
 	}
-	obs["emitted_bytes"] = 0 // no stream is opened without an admission
+	// The bytes a read of the version emits at that time, through the
+	// storage role's own read path.
+	emitted := int64(0)
+	if s, err := st.Content.ReadCiphertext(ctx, alice, "objects", "o1", pub.Version); err == nil {
+		emitted, _ = io.Copy(io.Discard, s)
+		s.Close()
+	}
+	obs["emitted_bytes"] = emitted
 	f.check(t, obs)
 }
 
@@ -262,15 +308,19 @@ func TestV146(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := map[string]any{}
+	f.step("key_deleted")
 	_, err = st.Content.DeleteKey(ctx, alice.Caller, "objects", "o1")
 	obs["delete_key.outcome"] = outcome(err, "COMMITTED")
+	f.step("history_read")
 	s, err := st.Content.ReadCiphertext(ctx, alice.Caller, "objects", "o1", v2.Version)
 	obs["read_history.outcome"] = outcome(err, "ALLOW")
 	if s != nil {
 		s.Close()
 	}
+	f.step("version_withdrawn")
 	_, err = st.Content.DeleteVersion(ctx, alice.Caller, "objects", "o1", v2.Version)
 	obs["delete_version.outcome"] = outcome(err, "COMMITTED")
+	f.step("withdrawn_read")
 	s, err = st.Content.ReadCiphertext(ctx, alice.Caller, "objects", "o1", v2.Version)
 	obs["read_withdrawn.outcome"] = outcome(err, "ALLOW")
 	if s != nil {
@@ -315,13 +365,17 @@ func TestV149(t *testing.T) {
 	}
 	fp := alice.Signer.Fingerprint.String()
 	obs := map[string]any{}
+	f.step("retired")
 	if err := st.Catalog.SetSigningKeyStatus(ctx, r1test.Tenant, fp, "RETIRED"); err != nil {
 		t.Fatal(err)
 	}
+	f.step("historic_verify")
 	obs["verify_retired.accepted"] = verify()
+	f.step("compromised")
 	if err := st.Catalog.SetSigningKeyStatus(ctx, r1test.Tenant, fp, "COMPROMISED"); err != nil {
 		t.Fatal(err)
 	}
+	f.step("compromised_verify")
 	obs["verify_compromised.accepted"] = verify()
 	f.check(t, obs)
 }
@@ -355,6 +409,7 @@ func TestV144(t *testing.T) {
 		obs[prefix+".reason"] = resp.Reason
 	}
 	obs := map[string]any{}
+	f.step("baseline_eligible")
 	signed, _, err := bob.DeliveryDecision("objects", "o1", fp, registry.OpGetEnvelope, content.KeysAudience)
 	if err == nil {
 		rec, verr := st.Verifier(content.KeysAudience).Check(signed)
@@ -366,25 +421,31 @@ func TestV144(t *testing.T) {
 	}
 	obs["baseline.outcome"] = outcome(err, "ALLOW")
 
+	f.step("backup_saved")
 	dir := filepath.Join(t.TempDir(), "backup")
 	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	obs["backup.recipient_status"] = status()
+	f.step("revocation_recorded")
 	err = st.Journal.Append(journal.RecipientRevoked, r1test.Tenant, fp)
 	entries, _ := st.Journal.Entries()
 	obs["revoke.recovery_record_durable"] = err == nil && len(entries) == 1
 	obs["revoke.committed"] = st.Catalog.RevokeRecipientKey(ctx, r1test.Tenant, fp) == nil
+	f.step("restored")
 	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, open, _ := st.Catalog.AuthorityState(ctx)
 	obs["restore.admission_open"] = open
+	f.step("before_reconciliation")
 	get("request_before", obs)
+	f.step("security_reconciled")
 	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); err != nil {
 		t.Fatal(err)
 	}
 	obs["reconcile.recipient_status"] = status()
+	f.step("after_reconciliation")
 	get("request_after", obs)
 	var delivered int
 	_ = st.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_outbox WHERE kind = 'key_release'`).Scan(&delivered)
@@ -437,6 +498,7 @@ func TestV147(t *testing.T) {
 		t.Fatalf("initial state %s at %d, want %s at %d", label, meta, init.Label, init.AccessRevision)
 	}
 	in := f.input(t, "proposal")
+	f.step("proposal_submitted")
 	p, err := st.Content.ProposeLabel(ctx, alice.Caller, "objects", "u1", in["label"].(string), in["signer"].(string))
 	if err != nil {
 		t.Fatal(err)
@@ -470,7 +532,10 @@ func TestV148(t *testing.T) {
 		names[u.Unit] = []string{"u1", "u2"}[i]
 	}
 	publish := f.input(t, "publish")
+	// PutDerived prepares the publication and publishes it in one call.
+	f.step("publication_prepared")
 	p, err := alice.PutDerived("objects", "d1", []byte("derived"), sources, publish["proposed_label"].(string))
+	f.step("published")
 	obs := map[string]any{"prepare.outcome": outcome(err, "ALLOW"), "publish.outcome": outcome(err, "COMMITTED")}
 	if err == nil {
 		var label string
@@ -532,6 +597,7 @@ func TestV145(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := map[string]any{}
+	f.step("admitted")
 	stream, err := st.Content.ReadDerivedCiphertext(ctx, alice.Caller, "objects", "d2", "", alice.Recipient.Fingerprint().String())
 	obs["read.outcome"], obs["read.stream_admitted"] = outcome(err, "ALLOW"), err == nil
 	if err != nil {
@@ -540,11 +606,14 @@ func TestV145(t *testing.T) {
 	}
 	defer stream.Close()
 	buf := make([]byte, 1024)
+	f.step("initial_lease_passes")
 	_, err = stream.Read(buf)
 	obs["lease_before.outcome"] = outcome(err, "ALLOW")
+	f.step("source_raised")
 	_, err = st.Content.SetLabel(ctx, alice.Caller, "objects", "s", "restricted")
 	obs["raise.committed"] = err == nil
 	time.Sleep(3 * r1test.LeaseCheckEvery)
+	f.step("lease_checked")
 	_, err = io.ReadAll(stream)
 	obs["normal_stream_completion"] = err == nil
 	obs["lease.outcome"], obs["lease.reason"] = "CONTINUE", ""

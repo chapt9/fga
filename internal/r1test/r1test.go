@@ -203,6 +203,10 @@ type Stack struct {
 	// BeforeDecide, if set, runs before each decision the storage and keys
 	// roles request (see Decider.Before).
 	BeforeDecide func(decisionsvc.Request)
+	// AlterDecision, if set, changes each decision the storage role gets
+	// before the role sees it: tests use it to present a tampered or stale
+	// decision to the real enforcement path.
+	AlterDecision func(*decisionsvc.Response)
 	// AfterDecide, if set, runs after each decision the storage role
 	// requests, before the operation commits.
 	AfterDecide func(decisionsvc.Request)
@@ -227,6 +231,8 @@ type Decider struct {
 	// After, if set, runs after each request is decided, before the
 	// operation commits.
 	After *func(decisionsvc.Request)
+	// Alter, if set, changes each response before it is returned.
+	Alter *func(*decisionsvc.Response)
 }
 
 // Decide implements content.Decider.
@@ -237,6 +243,9 @@ func (d Decider) Decide(ctx context.Context, req decisionsvc.Request) (decisions
 	resp := d.Service.Decide(ctx, d.Adapter, req)
 	if d.After != nil && *d.After != nil {
 		(*d.After)(req)
+	}
+	if d.Alter != nil && *d.Alter != nil {
+		(*d.Alter)(&resp)
 	}
 	return resp, nil
 }
@@ -358,7 +367,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	tokenKey := make([]byte, 32)
 	_, _ = rand.Read(tokenKey)
 	st.Content, err = content.New(content.Deps{Catalog: st.Catalog, Blobs: st.Blobs, Fence: st.Fence,
-		Decider:  Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide, After: &st.AfterDecide},
+		Decider:  Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide, After: &st.AfterDecide, Alter: &st.AlterDecision},
 		Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id, extra...)
