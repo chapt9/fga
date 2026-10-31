@@ -18,6 +18,9 @@ fga/internal/cryptowire
 # It links no key-encryption code and no HPKE (hybrid); CheckForbidden
 # proves it.
 fga/internal/payload
+# Reviewed 2026-10-31 (D-12, S4a, DOC-004): the text ingestion profile the
+# storage role applies to server-mode text; Unicode normalization only.
+fga/internal/textunits
 github.com/tink-crypto/tink-go/v2/aead
 github.com/tink-crypto/tink-go/v2/core
 github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess

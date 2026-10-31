@@ -75,6 +75,41 @@ func (m Manifest) Marshal() ([]byte, error) {
 	return b, nil
 }
 
+// ServerFormat is the payload format of server-mode versions (D-12,
+// internal/payload): the client suite's streaming AEAD under the server
+// payload binding.
+const ServerFormat uint16 = 2
+
+// MarshalServer encodes a server-mode manifest (D-12, S4a): the storage
+// role's record of a document version's units, in the client manifest's
+// shape, with every unit in suite 1 and the server format. Nobody signs
+// it, and ParseManifest, which clients use, refuses it.
+func (m Manifest) MarshalServer() ([]byte, error) {
+	m.Version = ManifestVersion
+	if len(m.Units) == 0 || len(m.Units) > MaxUnits || m.NormalizationVersion == "" || m.Original != nil {
+		return nil, formatErr("server manifest")
+	}
+	if err := uuids(m.TenantID, m.DocumentID, m.DocumentVersionID); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, u := range m.Units {
+		if err := uuids(u.UnitID, u.UnitVersionID, u.CryptoVersionID); err != nil {
+			return nil, err
+		}
+		if _, err := ParseDigest(u.CiphertextSHA256); err != nil || u.CiphertextLength == 0 || u.Suite != Suite1 || u.Format != ServerFormat ||
+			seen[u.UnitID] {
+			return nil, formatErr("server manifest unit")
+		}
+		seen[u.UnitID] = true
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, formatErr("server manifest")
+	}
+	return b, nil
+}
+
 // ManifestDigest is SHA-256 over "fga.manifest/v1", a zero byte and the
 // manifest bytes.
 func ManifestDigest(core []byte) Digest {

@@ -89,6 +89,8 @@ type DataKey struct {
 	Key        []byte
 	Sealed     []byte
 	KEKVersion uint32
+	// Intent is the unit intent a document seal made the key for.
+	Intent string
 }
 
 // EnvelopeIn is one recipient envelope as a client sends it.

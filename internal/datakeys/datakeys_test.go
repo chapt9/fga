@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fga/internal/catalog"
+	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/datakeys"
 	"fga/internal/datakeysapi"
@@ -434,4 +435,42 @@ func TestRoutes(t *testing.T) {
 		cryptowire.NewUUID().String()); !errors.Is(err, enforce.ErrNotFound) {
 		t.Fatalf("an absent version: %v", err)
 	}
+}
+
+// TestReleaseUnit covers SSE-003 for units (S4a): a unit's data key is
+// released only against a decision naming that document version and that
+// unit at the version it holds; a unit's decision opens no other unit, and
+// a unit outside the version is not found.
+func TestReleaseUnit(t *testing.T) {
+	f := setup(t)
+	p, err := f.st.Content.PutDocumentText(ctx, f.alice.Caller, content.TextRequest{Bucket: "vault", Key: "notes.md", IdempotencyKey: "u1"},
+		[]byte("one\n\ntwo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.st.Content.ListUnits(ctx, f.alice.Caller, "vault", "notes.md", "", 10, "")
+	if err != nil || len(page.Units) != 2 {
+		t.Fatalf("units: %+v %v", page, err)
+	}
+	a, b := page.Units[0], page.Units[1]
+	readUnit := func(u content.UnitEntry) []decisionsvc.Check {
+		return []decisionsvc.Check{
+			{ID: "version", Role: registry.RoleVersion, Action: "read-units", Resource: decisionsvc.Alias{Type: "document.version", ID: p.DocumentVersion}},
+			{ID: "unit", Role: registry.RoleUnit, Action: "read", Resource: decisionsvc.Alias{Type: "document.text_unit", ID: u.Unit}, Version: u.UnitVersion}}
+	}
+	key, err := f.svc.ReleaseUnit(ctx, f.decide(t, f.alice, registry.OpKeyReleaseUnit, readUnit(a)...), p.DocumentVersion, a.Unit)
+	if err != nil || len(key) != kek.DataKeySize {
+		t.Fatalf("release: %v", err)
+	}
+	if _, err := f.svc.ReleaseUnit(ctx, f.decide(t, f.alice, registry.OpKeyReleaseUnit, readUnit(a)...), p.DocumentVersion, b.Unit); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("unit a's decision for unit b: %v", err)
+	}
+	if _, err := f.svc.ReleaseUnit(ctx, f.decide(t, f.alice, registry.OpKeyReleaseUnit, readUnit(a)...), p.DocumentVersion,
+		cryptowire.NewUUID().String()); !errors.Is(err, datakeys.ErrNotFound) {
+		t.Fatalf("a unit outside the version: %v", err)
+	}
+	if _, err := f.svc.ReleaseUnit(ctx, f.decide(t, f.alice, registry.OpDocReadUnit, readUnit(a)...), p.DocumentVersion, a.Unit); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("the unit read's own decision: %v", err)
+	}
+	noKeyInAudit(t, f.st, "DATA_KEY_RELEASED", 1, key)
 }

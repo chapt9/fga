@@ -58,6 +58,14 @@ const (
 	OpPublishServerCreate        = "storage.object.publish-server-create"
 	OpPublishServerCreateLabeled = "storage.object.publish-server-create-labeled"
 	OpPublishServerVersion       = "storage.object.publish-server-version"
+	// Server-mode documents (S4a). One decision seals the data keys of
+	// every new unit of a document intent, under the document's write
+	// check; a unit's or entry's data key is released under the unit read's
+	// checks (read-units on the version, read on the unit).
+	OpKeySealDocCreate  = "storage.key.seal-document-create"
+	OpKeySealDocVersion = "storage.key.seal-document-version"
+	OpKeyReleaseUnit    = "storage.key.release-unit"
+	OpKeyReleaseEntry   = "storage.key.release-entry"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -187,7 +195,7 @@ var preparatory = map[string]bool{
 	OpBeginCreate: true, OpBeginVersion: true, OpStageCreate: true, OpStageVersion: true,
 	OpDocBeginCreate: true, OpDocBeginVersion: true,
 	OpDerivedBegin: true, OpDerivedBeginVersion: true, OpDerivedStageVersion: true,
-	OpKeySealCreate: true, OpKeySealVersion: true,
+	OpKeySealCreate: true, OpKeySealVersion: true, OpKeySealDocCreate: true, OpKeySealDocVersion: true,
 }
 
 // entryTwins are the text-entry forms of the unit operations (DOC-005):
@@ -195,7 +203,8 @@ var preparatory = map[string]bool{
 // update, the entry's write action, in place of the writer's share.
 func entryTwins(ops []Operation) []Operation {
 	twins := map[string]string{OpDocReuseUnits: OpDocReuseEntries, OpDocShareUnits: OpDocShareEntries, OpDocSelectUnits: OpDocSelectEntries,
-		OpDocReadUnit: OpDocReadEntry, OpDocManifest: OpDocManifestEntries, OpDocGetUnitEnvelope: OpDocGetEntryEnvelope}
+		OpDocReadUnit: OpDocReadEntry, OpDocManifest: OpDocManifestEntries, OpDocGetUnitEnvelope: OpDocGetEntryEnvelope,
+		OpKeyReleaseUnit: OpKeyReleaseEntry}
 	var out []Operation
 	for _, op := range ops {
 		name, ok := twins[op.Name]
@@ -281,6 +290,10 @@ func baseOperations() []Operation {
 		{Name: OpPublishServerCreateLabeled, Checks: []CheckSpec{{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
 			{Role: RoleLabel, ResourceType: "storage.object", Action: "label"}}},
 		one(OpPublishServerVersion, RoleObject, "storage.object", "new-version"),
+		one(OpKeySealDocCreate, RoleBucket, "storage.bucket", "create-object"),
+		one(OpKeySealDocVersion, RoleDocument, "storage.object", "new-version"),
+		{Name: OpKeyReleaseUnit, Checks: []CheckSpec{{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"}}},
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),

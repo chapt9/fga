@@ -198,6 +198,16 @@ p=open("shared.bin","rb").read()
 blobs=[open(f,"rb").read() for f in glob.glob("blobs/blobs/*/*/*")]
 assert blobs and all(p[i:i+32] not in b for b in blobs for i in range(0,len(p),65536)), "server-mode plaintext found in a blob"
 print("no blob holds a sample of the server-mode plaintext")'
+# Server-mode documents and collections (D-12, S4a): the storage role
+# splits the text into units, each under its own data key; bob reads them
+# by policy alone, and the owner appends to a collection with no client
+# keys.
+as alice; check $B/fga put-document -bucket shared -key q4/notes.md -in notes.txt
+as bob;   check $B/fga get-document -bucket shared -key q4/notes.md -out bob-shared-notes.txt; check cmp notes.expected bob-shared-notes.txt
+as alice; check $B/fga put-document -bucket shared -key q4/chat.log -in chat1.txt -collection
+as alice; check $B/fga append -bucket shared -key q4/chat.log -in chat2.txt
+as bob;   check $B/fga get-document -bucket shared -key q4/chat.log -out bob-shared-chat.txt; check cmp chat.expected bob-shared-chat.txt
+echo "server mode: a document and an appended collection read by bob"
 
 
 $ADMIN audit export -dir audit

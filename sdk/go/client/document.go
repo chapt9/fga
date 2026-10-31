@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"fga/internal/cryptowire"
@@ -344,6 +345,13 @@ func documentURL(base, bucket, path, key, version string, extra url.Values) stri
 // Units lists the units of a document version the caller may read, in
 // document order: an authorized subset without hidden IDs or counts.
 func (c *Client) Units(ctx context.Context, bucket, key, version string) ([]UnitEntry, error) {
+	units, _, err := c.units(ctx, bucket, key, version)
+	return units, err
+}
+
+// units is Units with the document version the server listed; every page
+// after the first is listed from that version.
+func (c *Client) units(ctx context.Context, bucket, key, version string) ([]UnitEntry, string, error) {
 	var all []UnitEntry
 	cont := ""
 	for {
@@ -352,18 +360,68 @@ func (c *Client) Units(ctx context.Context, bucket, key, version string) ([]Unit
 			extra.Set("continuation", cont)
 		}
 		var page struct {
-			Units        []UnitEntry `json:"units"`
-			Continuation string      `json:"continuation"`
+			Units           []UnitEntry `json:"units"`
+			Continuation    string      `json:"continuation"`
+			DocumentVersion string      `json:"document_version_id"`
 		}
 		if _, err := c.do(ctx, http.MethodGet, documentURL(c.StorageURL, bucket, "/units", key, version, extra), c.StorageToken, nil, -1, nil, &page); err != nil {
-			return nil, err
+			return nil, "", err
+		}
+		if version == "" {
+			version = page.DocumentVersion
 		}
 		all = append(all, page.Units...)
 		if page.Continuation == "" {
-			return all, nil
+			return all, version, nil
 		}
 		cont = page.Continuation
 	}
+}
+
+// PutDocumentText publishes text to a server-mode bucket as a document
+// version, or as a text collection when collection is set (D-12, S4a): the
+// storage role splits it into units under fga.text/nfc-paragraphs-v1 and
+// encrypts each under its own data key. When the publication needs an
+// approval, the ApprovalRequired error names the staged upload's Intent;
+// finish it with FinalizeDocument(Intent) once it is given.
+func (c *Client) PutDocumentText(ctx context.Context, bucket, key string, text []byte, collection bool) (DocumentPublished, error) {
+	extra := url.Values{}
+	if collection {
+		extra.Set("collection", "1")
+	}
+	return c.putText(ctx, bucket, key, text, extra)
+}
+
+// AppendText appends the paragraphs of text to the server-mode text
+// collection at bucket/key: a new version that keeps every entry, with no
+// client keys. The server refuses it unless the caller may read every
+// entry, so none is dropped silently.
+func (c *Client) AppendText(ctx context.Context, bucket, key string, text []byte) (DocumentPublished, error) {
+	return c.putText(ctx, bucket, key, text, url.Values{"append": {"1"}})
+}
+
+func (c *Client) putText(ctx context.Context, bucket, key string, text []byte, extra url.Values) (DocumentPublished, error) {
+	var out DocumentPublished
+	extra.Set("key", key)
+	target := c.StorageURL + "/v1/buckets/" + url.PathEscape(bucket) + "/documents/text?" + extra.Encode()
+	_, err := c.do(ctx, http.MethodPost, target, c.StorageToken, bytes.NewReader(text),
+		int64(len(text)), map[string]string{"Content-Type": "text/plain; charset=utf-8", "Idempotency-Key": cryptowire.NewUUID().String()}, &out)
+	return out, err
+}
+
+// FinalizeDocument publishes a staged server-mode document version, such as
+// one whose publication waited for an approval.
+func (c *Client) FinalizeDocument(ctx context.Context, intent string) (DocumentPublished, error) {
+	var out DocumentPublished
+	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/document-uploads/"+url.PathEscape(intent)+"/finalize", c.StorageToken,
+		strings.NewReader("{}"), 2, map[string]string{"Content-Type": "application/json"}, &out)
+	return out, err
+}
+
+// GetUnitPlain writes one server-mode unit's or entry's plaintext to dst.
+func (c *Client) GetUnitPlain(ctx context.Context, bucket, key, version, unit string, dst io.Writer) error {
+	_, err := c.plain(ctx, documentURL(c.StorageURL, bucket, "/unit/content", key, version, url.Values{"unit": {unit}}), dst)
+	return err
 }
 
 // GetUnit fetches one unit's package and ciphertext and writes its
@@ -417,19 +475,27 @@ func (c *Client) getUnit(ctx context.Context, bucket, key, version, unit string,
 // are left out without a trace, so the result is complete only for a
 // caller who may read every unit.
 func (c *Client) GetDocument(ctx context.Context, bucket, key, version string, dst io.Writer) (int, error) {
-	units, err := c.Units(ctx, bucket, key, version)
+	units, listed, err := c.units(ctx, bucket, key, version)
 	if err != nil {
 		return 0, err
 	}
 	// Every unit must come from one document version: the requested one,
-	// or the version the first unit names.
+	// or the version the first unit names. A server-mode unit has no
+	// client descriptor and is read as plaintext from the listed version;
+	// its content is the server's word, as in all of server mode (N-09).
 	for i, u := range units {
 		var plain bytes.Buffer
-		dv, err := c.getUnit(ctx, bucket, key, version, u.Unit, &plain)
-		if err != nil {
-			return i, err
+		if len(u.Descriptor) == 0 {
+			if err := c.GetUnitPlain(ctx, bucket, key, listed, u.Unit, &plain); err != nil {
+				return i, err
+			}
+		} else {
+			dv, err := c.getUnit(ctx, bucket, key, version, u.Unit, &plain)
+			if err != nil {
+				return i, err
+			}
+			version = dv
 		}
-		version = dv
 		if i > 0 {
 			if _, err := io.WriteString(dst, "\n\n"); err != nil {
 				return i, err

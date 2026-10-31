@@ -272,3 +272,36 @@ func TestServerModeHTTP(t *testing.T) {
 		t.Fatalf("a corrupted payload completed with %d bytes", out.Len())
 	}
 }
+
+// TestServerDocumentsHTTP covers server-mode documents and collections over
+// HTTP with the SDK (D-12, S4a): text in, units out by policy alone, and an
+// append that needs no client keys.
+func TestServerDocumentsHTTP(t *testing.T) {
+	d := deploy(t)
+	ctx := context.Background()
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	b := d.st.Client("bob", []string{"member"}, "p1")
+	alice, bob := d.client(t, a), d.client(t, b)
+	if p, err := alice.PutDocumentText(ctx, "vault", "q3/notes.md", []byte("First.\n\nSecond,\nwith a break.\n\nThird."), false); err != nil || p.Units != 3 {
+		t.Fatalf("put text: %+v %v", p, err)
+	}
+	var out bytes.Buffer
+	if n, err := bob.GetDocument(ctx, "vault", "q3/notes.md", "", &out); err != nil || n != 3 || out.String() != "First.\n\nSecond,\nwith a break.\n\nThird." {
+		t.Fatalf("bob reads the document: %d %q %v", n, out.String(), err)
+	}
+	if _, err := alice.PutDocumentText(ctx, "vault", "chat", []byte("hello\n\nhow are you?"), true); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := alice.AppendText(ctx, "vault", "chat", []byte("fine, thanks")); err != nil || p.Units != 3 {
+		t.Fatalf("append: %+v %v", p, err)
+	}
+	out.Reset()
+	if _, err := bob.GetDocument(ctx, "vault", "chat", "", &out); err != nil || out.String() != "hello\n\nhow are you?\n\nfine, thanks" {
+		t.Fatalf("bob reads the collection: %q %v", out.String(), err)
+	}
+	var apiErr *client.Error
+	if _, err := bob.AppendText(ctx, "vault", "chat", []byte("me too")); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob appends: %v", err)
+	}
+}

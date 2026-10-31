@@ -27,11 +27,11 @@ func classify(err error) (int, string, bool) {
 	return 0, "", false
 }
 
-// Register adds POST /internal/v1/data-keys/seal and
-// POST /internal/v1/data-keys/release to mux.
+// Register adds POST /internal/v1/data-keys/seal, seal-document, release
+// and release-unit to mux.
 func Register(svc *datakeys.Service, adapterOf func(*http.Request) (string, error), storageAdapter string) func(*http.ServeMux) {
 	return func(mux *http.ServeMux) {
-		handle := func(path string, serve func(r *http.Request, b keysapi.DataKeyRequest) (keysapi.DataKeyBody, error)) {
+		handle := func(path string, serve func(r *http.Request, b keysapi.DataKeyRequest) (any, error)) {
 			mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
 				if a, err := adapterOf(r); err != nil || a != storageAdapter {
 					httpapi.WriteError(w, http.StatusUnauthorized, httpapi.CodeUnauth)
@@ -47,21 +47,47 @@ func Register(svc *datakeys.Service, adapterOf func(*http.Request) (string, erro
 					return
 				}
 				httpapi.WriteJSON(w, http.StatusOK, out)
-				clear(out.Key)
+				switch o := out.(type) {
+				case keysapi.DataKeyBody:
+					clear(o.Key)
+				case keysapi.DataKeysBody:
+					for _, k := range o.Keys {
+						clear(k.Key)
+					}
+				}
 			})
 		}
-		handle("/internal/v1/data-keys/seal", func(r *http.Request, b keysapi.DataKeyRequest) (keysapi.DataKeyBody, error) {
-			if b.IntentID == "" || b.VersionID != "" {
-				return keysapi.DataKeyBody{}, datakeys.ErrNotFound
+		decision := func(b keysapi.DataKeyRequest) signing.Signed { return signing.Signed{Payload: b.Payload, JWS: b.JWS} }
+		handle("/internal/v1/data-keys/seal", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {
+			if b.IntentID == "" || b.VersionID != "" || b.UnitID != "" {
+				return nil, datakeys.ErrNotFound
 			}
-			k, err := svc.Seal(r.Context(), signing.Signed{Payload: b.Payload, JWS: b.JWS}, b.IntentID)
+			k, err := svc.Seal(r.Context(), decision(b), b.IntentID)
 			return keysapi.DataKeyBody{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion}, err
 		})
-		handle("/internal/v1/data-keys/release", func(r *http.Request, b keysapi.DataKeyRequest) (keysapi.DataKeyBody, error) {
-			if b.VersionID == "" || b.IntentID != "" {
-				return keysapi.DataKeyBody{}, datakeys.ErrNotFound
+		handle("/internal/v1/data-keys/seal-document", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {
+			if b.IntentID == "" || b.VersionID != "" || b.UnitID != "" {
+				return nil, datakeys.ErrNotFound
 			}
-			k, err := svc.Release(r.Context(), signing.Signed{Payload: b.Payload, JWS: b.JWS}, b.VersionID)
+			ks, err := svc.SealDocument(r.Context(), decision(b), b.IntentID)
+			out := keysapi.DataKeysBody{Keys: []keysapi.DataKeyBody{}}
+			for _, k := range ks {
+				out.Keys = append(out.Keys, keysapi.DataKeyBody{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion, IntentID: k.Intent})
+			}
+			return out, err
+		})
+		handle("/internal/v1/data-keys/release", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {
+			if b.VersionID == "" || b.IntentID != "" || b.UnitID != "" {
+				return nil, datakeys.ErrNotFound
+			}
+			k, err := svc.Release(r.Context(), decision(b), b.VersionID)
+			return keysapi.DataKeyBody{Key: k}, err
+		})
+		handle("/internal/v1/data-keys/release-unit", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {
+			if b.VersionID == "" || b.UnitID == "" || b.IntentID != "" {
+				return nil, datakeys.ErrNotFound
+			}
+			k, err := svc.ReleaseUnit(r.Context(), decision(b), b.VersionID, b.UnitID)
 			return keysapi.DataKeyBody{Key: k}, err
 		})
 	}

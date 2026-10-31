@@ -37,6 +37,9 @@ type UnitEntry struct {
 type UnitPage struct {
 	Units        []UnitEntry `json:"units"`
 	Continuation string      `json:"continuation,omitempty"`
+	// DocumentVersion is the version listed, so that a reader can read
+	// every unit from it.
+	DocumentVersion string `json:"document_version_id,omitempty"`
 }
 
 type docVersion struct {
@@ -80,7 +83,7 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 		return docVersion{}, ErrNotFound
 	}
 	var state string
-	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT state, manifest, manifest_signature FROM document_versions
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT state, manifest, coalesce(manifest_signature, '') FROM document_versions
 	                                         WHERE tenant = $1 AND id = $2 AND document = $3`, tenant, d.id, d.document).Scan(&state, &d.manifest, &d.sig)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && state != "LIVE" {
 		return docVersion{}, ErrNotFound
@@ -92,7 +95,7 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 // order: those after position after, at most n; or, with units, exactly
 // those units (in any order).
 func (s *Service) members(ctx context.Context, tenant string, dv cryptowire.UUID, after, n int, units []string) ([]member, error) {
-	sql := `SELECT u.position, u.unit::text, u.unit_version::text, v.ciphertext_length, u.descriptor, u.descriptor_signature
+	sql := `SELECT u.position, u.unit::text, u.unit_version::text, v.ciphertext_length, u.descriptor, coalesce(u.descriptor_signature, '')
 	          FROM document_units u JOIN object_versions v ON v.tenant = u.tenant AND v.id = u.unit_version
 	         WHERE u.tenant = $1 AND u.document_version = $2 AND v.state = 'LIVE'`
 	args := []any{tenant, dv}
@@ -222,7 +225,7 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	if err != nil {
 		return UnitPage{}, ErrInvalid
 	}
-	page := UnitPage{Units: []UnitEntry{}}
+	page := UnitPage{Units: []UnitEntry{}, DocumentVersion: d.id.String()}
 	scanned, exhausted := 0, false
 	for len(page.Units) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted {
 		n := min(maxBatch-1, s.d.Limits.ListScanBudget-scanned)
@@ -380,14 +383,42 @@ func (s *Service) ReadUnitCiphertext(ctx context.Context, c Caller, bucketName, 
 }
 
 func (s *Service) admitUnit(ctx context.Context, c Caller, rec signing.Record, d docVersion, m member) (*Stream, error) {
-	tenantID, err := s.tenantID(ctx, c.Tenant)
+	v, tenantID, err := s.admitUnitRead(ctx, c, rec, d, m, "client")
 	if err != nil {
 		return nil, err
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		r.Close()
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return &Stream{ReadCloser: s.lease(r, b), Version: info(v, true)}, nil
+}
+
+// admitUnitRead admits the read of one unit of a document version under
+// rec, recording the admission (CNT-008, DSC-001). The unit version must
+// be in mode; another mode is ErrEncryptionMode, after authorization
+// (ENC-002).
+func (s *Service) admitUnitRead(ctx context.Context, c Caller, rec signing.Record, d docVersion, m member, mode string) (version, cryptowire.UUID, error) {
+	tenantID, err := s.tenantID(ctx, c.Tenant)
+	if err != nil {
+		return version{}, tenantID, err
 	}
 	versionID, _ := cryptowire.ParseUUID(m.entry.UnitVersion)
 	v, err := s.versionByID(ctx, s.d.Catalog.Pool(), c.Tenant, versionID, false)
 	if err != nil {
-		return nil, err
+		return v, tenantID, err
+	}
+	if v.Encryption != mode {
+		return v, tenantID, ErrEncryptionMode
 	}
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
 		var unitState, docState string
@@ -407,26 +438,7 @@ func (s *Service) admitUnit(ctx context.Context, c Caller, rec signing.Record, d
 			audit.Target{Type: d.units.typ, ID: m.entry.Unit, Version: m.entry.UnitVersion, Digest: v.SHA256},
 			audit.Target{Type: "document.version", ID: d.id.String()}))
 	})
-	if err != nil {
-		return nil, err
-	}
-	if err := clientMode(v.Encryption); err != nil {
-		return nil, err
-	}
-	digest, err := cryptowire.ParseDigest(v.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
-	}
-	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
-	if err != nil {
-		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
-	}
-	b, err := fence.FromRecord(rec)
-	if err != nil {
-		r.Close()
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	return &Stream{ReadCloser: s.lease(r, b), Version: info(v, true)}, nil
+	return v, tenantID, err
 }
 
 // original returns a document version's original file object and version,

@@ -30,8 +30,8 @@ import (
 // KEY-016): the client suite's streaming AEAD in the server payload
 // format.
 const (
-	Suite  uint16 = 1
-	Format uint16 = 2
+	Suite  uint16 = cryptowire.Suite1
+	Format uint16 = cryptowire.ServerFormat
 )
 
 // domain separates server payloads from every other use of a data key.

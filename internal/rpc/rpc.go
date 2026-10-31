@@ -70,6 +70,34 @@ func (c KeysClient) ReleaseDataKey(ctx context.Context, d signing.Signed, versio
 	return out.Key, nil
 }
 
+// SealDocumentKeys asks the keys role for the data keys of every new unit
+// of a server-mode document intent, against a decision for
+// storage.key.seal-document-create or seal-document-version (SSE-003).
+func (c KeysClient) SealDocumentKeys(ctx context.Context, d signing.Signed, docIntentID string) ([]envelope.DataKey, error) {
+	var out keysapi.DataKeysBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/seal-document",
+		keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, IntentID: docIntentID}, &out); err != nil {
+		return nil, keysError(err)
+	}
+	keys := make([]envelope.DataKey, 0, len(out.Keys))
+	for _, k := range out.Keys {
+		keys = append(keys, envelope.DataKey{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion, Intent: k.IntentID})
+	}
+	return keys, nil
+}
+
+// ReleaseUnitKey asks the keys role for a server-mode unit's or entry's
+// data key in one document version, against a decision for
+// storage.key.release-unit or release-entry (SSE-003).
+func (c KeysClient) ReleaseUnitKey(ctx context.Context, d signing.Signed, documentVersionID, unitID string) ([]byte, error) {
+	var out keysapi.DataKeyBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/release-unit",
+		keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, VersionID: documentVersionID, UnitID: unitID}, &out); err != nil {
+		return nil, keysError(err)
+	}
+	return out.Key, nil
+}
+
 // keysError maps the keys role's not-found to the shared one, so a denied
 // and an absent target look the same to the caller (CNT-004).
 func keysError(err error) error {

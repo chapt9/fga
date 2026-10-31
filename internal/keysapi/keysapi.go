@@ -90,6 +90,8 @@ type (
 		JWS       string `json:"jws"`
 		IntentID  string `json:"intent_id,omitempty"`
 		VersionID string `json:"version_id,omitempty"`
+		// UnitID names a unit of the document version VersionID.
+		UnitID string `json:"unit_id,omitempty"`
 	}
 	// DataKeyBody is a data key, and when sealed for an intent its sealed
 	// form and KEK version. It travels only between the keys and storage
@@ -98,6 +100,12 @@ type (
 		Key        []byte `json:"key"`
 		Sealed     []byte `json:"sealed,omitempty"`
 		KEKVersion uint32 `json:"kek_version,omitempty"`
+		IntentID   string `json:"intent_id,omitempty"`
+	}
+	// DataKeysBody is the data keys a document seal made, one per new
+	// unit intent.
+	DataKeysBody struct {
+		Keys []DataKeyBody `json:"keys"`
 	}
 )
 

@@ -14,6 +14,7 @@ import (
 	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/httpapi"
+	"fga/internal/textunits"
 )
 
 // classify maps content service errors to redacted responses. Absent and
@@ -265,6 +266,37 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, encryptionBody{Encryption: mode})
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/documents/text", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		q := r.URL.Query()
+		h := r.Header
+		if !ok || v != "" || r.ContentLength < 0 || r.ContentLength > textunits.MaxText || len(h.Get("Idempotency-Key")) > 128 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		text, err := io.ReadAll(http.MaxBytesReader(w, r.Body, r.ContentLength))
+		if err != nil || int64(len(text)) != r.ContentLength {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		idem := h.Get("Idempotency-Key")
+		if idem == "" {
+			idem = cryptowire.NewUUID().String()
+		}
+		p, err := svc.PutDocumentText(r.Context(), c, content.TextRequest{Bucket: b, Key: k, IdempotencyKey: idem,
+			Collection: q.Get("collection") == "1", Append: q.Get("append") == "1"}, text)
+		var staged *content.StagedApproval
+		if errors.As(err, &staged) {
+			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,
+				IntentID: staged.Intent})
+			return
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, p)
 	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/object", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
@@ -613,6 +645,21 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		defer st.Close()
 		streamBody(w, r, st)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/unit/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		q := r.URL.Query()
+		if !ok || len(q["unit"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadUnitPlain(r.Context(), c, b, k, v, q.Get("unit"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		plainBody(w, st)
 	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/document/original/package", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := document(r)

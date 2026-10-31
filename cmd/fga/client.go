@@ -61,7 +61,8 @@ import (
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
-//	fga finalize       -intent I [-request FILE] -approval A   finish a put that needed an approval (no -request in server mode)
+//	fga finalize       -intent I [-request FILE | -document] -approval A   finish a put that needed an approval (no -request in server mode;
+//	                   -document for a server-mode document)
 //
 // An operation that needs an approval prints the approval's ID; once an
 // approver has approved it, repeat the command with -approval ID. A put
@@ -243,7 +244,7 @@ func clientCommand(cmd string, args []string) error {
 	project := fs.String("project", "", "search: project")
 	unit := fs.String("unit", "", "label: a unit of the document at -key")
 	derivedOut := fs.Bool("derived", false, "label: the derived output at -key")
-	documentKey := fs.Bool("document", false, "rm: the document at -key (with -version, withdraw that document version)")
+	documentKey := fs.Bool("document", false, "rm: the document at -key (with -version, withdraw that document version); finalize: a document intent")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -415,6 +416,27 @@ func clientCommand(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if serverMode(ctx, c, *bucket) {
+			if *to != "" || *originalFile != "" {
+				return errors.New("a server-mode bucket takes no recipients, and server-mode original files come later")
+			}
+			var p client.DocumentPublished
+			if cmd == "append" {
+				p, err = c.AppendText(ctx, *bucket, *key, text)
+			} else {
+				p, err = c.PutDocumentText(ctx, *bucket, *key, text, *collection)
+			}
+			var need *client.ApprovalRequired
+			if errors.As(err, &need) {
+				fmt.Printf("approval required: %s\nafter approval: fga finalize -document -intent %s -approval %s\n", need.ID, need.Intent, need.ID)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Printf("published %s version %s: %d units (server-encrypted)\n", *key, p.DocumentVersion, p.Units)
+			return nil
+		}
 		recipients := []crypto.Recipient{{Fingerprint: c.Recipient.Fingerprint(), KeyVersion: c.KeyVersion}}
 		for _, fp := range split(*to) {
 			d, err := cryptowire.ParseDigest(fp)
@@ -484,9 +506,17 @@ func clientCommand(cmd string, args []string) error {
 			os.Remove(tmp)
 			return err
 		}
-		fmt.Printf("verified and decrypted %d permitted units\n", n)
+		fmt.Printf("read %d permitted units\n", n)
 		return os.Rename(tmp, *out)
 	case "finalize":
+		if *documentKey {
+			p, err := c.FinalizeDocument(ctx, *intent)
+			if err != nil {
+				return approvalHint(err)
+			}
+			fmt.Printf("published document version %s: %d units\n", p.DocumentVersion, p.Units)
+			return nil
+		}
 		var body []byte
 		if *request != "" {
 			var err error

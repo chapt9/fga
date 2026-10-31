@@ -23,6 +23,7 @@ import (
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/opplan"
+	"fga/internal/payload"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -128,32 +129,42 @@ type storedDocIntent struct {
 // be LIVE units of the tenant. An identical retry under the same
 // idempotency key returns the same intent after a fresh decision.
 func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRequest) (DocumentIntent, error) {
+	in, err := s.beginDocument(ctx, c, r, "client")
+	return in.DocumentIntent, err
+}
+
+// beginDocument is BeginDocument for a bucket in mode; it returns the
+// stored intent. Reused units must be LIVE units of that mode.
+func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRequest, mode string) (storedDocIntent, error) {
 	if !ValidKey(r.Key) || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 || len(r.Units) == 0 || len(r.Units) > cryptowire.MaxUnits {
-		return DocumentIntent{}, ErrInvalid
+		return storedDocIntent{}, ErrInvalid
 	}
 	if in, err := s.docIntentByIdempotency(ctx, c, r.IdempotencyKey); err == nil {
 		if in.state == "ABORTED" || in.requestDigest != r.digest() {
-			return DocumentIntent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
+			return storedDocIntent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
 		}
 		op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
 		_, rec, err := s.decide(ctx, c, op, Audience, false, []check{ch})
 		if err != nil {
-			return DocumentIntent{}, err
+			return storedDocIntent{}, err
 		}
 		if err := s.checked(ctx, rec); err != nil {
-			return DocumentIntent{}, err
+			return storedDocIntent{}, err
 		}
-		return in.DocumentIntent, nil
+		if in.encryption != mode {
+			return storedDocIntent{}, ErrEncryptionMode
+		}
+		return in, nil
 	} else if !errors.Is(err, ErrNotFound) {
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	}
 	tenantID, err := s.tenantID(ctx, c.Tenant)
 	if err != nil {
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	}
 	b, err := s.bucketByName(ctx, c.Tenant, r.Bucket)
 	if err != nil {
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	}
 	in := storedDocIntent{DocumentIntent: DocumentIntent{IntentID: cryptowire.NewUUID().String(), Tenant: tenantID.String(),
 		DocumentVersion: cryptowire.NewUUID().String(), MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime)},
@@ -172,33 +183,33 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			in.attributes["kind"] = "collection"
 		}
 	case err != nil:
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	case kind != "document":
-		return DocumentIntent{}, fmt.Errorf("%w: the key holds an object", ErrConflict)
+		return storedDocIntent{}, fmt.Errorf("%w: the key holds an object", ErrConflict)
 	}
 	docLabel, _ := in.attributes["label"].(string)
 	docKind, _ := in.attributes["kind"].(string)
 	types := unitsOf(docKind)
 	if r.Collection != (docKind == "collection") || types == textEntries && r.Original {
-		return DocumentIntent{}, fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
+		return storedDocIntent{}, fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
 	}
 	for i, u := range r.Units {
 		ui := UnitIntent{Position: i, Label: u.Label}
 		switch {
 		case u.ReuseUnit != "":
 			if u.Label != "" {
-				return DocumentIntent{}, fmt.Errorf("%w: a reused unit keeps its label", ErrInvalid)
+				return storedDocIntent{}, fmt.Errorf("%w: a reused unit keeps its label", ErrInvalid)
 			}
-			if ui, err = s.reusable(ctx, c.Tenant, i, u, types.typ); err != nil {
-				return DocumentIntent{}, err
+			if ui, err = s.reusable(ctx, c.Tenant, i, u, types.typ, mode); err != nil {
+				return storedDocIntent{}, err
 			}
 		default:
 			if u.Label != "" && types == textEntries {
-				return DocumentIntent{}, fmt.Errorf("%w: entries take their collection's label", ErrInvalid)
+				return storedDocIntent{}, fmt.Errorf("%w: entries take their collection's label", ErrInvalid)
 			}
 			if u.Label != "" {
 				if err := s.labelAllowed(ctx, u.Label, b.Label); err != nil {
-					return DocumentIntent{}, err
+					return storedDocIntent{}, err
 				}
 			}
 			ui.IntentID, ui.Unit, ui.UnitVersion = cryptowire.NewUUID().String(), cryptowire.NewUUID().String(), cryptowire.NewUUID().String()
@@ -214,11 +225,11 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
 	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
 	if err != nil {
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	}
-	// This route publishes client-encrypted units only (ENC-002).
-	if err := clientMode(b.Encryption); err != nil {
-		return DocumentIntent{}, err
+	// Each route publishes in its own mode only (ENC-002).
+	if b.Encryption != mode {
+		return storedDocIntent{}, ErrEncryptionMode
 	}
 	versionAttrs := map[string]any{"document": in.Document}
 	for _, k := range []string{"bucket", "owner", "project", "label", "kind", "encryption"} {
@@ -288,22 +299,23 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		return nil
 	})
 	if err != nil {
-		return DocumentIntent{}, err
+		return storedDocIntent{}, err
 	}
-	return in.DocumentIntent, nil
+	in.state = "RESERVED"
+	return in, nil
 }
 
 // reusable returns the unit intent of an existing LIVE unit version of the
 // tenant.
-func (s *Service) reusable(ctx context.Context, tenant string, position int, u DocumentUnitSpec, typ string) (UnitIntent, error) {
+func (s *Service) reusable(ctx context.Context, tenant string, position int, u DocumentUnitSpec, typ, mode string) (UnitIntent, error) {
 	ui := UnitIntent{Position: position, Unit: u.ReuseUnit, UnitVersion: u.ReuseVersion, Reused: true}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `
 		SELECT v.crypto_version::text, v.blob::text, v.ciphertext_sha256, v.ciphertext_length FROM object_versions v
 		  JOIN objects o ON o.tenant = v.tenant AND o.id = v.object
 		  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text AND r.type = $4
 		 WHERE v.tenant = $1 AND o.id::text = $2 AND v.id::text = $3 AND o.kind = 'unit' AND v.state = 'LIVE'
-		   AND v.encryption = 'client'`,
-		tenant, u.ReuseUnit, u.ReuseVersion, typ).Scan(&ui.CryptoVersion, &ui.Blob, &ui.CiphertextSHA256, &ui.CiphertextLength)
+		   AND v.encryption = $5`,
+		tenant, u.ReuseUnit, u.ReuseVersion, typ, mode).Scan(&ui.CryptoVersion, &ui.Blob, &ui.CiphertextSHA256, &ui.CiphertextLength)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ui, ErrNotFound
 	}
@@ -433,8 +445,8 @@ func (s *Service) FinalizeDocument(ctx context.Context, c Caller, intentID strin
 	if in.state != "RESERVED" || !s.d.Now().Before(in.ExpiresAt) {
 		return DocumentPublished{}, fmt.Errorf("%w: document intent is %s or expired", ErrConflict, in.state)
 	}
-	if err := clientMode(in.encryption); err != nil {
-		return DocumentPublished{}, err
+	if in.encryption == "server" {
+		return s.finalizeDocumentServer(ctx, c, in, r)
 	}
 	if len(r.Units) != len(in.Units) {
 		return DocumentPublished{}, fmt.Errorf("%w: one descriptor per unit", ErrInvalid)
@@ -704,8 +716,16 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 	var result DocumentPublished
 	err := mapFence(s.d.Fence.RunAll(ctx, bindings, mutate, func(ctx context.Context, tx pgx.Tx) error {
 		now := s.d.Now()
-		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		// A server-mode version has no client signature (ENC-002).
+		server := in.encryption == "server"
+		if !server {
+			if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
+				return fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+		}
+		var manifestSig, signerArg any = r.ManifestSignature, signer
+		if server {
+			manifestSig, signerArg = nil, nil
 		}
 		locked, err := s.docIntent(ctx, tx, c, in.IntentID, true)
 		if err != nil {
@@ -751,7 +771,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			INSERT INTO document_versions (tenant, id, document, manifest, manifest_signature, manifest_digest, signer, extraction_version,
 			                               normalization_version, state, created_at, encryption)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'LIVE', $10, $11)`,
-			c.Tenant, in.DocumentVersion, in.Document, r.Manifest, r.ManifestSignature, digest.String(), signer, m.ExtractionVersion,
+			c.Tenant, in.DocumentVersion, in.Document, r.Manifest, manifestSig, digest.String(), signerArg, m.ExtractionVersion,
 			m.NormalizationVersion, now, in.encryption); err != nil {
 			return err
 		}
@@ -783,8 +803,12 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			} else if err := s.publishUnit(ctx, tx, c, u, r.Units[i], unitType, now); err != nil {
 				return err
 			}
+			var descriptor, descriptorSig any = r.Units[i].Descriptor, r.Units[i].DescriptorSignature
+			if server {
+				descriptor, descriptorSig = nil, nil
+			}
 			if _, err := tx.Exec(ctx, `INSERT INTO document_units VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				c.Tenant, in.DocumentVersion, i, u.Unit, u.UnitVersion, r.Units[i].Descriptor, r.Units[i].DescriptorSignature); err != nil {
+				c.Tenant, in.DocumentVersion, i, u.Unit, u.UnitVersion, descriptor, descriptorSig); err != nil {
 				return err
 			}
 			for _, e := range u.envs {
@@ -838,7 +862,19 @@ func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checke
 		return err
 	}
 	d := u.descriptor
-	if _, err := tx.Exec(ctx, `
+	if u.staged.encryption == "server" {
+		// The unit's sealed data key moves from its intent to its version
+		// (SSE-002); there is no client descriptor.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+			                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
+			SELECT $1, $2, $3, $4, $5, 'LIVE', i.ciphertext_length, i.ciphertext_sha256, $6, $7, $8, $8, 'server', i.sealed_key, i.kek_version,
+			       i.plaintext_length
+			  FROM upload_intents i WHERE i.tenant = $1 AND i.id = $9 AND i.sealed_key IS NOT NULL AND i.plaintext_length IS NOT NULL`,
+			c.Tenant, u.UnitVersion, u.Unit, u.CryptoVersion, u.Blob, int(payload.Suite), int(payload.Format), now, u.staged.IntentID); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
 		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
 		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,

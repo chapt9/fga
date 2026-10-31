@@ -126,18 +126,26 @@ func (s *Service) stageServer(ctx context.Context, c Caller, in storedIntent, le
 	}
 	leased := s.upload(io.NopCloser(body), b)
 	defer leased.Close()
+	return s.encryptStaged(ctx, c, in, dk.Key, length, leased)
+}
+
+// encryptStaged encrypts exactly length bytes of src under key into in's
+// staged blob, whose size it knows in advance, and marks the intent STAGED
+// with its ciphertext digest and length and its plaintext length (SSE-005).
+// No plaintext reaches a blob, temporary file or spill.
+func (s *Service) encryptStaged(ctx context.Context, c Caller, in storedIntent, key []byte, length int64, src io.Reader) error {
 	size := payload.CiphertextSize(length)
 	w, err := s.d.Blobs.Begin(blob.Ref{Tenant: in.Tenant, Blob: in.Blob}, size)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	h := sha256.New()
-	enc, err := payload.Encrypt(dk.Key, binding(in.Tenant, in.Object, in.LogicalVersion, in.CryptoVersion, in.Blob), io.MultiWriter(w, h))
+	enc, err := payload.Encrypt(key, binding(in.Tenant, in.Object, in.LogicalVersion, in.CryptoVersion, in.Blob), io.MultiWriter(w, h))
 	if err != nil {
 		w.Abort()
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	n, err := io.Copy(enc, io.LimitReader(leased, length+1))
+	n, err := io.Copy(enc, io.LimitReader(src, length+1))
 	if err == nil && n != length {
 		err = fmt.Errorf("%w: the body is not %d bytes", ErrInvalid, length)
 	}

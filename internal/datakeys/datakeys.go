@@ -74,6 +74,8 @@ type DataKey struct {
 	Key        []byte
 	Sealed     []byte
 	KEKVersion uint32
+	// Intent is the unit intent a document seal made the key for.
+	Intent string
 }
 
 // verify checks a decision's signature and that it is single-use, of one
@@ -270,6 +272,206 @@ func (s *Service) Release(ctx context.Context, decision signing.Signed, versionI
 			}
 		}
 		return s.d.Catalog.AppendTx(ctx, tx, s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion)))
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	key, err := s.d.KEKs.Open(rec.Tenant, uint32(kekVersion), sealed, bnd)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return key, nil
+}
+
+// SealDocument gives every new unit of a server-mode document intent its
+// data key (SSE-001, SSE-003). The decision is for
+// storage.key.seal-document-create with create-object on the intent's
+// bucket, or storage.key.seal-document-version with new-version on its
+// document, made for the intent's own principal. Inside the fence the
+// document intent must be RESERVED and unexpired and each unit intent
+// RESERVED without a key; each key is sealed for its unit's exact
+// identity and stored with the unit intent, once. Reused units get none.
+func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, docIntentID string) ([]DataKey, error) {
+	rec, err := s.verify(decision, registry.OpKeySealDocCreate, registry.OpKeySealDocVersion)
+	if err != nil {
+		return nil, err
+	}
+	id, err := cryptowire.ParseUUID(docIntentID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var tenant, bucket, document cryptowire.UUID
+	var principal, state, mode, kind string
+	var newDocument bool
+	var expiresAt time.Time
+	err = s.d.Catalog.Pool().QueryRow(ctx, `
+		SELECT t.id, d.bucket, d.document, d.principal, d.new_document, d.state, d.encryption, d.expires_at,
+		       coalesce(d.planned_attributes->>'kind', '')
+		  FROM document_intents d JOIN tenants t ON t.name = d.tenant
+		 WHERE d.tenant = $1 AND d.id = $2`, rec.Tenant, id).
+		Scan(&tenant, &bucket, &document, &principal, &newDocument, &state, &mode, &expiresAt, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	c := rec.Checks[0]
+	bound := principal == rec.Actor.ID && mode == "server"
+	if rec.Operation == registry.OpKeySealDocCreate {
+		bound = bound && newDocument && c.ResourceID == bucket.String()
+	} else {
+		bound = bound && !newDocument && c.ResourceID == document.String()
+	}
+	if !bound {
+		return nil, ErrDecision
+	}
+	unitType := "document.text_unit"
+	if kind == "collection" {
+		unitType = "text.entry"
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		return nil, ErrDecision
+	}
+	var out []DataKey
+	clearAll := func() {
+		for _, k := range out {
+			clear(k.Key)
+		}
+		out = nil
+	}
+	err = s.d.Fence.RunAll(ctx, []fence.Binding{b}, nil, func(ctx context.Context, tx pgx.Tx) error {
+		clearAll()
+		if err := tx.QueryRow(ctx, `SELECT state FROM document_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, rec.Tenant, id).Scan(&state); err != nil {
+			return err
+		}
+		if state != "RESERVED" || !s.d.Now().Before(expiresAt) {
+			return fmt.Errorf("%w: the document intent is %s or expired", ErrConflict, state)
+		}
+		var version uint32
+		err := tx.QueryRow(ctx, `SELECT version FROM kek_versions WHERE tenant = $1 AND state = 'ACTIVE' FOR SHARE`, rec.Tenant).Scan(&version)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: the tenant has no active key-encryption key", ErrUnavailable)
+		}
+		if err != nil {
+			return err
+		}
+		type unit struct {
+			id     cryptowire.UUID
+			b      kek.Binding
+			state  string
+			sealed bool
+			mode   string
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT id, object, version, crypto_version, blob, state, sealed_key IS NOT NULL, encryption FROM upload_intents
+			 WHERE tenant = $1 AND document_intent = $2 AND kind = 'unit' ORDER BY id FOR UPDATE`, rec.Tenant, id)
+		if err != nil {
+			return err
+		}
+		var units []unit
+		for rows.Next() {
+			u := unit{b: kek.Binding{Tenant: tenant}}
+			if err := rows.Scan(&u.id, &u.b.Object, &u.b.Version, &u.b.CryptoVersion, &u.b.Blob, &u.state, &u.sealed, &u.mode); err != nil {
+				rows.Close()
+				return err
+			}
+			units = append(units, u)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		var targets []audit.Target
+		for _, u := range units {
+			if u.state != "RESERVED" || u.sealed || u.mode != "server" {
+				return fmt.Errorf("%w: a unit intent is %s or already has its key", ErrConflict, u.state)
+			}
+			key, err := kek.NewDataKey()
+			if err != nil {
+				return err
+			}
+			sealed, err := s.d.KEKs.Seal(rec.Tenant, version, key, u.b)
+			if err != nil {
+				clear(key)
+				return fmt.Errorf("%w: %v", ErrUnavailable, err)
+			}
+			out = append(out, DataKey{Key: key, Sealed: sealed, KEKVersion: version, Intent: u.id.String()})
+			if _, err := tx.Exec(ctx, `UPDATE upload_intents SET sealed_key = $3, kek_version = $4 WHERE tenant = $1 AND id = $2`,
+				rec.Tenant, u.id, sealed, int64(version)); err != nil {
+				return err
+			}
+			targets = append(targets, audit.Target{Type: unitType, ID: u.b.Object.String(), Version: u.b.Version.String(), KEKVersion: version})
+		}
+		ev := s.event(rec, "DATA_KEY_SEALED", kek.Binding{Object: document}, version)
+		ev.Targets = append([]audit.Target{{Type: "storage.object", ID: document.String(), KEKVersion: version}}, targets...)
+		return s.d.Catalog.AppendTx(ctx, tx, ev)
+	})
+	if err != nil {
+		clearAll()
+		return nil, classify(err)
+	}
+	return out, nil
+}
+
+// ReleaseUnit opens the data key of one unit or entry of a LIVE
+// server-mode document version for a read (SSE-003, DOC-006). The decision
+// is for storage.key.release-unit (or release-entry) with read-units on
+// that document version and read on that unit at the exact unit version
+// the version holds. Inside the fence both must still be LIVE. Every
+// release is audited; the caller owns the key.
+func (s *Service) ReleaseUnit(ctx context.Context, decision signing.Signed, documentVersionID, unitID string) ([]byte, error) {
+	rec, err := s.verify(decision, registry.OpKeyReleaseUnit, registry.OpKeyReleaseEntry)
+	if err != nil {
+		return nil, err
+	}
+	dv, err := cryptowire.ParseUUID(documentVersionID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var bnd kek.Binding
+	var docMode, unitMode string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `
+		SELECT t.id, v.object, v.id, coalesce(v.crypto_version, '00000000-0000-0000-0000-000000000000'),
+		       coalesce(v.blob, '00000000-0000-0000-0000-000000000000'), d.encryption, coalesce(v.encryption, '')
+		  FROM document_units u JOIN document_versions d ON d.tenant = u.tenant AND d.id = u.document_version
+		  JOIN object_versions v ON v.tenant = u.tenant AND v.id = u.unit_version
+		  JOIN tenants t ON t.name = u.tenant
+		 WHERE u.tenant = $1 AND u.document_version = $2 AND u.unit::text = $3`, rec.Tenant, dv, unitID).
+		Scan(&bnd.Tenant, &bnd.Object, &bnd.Version, &bnd.CryptoVersion, &bnd.Blob, &docMode, &unitMode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	// Server mode only; the checks name this document version, and this
+	// unit at the version this document version holds.
+	if docMode != "server" || unitMode != "server" ||
+		rec.Checks[0].ResourceID != documentVersionID || rec.Checks[1].ResourceID != unitID || rec.Checks[1].Version != bnd.Version.String() {
+		return nil, ErrDecision
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		return nil, ErrDecision
+	}
+	var sealed []byte
+	var kekVersion int64
+	err = s.d.Fence.RunAll(ctx, []fence.Binding{b}, nil, func(ctx context.Context, tx pgx.Tx) error {
+		var docState, unitState string
+		if err := tx.QueryRow(ctx, `SELECT d.state, v.state, v.sealed_key, v.kek_version FROM document_versions d, object_versions v
+		                             WHERE d.tenant = $1 AND d.id = $2 AND v.tenant = $1 AND v.id = $3 FOR SHARE`,
+			rec.Tenant, dv, bnd.Version).Scan(&docState, &unitState, &sealed, &kekVersion); err != nil {
+			return err
+		}
+		if docState != "LIVE" || unitState != "LIVE" {
+			return ErrNotFound
+		}
+		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
+		ev.Targets[0].Type = rec.Checks[1].ResourceType
+		ev.Targets = append(ev.Targets, audit.Target{Type: "document.version", ID: documentVersionID})
+		return s.d.Catalog.AppendTx(ctx, tx, ev)
 	})
 	if err != nil {
 		return nil, classify(err)

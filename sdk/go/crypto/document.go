@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/tink-crypto/tink-go/v2/hybrid"
-	"golang.org/x/text/unicode/norm"
 
 	"fga/internal/cryptowire"
+	"fga/internal/textunits"
 )
 
 // Client-side document ingestion (DOC-003, DOC-004): the client splits
@@ -22,31 +20,17 @@ import (
 
 // NormalizationVersion names the splitting scheme of SplitText; it is
 // recorded in the manifest.
-const NormalizationVersion = "fga.text/nfc-paragraphs-v1"
+const NormalizationVersion = textunits.NormalizationVersion
 
 // MaxText bounds the text SplitText accepts.
-const MaxText = 64 << 20
+const MaxText = textunits.MaxText
 
 // SplitText normalizes text to NFC and splits it into paragraphs at blank
-// lines. Empty paragraphs are dropped; paragraphs keep their inner line
-// breaks. Text that is not valid UTF-8, too large, empty, or that yields
-// more than cryptowire.MaxUnits paragraphs is refused.
-func SplitText(text []byte) ([]string, error) {
-	if len(text) > MaxText || !utf8.Valid(text) {
-		return nil, errors.New("crypto: text must be valid UTF-8 of at most 64 MiB")
-	}
-	normalized := strings.ReplaceAll(norm.NFC.String(string(text)), "\r\n", "\n")
-	var units []string
-	for _, p := range strings.Split(normalized, "\n\n") {
-		if p = strings.Trim(p, "\n"); strings.TrimSpace(p) != "" {
-			units = append(units, p)
-		}
-	}
-	if len(units) == 0 || len(units) > cryptowire.MaxUnits {
-		return nil, fmt.Errorf("crypto: text yields %d units; between 1 and %d are allowed", len(units), cryptowire.MaxUnits)
-	}
-	return units, nil
-}
+// lines (internal/textunits, the profile the storage role also applies in
+// server mode). Empty paragraphs are dropped; paragraphs keep their inner
+// line breaks. Text that is not valid UTF-8, too large, empty, or that
+// yields more than cryptowire.MaxUnits paragraphs is refused.
+func SplitText(text []byte) ([]string, error) { return textunits.Split(text) }
 
 // UnitParams are a new unit's identifiers from a document intent.
 type UnitParams struct {

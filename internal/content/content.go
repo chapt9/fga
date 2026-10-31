@@ -88,6 +88,10 @@ type DataKey = envelope.DataKey
 type DataKeys interface {
 	SealDataKey(ctx context.Context, decision signing.Signed, intentID string) (DataKey, error)
 	ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error)
+	// SealDocumentKeys seals one key per new unit of a document intent;
+	// ReleaseUnitKey releases one unit's key in one document version.
+	SealDocumentKeys(ctx context.Context, decision signing.Signed, docIntentID string) ([]DataKey, error)
+	ReleaseUnitKey(ctx context.Context, decision signing.Signed, documentVersionID, unitID string) ([]byte, error)
 }
 
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are

@@ -365,6 +365,32 @@ func (d dataKeys) SealDataKey(ctx context.Context, decision signing.Signed, inte
 	return content.DataKey{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion}, err
 }
 
+func (d dataKeys) SealDocumentKeys(ctx context.Context, decision signing.Signed, docIntentID string) ([]content.DataKey, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.SealDocumentKeys(ctx, decision, docIntentID)
+	}
+	ks, err := d.st.DataKeys.SealDocument(ctx, decision, docIntentID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return nil, content.ErrNotFound
+	}
+	var out []content.DataKey
+	for _, k := range ks {
+		out = append(out, content.DataKey{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion, Intent: k.Intent})
+	}
+	return out, err
+}
+
+func (d dataKeys) ReleaseUnitKey(ctx context.Context, decision signing.Signed, documentVersionID, unitID string) ([]byte, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.ReleaseUnitKey(ctx, decision, documentVersionID, unitID)
+	}
+	k, err := d.st.DataKeys.ReleaseUnit(ctx, decision, documentVersionID, unitID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return nil, content.ErrNotFound
+	}
+	return k, err
+}
+
 func (d dataKeys) ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error) {
 	if d.st.DataKeysVia != nil {
 		return d.st.DataKeysVia.ReleaseDataKey(ctx, decision, versionID)
