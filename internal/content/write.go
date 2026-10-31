@@ -193,7 +193,7 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 	case errors.Is(err, ErrNotFound):
 		in.Object, in.newObject = cryptowire.NewUUID(), true
 		in.scope = b.Scope
-		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label,
+		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Represented(), "project": b.Project, "label": b.Label,
 			"encryption": b.Encryption}
 		if r.Derived {
 			in.attributes["kind"] = "derived"

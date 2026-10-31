@@ -23,6 +23,7 @@ import (
 	"fga/internal/cryptowire"
 	"fga/internal/datakeysapi"
 	"fga/internal/decisionsvc"
+	"fga/internal/delegation"
 	"fga/internal/httpapi"
 	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
@@ -594,7 +595,8 @@ func TestMCPGatewayHTTP(t *testing.T) {
 // TestChainedEvidence covers the decision role's side of TB3: a gateway's
 // decision is the user's evidence only for that user and tenant, only when
 // a configured gateway requested it for an MCP tool call, and only in the
-// recovery incarnation it was made in.
+// recovery incarnation it was made in. An agent's is evidence only for the
+// same agent, subject and delegation.
 func TestChainedEvidence(t *testing.T) {
 	d := deploy(t)
 	ctx := context.Background()
@@ -645,6 +647,59 @@ func TestChainedEvidence(t *testing.T) {
 			t.Errorf("%s was accepted", name)
 		}
 	}
+	// An agent's decision under its delegation stands for the agent acting
+	// for that subject under that delegation only; the delegation names
+	// the gateway, through which the storage role presents it (DLG-001).
+	d.st.User("agent-7", []string{"agent"}, "p1")
+	d.st.Client("carol", []string{"member"}, "p1")
+	for id, subject := range map[string]string{"dlg-alice": "alice", "dlg-carol": "carol"} {
+		if err := d.st.Catalog.PutDelegation(ctx, delegation.Delegation{ID: delegation.ID(id), Tenant: r1test.Tenant, Actor: "agent-7",
+			Subject: subject, Audience: r1test.MCPAdapter, ExpiresAt: d.st.Clock.Add(time.Hour), Grants: []delegation.Grant{
+				{ResourceType: "agent.tool", Actions: []string{"invoke"}}, {ResourceType: "storage.bucket", Actions: []string{"list"}}}},
+			*d.st.Clock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agentToken, err := d.st.Issuer.Issue("agent-7", r1test.Tenant, r1test.MCPAudience, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As the MCP role asks: revision 0 and no subject; the decision names
+	// the delegation's subject.
+	resp := d.st.Decisions.Decide(ctx, r1test.MCPAdapter, decisionsvc.Request{RequestID: cryptowire.NewUUID().String(), Tenant: r1test.Tenant,
+		Operation: registry.OpMCPInvoke, OperationID: cryptowire.NewUUID().String(), Audience: content.Audience,
+		Actor: decisionsvc.Ref{ID: "agent-7"}, Delegation: "dlg-alice", Evidence: agentToken,
+		Checks: []decisionsvc.Check{{ID: "tool", Role: registry.RoleTool, Action: "invoke", Resource: decisionsvc.Alias{Namespace: registry.MCPToolNamespace, Name: "documents.read"}}}})
+	if resp.Outcome != "ALLOW" || resp.Signed == nil {
+		t.Fatalf("the agent's MCP decision: %s %s", resp.Outcome, resp.Reason)
+	}
+	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	agentMCP := signing.Signed{Payload: payload, JWS: resp.Signed.JWS}.Evidence()
+	listFor := func(subject, dlg string) decisionsvc.Response {
+		agent, _ := d.st.Catalog.GetIdentity(ctx, r1test.Tenant, "agent-7")
+		req := decisionsvc.Request{RequestID: cryptowire.NewUUID().String(), Tenant: r1test.Tenant, Operation: registry.OpListBucket,
+			OperationID: cryptowire.NewUUID().String(), Audience: content.Audience, Actor: decisionsvc.Ref{ID: "agent-7", Revision: agent.Revision},
+			Delegation: dlg, Evidence: agentMCP,
+			Checks: []decisionsvc.Check{{ID: "bucket", Role: registry.RoleBucket, Action: "list", Resource: decisionsvc.Alias{Type: "storage.bucket", ID: bucket}}}}
+		if subject != "" {
+			sub, _ := d.st.Catalog.GetIdentity(ctx, r1test.Tenant, subject)
+			req.Subject = &decisionsvc.Ref{ID: subject, Revision: sub.Revision}
+		}
+		return d.st.Decisions.Decide(ctx, r1test.StorageAdapter, req)
+	}
+	if r := listFor("alice", "dlg-alice"); r.Outcome != "ALLOW" {
+		t.Fatalf("the agent for alice with its gateway decision: %s %s", r.Outcome, r.Reason)
+	}
+	for name, r := range map[string]decisionsvc.Response{
+		"the agent for itself":                       listFor("", ""),
+		"the agent under another of its delegations": listFor("carol", "dlg-carol"),
+		"the agent claiming another subject":         listFor("carol", "dlg-alice"),
+	} {
+		if r.Outcome == "ALLOW" {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+
 	// After a restore, a decision from the earlier incarnation proves
 	// nothing.
 	if _, err := d.st.Pool.Exec(ctx, `UPDATE authority_state SET incarnation = incarnation + 1`); err != nil {

@@ -24,6 +24,7 @@ import (
 	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/guard"
+	"fga/internal/mcpwire"
 )
 
 // Names the role shares with the registry (registry.OpMCPInvoke,
@@ -272,22 +273,29 @@ func (s *Service) sessionOpened(pending, id, user string) {
 
 const pendingPrefix = "pending:"
 
-// caller is the user of one MCP request, with the token it presented.
+// caller is the user of one MCP request, with the token it presented and,
+// for an agent, the delegation it acts under.
 type caller struct {
-	tenant, principal, token string
+	tenant, principal, token, delegation string
 }
 
 const callerKey = "fga.caller"
 
-// verify checks the user's MCP token. The session binding is the token's
-// tenant and subject together.
-func (s *Service) verify(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+// verify checks the MCP token and the delegation an agent names. The
+// session binding is the token's tenant and subject and the delegation
+// together, so a session opened under one delegation is never used under
+// another, or without it (MCP-007).
+func (s *Service) verify(_ context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
 	c, err := s.d.Tokens.Verify(token, s.d.Audience)
 	if err != nil {
 		return nil, auth.ErrInvalidToken
 	}
-	return &auth.TokenInfo{UserID: strconv.Quote(c.Tenant) + " " + strconv.Quote(c.Subject), Expiration: c.ExpiresAt,
-		Extra: map[string]any{callerKey: caller{tenant: c.Tenant, principal: c.Subject, token: token}}}, nil
+	dlg := r.Header.Get(mcpwire.DelegationHeader)
+	if len(r.Header.Values(mcpwire.DelegationHeader)) > 1 || dlg != "" && !mcpwire.ValidDelegation(dlg) {
+		return nil, auth.ErrInvalidToken
+	}
+	return &auth.TokenInfo{UserID: strconv.Quote(c.Tenant) + " " + strconv.Quote(c.Subject) + " " + strconv.Quote(dlg),
+		Expiration: c.ExpiresAt, Extra: map[string]any{callerKey: caller{tenant: c.Tenant, principal: c.Subject, token: token, delegation: dlg}}}, nil
 }
 
 func callerOf(extra *mcp.RequestExtra) (caller, error) {

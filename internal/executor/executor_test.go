@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fga/internal/decisionsvc"
+	"fga/internal/delegation"
 	"fga/internal/enforce"
 	"fga/internal/executor"
 	"fga/internal/executortest"
@@ -200,7 +201,8 @@ func TestInvokeReservation(t *testing.T) {
 // TestResolution covers INV-006 and INV-009: an UNKNOWN invocation is
 // closed only by a principal with resolve on the tool who is not its
 // actor, with evidence; ABANDONED keeps the charge, which only a write-off
-// by another principal releases.
+// by another principal releases. An agent acting for a principal is that
+// principal here too.
 func TestResolution(t *testing.T) {
 	rule := `{"id":"members-invoke-reserved","effect":"allow","actions":["invoke"],"roles":["member"],"requires":["reservation"],
 	  "when":"resource.attributes.kind == \"executor\""}`
@@ -235,6 +237,32 @@ func TestResolution(t *testing.T) {
 	}
 	if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'WRITTEN_OFF'`); n != 1 {
 		t.Fatal("the write-off released nothing")
+	}
+
+	// An agent acting for a lead under a delegation resolves another's
+	// call, but never the lead's own, whichever agent it is.
+	lara := f.Caller(t, "lara", "member", "lead")
+	f.Caller(t, "agent-9", "agent")
+	if err := f.St.Catalog.PutDelegation(ctx, delegation.Delegation{ID: "dlg-9", Tenant: r1test.Tenant, Actor: "agent-9", Subject: "lara",
+		Audience: r1test.ToolsAdapter, Grants: []delegation.Grant{{ResourceType: "agent.tool", Actions: []string{"resolve"}}},
+		ExpiresAt: f.St.Clock.Add(time.Hour)}, *f.St.Clock); err != nil {
+		t.Fatal(err)
+	}
+	agent := enforce.Caller{Tenant: r1test.Tenant, Principal: "agent-9", Subject: "lara", Delegation: "dlg-9"}
+	own, err := f.Svc.Invoke(ctx, lara, payment("u-2", 1000))
+	if err != nil || own.State != string(invocation.StateUnknown) {
+		t.Fatalf("lara's call: %+v %v", own, err)
+	}
+	if _, err := f.Svc.Resolve(ctx, agent, own.Invocation, invocation.StateFailed, "the bank says no"); !errors.Is(err, executor.ErrInvalid) {
+		t.Fatalf("lara's agent resolved lara's call: %v", err)
+	}
+	other, err := f.Svc.Invoke(ctx, alice, payment("u-3", 1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.Svc.Resolve(ctx, agent, other.Invocation, invocation.StateFailed, "the bank says no; ticket 43"); err != nil ||
+		got.State != string(invocation.StateFailed) {
+		t.Fatalf("lara's agent resolves alice's call: %+v %v", got, err)
 	}
 }
 

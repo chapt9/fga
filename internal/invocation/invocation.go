@@ -133,7 +133,8 @@ func (s *Store) Create(ctx context.Context, inv Invocation) (Invocation, error) 
 	if err != nil {
 		return Invocation{}, err
 	}
-	if existing.OperationDigest != inv.OperationDigest || existing.Actor != inv.Actor || existing.Subject != inv.Subject {
+	if existing.OperationDigest != inv.OperationDigest || existing.Actor != inv.Actor || existing.Subject != inv.Subject ||
+		existing.Delegation != inv.Delegation {
 		return Invocation{}, ErrIdempotencyConflict
 	}
 	return existing, nil

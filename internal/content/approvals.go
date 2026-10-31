@@ -64,12 +64,15 @@ func (s *Service) PendingApprovals(ctx context.Context, c Caller, after string, 
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	cands, err := s.approvals.Pending(ctx, c.Tenant, c.Principal, after, limit)
+	cands, err := s.approvals.Pending(ctx, c.Tenant, c.Represented(), after, limit)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	views = []ApprovalView{}
 	for _, a := range cands {
+		if c.Is(a.RequestedBy) || c.Is(a.Actor) {
+			continue
+		}
 		op, ch, ok := approveCheck(a)
 		if !ok {
 			continue
@@ -115,7 +118,7 @@ func (s *Service) DecideApproval(ctx context.Context, c Caller, id string, appro
 	if err != nil {
 		return ApprovalView{}, err
 	}
-	if a.RequestedBy == c.Principal || a.Actor == c.Principal {
+	if c.Is(a.RequestedBy) || c.Is(a.Actor) {
 		return ApprovalView{}, fmt.Errorf("%w: the requester cannot decide its own approval", ErrConflict)
 	}
 	outcome := "APPROVAL_REJECTED"

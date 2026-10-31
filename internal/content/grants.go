@@ -213,7 +213,7 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 		}
 	}
 	g := catalog.ShareGrant{ID: cryptowire.NewUUID().String(), ResourceType: typ, ResourceID: id, Grantee: r.Grantee, Actions: actions,
-		ExpiresAt: expires, Grantor: c.Principal, CreatedAt: now}
+		ExpiresAt: expires, Grantor: c.Represented(), CreatedAt: now}
 	out := GrantOutcome{Grant: g}
 	err = s.fenced(ctx, rec, []string{id}, func(ctx context.Context, tx pgx.Tx) error {
 		if err := s.grantHolds(ctx, tx, c.Tenant, rec, r.Grantee, granteeRevision, expires, now); err != nil {
@@ -321,7 +321,7 @@ func (s *Service) RemoveGrant(ctx context.Context, c Caller, t GrantTarget, gran
 	}
 	out := GrantOutcome{Grant: catalog.ShareGrant{ID: grantID, ResourceType: typ, ResourceID: id, Grantee: grantee}}
 	err = s.fenced(ctx, rec, []string{id}, func(ctx context.Context, tx pgx.Tx) error {
-		meta, err := catalog.RemoveGrant(ctx, tx, c.Tenant, id, grantee, grantID, c.Principal, s.d.Now())
+		meta, err := catalog.RemoveGrant(ctx, tx, c.Tenant, id, grantee, grantID, c.Represented(), s.d.Now())
 		if errors.Is(err, catalog.ErrGrantChanged) {
 			return fmt.Errorf("%w: the grantee's grant changed", ErrConflict)
 		}

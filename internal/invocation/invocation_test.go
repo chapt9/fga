@@ -73,15 +73,16 @@ func TestCreateIsIdempotentPerOperation(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	again, err := f.s.Create(ctx, Invocation{Tenant: "t-acme", IdempotencyKey: "idem-1", OperationDigest: "sha256:op",
-		Tool: "expense.submit", ToolVersion: 1, Arguments: []byte(`{}`), Actor: "agent-7", Subject: "user-42"})
+		Tool: "expense.submit", ToolVersion: 1, Arguments: []byte(`{}`), Actor: "agent-7", Subject: "user-42", Delegation: "dlg-5"})
 	if err != nil || again.ID != f.inv.ID {
 		t.Fatalf("retry = %+v, %v; want the first invocation", again, err)
 	}
 	for name, inv := range map[string]Invocation{
-		"a changed operation (INV-004)": {OperationDigest: "sha256:changed", Actor: "agent-7", Subject: "user-42"},
+		"a changed operation (INV-004)": {OperationDigest: "sha256:changed", Actor: "agent-7", Subject: "user-42", Delegation: "dlg-5"},
 		// The key never shows one principal's invocation to another.
-		"another actor":   {OperationDigest: "sha256:op", Actor: "agent-8", Subject: "user-42"},
-		"another subject": {OperationDigest: "sha256:op", Actor: "agent-7", Subject: "user-43"},
+		"another actor":      {OperationDigest: "sha256:op", Actor: "agent-8", Subject: "user-42", Delegation: "dlg-5"},
+		"another subject":    {OperationDigest: "sha256:op", Actor: "agent-7", Subject: "user-43", Delegation: "dlg-5"},
+		"another delegation": {OperationDigest: "sha256:op", Actor: "agent-7", Subject: "user-42", Delegation: "dlg-6"},
 	} {
 		inv.Tenant, inv.IdempotencyKey, inv.Tool, inv.ToolVersion, inv.Arguments = "t-acme", "idem-1", "expense.submit", 1, []byte(`{}`)
 		if _, err := f.s.Create(ctx, inv); !errors.Is(err, ErrIdempotencyConflict) {

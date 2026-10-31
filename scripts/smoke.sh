@@ -251,8 +251,10 @@ cat > mcp_lib.py <<'P'
 import base64, json, sys, urllib.error, urllib.request
 URL = "http://127.0.0.1:18446/mcp"
 open_url = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
-def post(tok, body, sid=None):
+def post(tok, body, sid=None, dlg=None):
     h = {"Authorization": "Bearer " + tok, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if dlg:
+        h["Fga-Delegation"] = dlg
     if sid:
         h.update({"Mcp-Session-Id": sid, "Mcp-Protocol-Version": "2025-06-18"})
     try:
@@ -261,15 +263,15 @@ def post(tok, body, sid=None):
             return r.status, r.headers.get("Mcp-Session-Id"), json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
         return e.code, None, None
-def session(tok, recipient=None):
+def session(tok, recipient=None, dlg=None):
     caps = {"experimental": {"fga.encrypted-package": {"version": 1, "recipient": recipient}}} if recipient else {}
     st, sid, res = post(tok, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18",
-                    "capabilities": caps, "clientInfo": {"name": "smoke", "version": "1"}}})
+                    "capabilities": caps, "clientInfo": {"name": "smoke", "version": "1"}}}, dlg=dlg)
     assert st == 200 and sid, ("initialize", st, res)
-    post(tok, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+    post(tok, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid, dlg)
     return sid
-def rpc(tok, sid, method, params):
-    st, _, res = post(tok, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, sid)
+def rpc(tok, sid, method, params, dlg=None):
+    st, _, res = post(tok, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, sid, dlg)
     assert st == 200, (method, st)
     return res
 P
@@ -305,6 +307,27 @@ assert st == 403, ("alice in bob's session", st)
 print("MCP: alice's token in bob's session:", st)
 P
 check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)" "$BOBFP"
+# A delegated agent (DLG-001): agent-7 acts for bob through the MCP role
+# under a delegation that names agent-7, bob and the MCP workload; it reads
+# what bob may read, and nothing without the delegation.
+$ADMIN identity put -tenant t-acme -id agent-7 -roles agent
+$ADMIN grant -tenant t-acme -actor agent-7 -preset storage
+check $ADMIN delegation add -tenant t-acme -id dlg-bob -actor agent-7 -subject bob -audience local-dev -expires 1h \
+  -grants 'agent.tool:discover,invoke;storage.bucket:list;storage.object:read,stat,discover;document.version:read-units,discover;document.text_unit:read'
+cat > mcp_agent.py <<'P'
+exec(open("mcp_lib.py").read())
+agent, = sys.argv[1:2]
+call = {"name": "documents.read", "arguments": {"bucket": "shared", "key": "q4/notes.md"}}
+a = session(agent, dlg="dlg-bob")
+doc = rpc(agent, a, "tools/call", call, "dlg-bob")["result"]
+assert not doc.get("isError") and doc["content"][0]["text"] == open("bob-shared-notes.txt").read().rstrip("\n"), doc
+own = session(agent)
+assert rpc(agent, own, "tools/call", call)["result"].get("isError")
+st, _, _ = post(agent, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}, a)
+assert st == 403, ("the agent's session without its delegation", st)
+print("MCP: agent-7 under dlg-bob reads bob's document as bob would; without the delegation, nothing; its session is bound to it")
+P
+check python3 -I mcp_agent.py "$(tok agent-7 fga-mcp)"
 # The local bridge (M3): bob's application starts fga mcp-bridge and talks
 # MCP over its stdin and stdout; the bridge opens client-mode packages
 # with bob's keys, so the application reads plaintext the server never had.

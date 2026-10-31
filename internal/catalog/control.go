@@ -2,11 +2,14 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"fga/internal/delegation"
 )
 
 // ErrNoRow is returned by a control change whose target does not exist.
@@ -92,4 +95,58 @@ func (s *Store) exec1(ctx context.Context, sql string, args ...any) error {
 		return ErrNoRow
 	}
 	return nil
+}
+
+// ErrDelegationExists is returned for a delegation ID already in use: a
+// delegation is never changed, only revoked and replaced (DLG-005).
+var ErrDelegationExists = errors.New("catalog: delegation exists")
+
+// PutDelegation records a new delegation (DLG-001). It must name an actor
+// other than its subject, an audience, at least one grant and a future
+// expiry; a child must narrow its usable parent (DLG-002). Actor and
+// subject must be known identities.
+func (s *Store) PutDelegation(ctx context.Context, d delegation.Delegation, now time.Time) error {
+	switch {
+	case d.ID == "" || len(d.ID) > 128 || d.Tenant == "" || d.Actor == "" || d.Subject == "" || d.Audience == "":
+		return errors.New("catalog: a delegation needs an ID, tenant, actor, subject and audience")
+	case d.Actor == d.Subject:
+		return errors.New("catalog: a delegation's actor and subject differ")
+	case len(d.Grants) == 0:
+		return errors.New("catalog: a delegation grants at least one action")
+	case !now.Before(d.ExpiresAt):
+		return errors.New("catalog: a delegation expires in the future")
+	}
+	grants := make([]grantJSON, 0, len(d.Grants))
+	for _, g := range d.Grants {
+		if g.ResourceType == "" || len(g.Actions) == 0 {
+			return errors.New("catalog: a grant names a resource type and actions")
+		}
+		grants = append(grants, grantJSON{ResourceType: g.ResourceType, Actions: g.Actions})
+	}
+	var parent *string
+	if d.Parent != "" {
+		chain, err := delegation.Resolve(ctx, s.Delegations(), d.Tenant, d.Parent, now)
+		if err != nil {
+			return fmt.Errorf("catalog: parent delegation: %w", err)
+		}
+		if len(chain) >= delegation.MaxDepth {
+			return delegation.ErrTooDeep
+		}
+		if err := delegation.ValidateChild(d, chain.Leaf()); err != nil {
+			return err
+		}
+		p := string(d.Parent)
+		parent = &p
+	}
+	raw, err := json.Marshal(grants)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `INSERT INTO delegations (tenant, id, actor, subject, audience, grants, expires_at, parent, revision)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1) ON CONFLICT (tenant, id) DO NOTHING`,
+		d.Tenant, string(d.ID), d.Actor, d.Subject, d.Audience, raw, d.ExpiresAt, parent)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrDelegationExists
+	}
+	return err
 }

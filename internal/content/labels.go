@@ -244,7 +244,7 @@ func (s *Service) ProposeLabel(ctx context.Context, c Caller, bucketName, key, l
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		p, err = catalog.AddProposal(ctx, tx, c.Tenant, catalog.Proposal{ResourceType: "storage.object", ResourceID: o.ID.String(),
-			Label: label, Classifier: classifier, Proposer: c.Principal, CreatedAt: s.d.Now()})
+			Label: label, Classifier: classifier, Proposer: c.Represented(), CreatedAt: s.d.Now()})
 		if err != nil {
 			return err
 		}

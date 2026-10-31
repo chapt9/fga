@@ -159,6 +159,31 @@ func (d *Deployment) Connect(t *testing.T, user, recipient string) (*mcp.ClientS
 	return s, err
 }
 
+// ConnectDelegated opens an MCP session for agent under the delegation dlg
+// (mcpwire.DelegationHeader). The session closes when the test ends.
+func (d *Deployment) ConnectDelegated(t *testing.T, agent, dlg string) (*mcp.ClientSession, error) {
+	t.Helper()
+	c := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "1"}, nil)
+	s, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: d.MCP.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: Delegated{Token: d.Token(t, agent), Delegation: dlg}}, MaxRetries: -1}, nil)
+	if err == nil {
+		t.Cleanup(func() { s.Close() })
+	}
+	return s, err
+}
+
+// Delegated is a transport that presents an agent's bearer token and the
+// delegation it acts under.
+type Delegated struct{ Token, Delegation string }
+
+// RoundTrip implements http.RoundTripper.
+func (d Delegated) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+d.Token)
+	r.Header.Set(mcpwire.DelegationHeader, d.Delegation)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
 // Paragraphs are the units of the client-mode document ClientFixture
 // publishes.
 var Paragraphs = []string{"First client paragraph.", "Second client paragraph, restricted later.", "Third client paragraph."}

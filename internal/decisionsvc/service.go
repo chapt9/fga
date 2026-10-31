@@ -305,9 +305,17 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if req.Tenant == "" || adapter == "" || len(req.Checks) == 0 || len(req.Checks) > s.d.Limits.MaxChecks || !s.audiences[req.Audience] {
 		return deny(ReasonInvalidRequest)
 	}
-	authOK, chainedIncarnation := s.authenticated(adapter, req)
+	authOK, chained := s.authenticated(adapter, req)
 	if !authOK {
 		return deny(ReasonAuthentication)
+	}
+	var chainedIncarnation uint64
+	via := ""
+	if chained != nil {
+		chainedIncarnation = chained.RecoveryIncarnation
+		if chained.Delegation != "" {
+			via = chained.Adapter
+		}
 	}
 	op, ok := s.d.Operations.Lookup(req.Operation)
 	if !ok && strings.HasPrefix(req.Operation, registry.ToolOperationPrefix) && s.d.ToolOperations != nil {
@@ -328,11 +336,18 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	}
 	// A gateway keeps no identity store: for its own MCP operations, on
 	// the user's token, it asks with revision 0 and the decision binds the
-	// actor's current revision (TB3).
-	if req.Actor.Revision == 0 && len(s.d.Gateways[adapter]) > 0 && chainedIncarnation == 0 && req.Evidence != "" &&
-		req.Delegation == "" && req.Subject == nil && (req.Operation == registry.OpMCPInvoke || req.Operation == registry.OpMCPDiscover) {
-		rev, err := s.d.Gate.CurrentRevision(ctx, req.Tenant, req.Actor.ID)
+	// actor's current revision (TB3). An agent there names its delegation
+	// and never its subject: the subject is the one the delegation names,
+	// at its current revision, and the whole chain is still admitted.
+	if req.Actor.Revision == 0 && len(s.d.Gateways[adapter]) > 0 && chained == nil && req.Evidence != "" &&
+		req.Subject == nil && (req.Operation == registry.OpMCPInvoke || req.Operation == registry.OpMCPDiscover) {
 		var rej *decision.Rejection
+		rev, err := s.d.Gate.CurrentRevision(ctx, req.Tenant, req.Actor.ID)
+		if err == nil && req.Delegation != "" {
+			var subject decision.Ref
+			subject, err = s.d.Gate.DelegatedSubject(ctx, req.Tenant, req.Delegation)
+			req.Subject = &Ref{ID: subject.ID, Revision: subject.Revision}
+		}
 		switch {
 		case errors.As(err, &rej):
 			return deny(rej.Reason)
@@ -386,7 +401,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return deny(ReasonOperationMismatch)
 	}
 
-	env := decision.Envelope{Tenant: req.Tenant, Adapter: adapter, Actor: decision.Ref(req.Actor), Delegation: req.Delegation}
+	env := decision.Envelope{Tenant: req.Tenant, Adapter: adapter, Actor: decision.Ref(req.Actor), Delegation: req.Delegation, Via: via}
 	if req.Subject != nil {
 		env.Subject = decision.Ref(*req.Subject)
 	}
@@ -501,53 +516,62 @@ func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound 
 
 // authenticated checks first-hop evidence (TRU-003, DEC-007). A request
 // with evidence must carry a token for the adapter's user audience, issued
-// to the actor in the request's tenant. A request without evidence must
-// name a delegation, which the gate verifies against authoritative state;
-// otherwise caller-asserted identity plus a workload identity would be
-// enough, which TRU-003 forbids.
-func (s *Service) authenticated(adapter string, req Request) (bool, uint64) {
+// to the actor in the request's tenant, or a gateway's earlier decision,
+// which it returns. A request without evidence must name a delegation,
+// which the gate verifies against authoritative state; otherwise
+// caller-asserted identity plus a workload identity would be enough, which
+// TRU-003 forbids.
+func (s *Service) authenticated(adapter string, req Request) (bool, *signing.Record) {
 	if req.Evidence == "" {
-		return req.Delegation != "" && adapter != PublicAdapter, 0
+		return req.Delegation != "" && adapter != PublicAdapter, nil
 	}
 	if signed, ok := signing.ParseEvidence(req.Evidence); ok {
-		return s.chained(adapter, req, signed)
+		rec, ok := s.chained(adapter, req, signed)
+		return ok, rec
 	}
 	audiences := s.d.AdapterAudiences[adapter]
 	if adapter == PublicAdapter {
 		audiences = []string{s.d.PublicAudience}
 	}
 	if s.d.Authn == nil {
-		return false, 0
+		return false, nil
 	}
 	for _, audience := range audiences {
 		if audience == "" {
 			continue
 		}
 		if c, err := s.d.Authn.Verify(req.Evidence, audience); err == nil {
-			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID, 0
+			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID, nil
 		}
 	}
-	return false, 0
+	return false, nil
 }
 
 // chained accepts a gateway's earlier decision as the user's evidence
 // (TB3): signed by this role, for an MCP tool call, requested by a
 // configured gateway and addressed to an audience the gateway may address
-// and the requesting adapter serves, for the same tenant and user acting
-// for themself, and still valid. The caller compares the returned recovery
-// incarnation with the current one.
-func (s *Service) chained(adapter string, req Request, signed signing.Signed) (bool, uint64) {
+// and the requesting adapter serves, for the same tenant, actor, subject
+// and delegation, and still valid. A delegated actor's request is then
+// presented via the gateway, which its delegation must name. The caller
+// compares the returned record's recovery incarnation with the current
+// one.
+func (s *Service) chained(adapter string, req Request, signed signing.Signed) (*signing.Record, bool) {
 	if s.d.SelfVerifier == nil || adapter == PublicAdapter {
-		return false, 0
+		return nil, false
 	}
 	rec, err := s.d.SelfVerifier.Inspect(signed)
+	subject := ""
+	if req.Subject != nil {
+		subject = req.Subject.ID
+	}
 	switch {
 	case err != nil, rec.Operation != registry.OpMCPInvoke,
 		!slices.Contains(s.d.Gateways[rec.Adapter], rec.Audience), !slices.Contains(s.d.AdapterAudiences[adapter], rec.Audience),
-		rec.Tenant != req.Tenant, rec.Actor.ID != req.Actor.ID, rec.Delegation != "" || req.Delegation != "" || req.Subject != nil:
-		return false, 0
+		rec.Tenant != req.Tenant, rec.Actor.ID != req.Actor.ID, rec.Delegation != req.Delegation, rec.Subject.ID != subject,
+		(req.Delegation == "") != (subject == ""):
+		return nil, false
 	}
-	return true, rec.RecoveryIncarnation
+	return &rec, true
 }
 
 // DecidePublic serves the public facade: the caller is the token's subject

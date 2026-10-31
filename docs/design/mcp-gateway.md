@@ -12,14 +12,14 @@ The MCP service (R2) is a separate role, `fga-mcp`. It holds no permission rules
    - the workload is one of its `mcp_adapters`;
    - the decision verifies for its own audience and is still valid;
    - it is for `mcp.tool.invoke` and was requested by that same workload;
-   - it names no delegation or subject.
+   - it names a delegation exactly when it names a subject.
 
-   The caller is then the decision's actor.
+   The caller is then the decision's actor, acting for themself or, under the decision's delegation, for its subject ([delegated-agents.md](delegated-agents.md)).
 4. **The storage role's own checks.** The storage role decides every content check as for a native client, passing the gateway's decision as the user's evidence. The decision role accepts its own earlier decision (`decisionsvc` `chained`) only if all of these hold:
    - it verifies under the role's own key;
    - it is for `mcp.tool.invoke`;
    - it was requested by a configured gateway (`gateways`) and addressed to an audience that gateway may address and the requesting adapter serves;
-   - it is for the same tenant and user, acting for themself;
+   - it is for the same tenant, actor, subject and delegation (the delegation then names the gateway as its audience);
    - it is still valid and from the current recovery incarnation.
 
 The user's MCP token never leaves the MCP role. Neither the MCP workload's own claims about a user nor a forwarded MCP token is accepted (V-028). A decision is not single-use: one MCP call may need several storage requests. It is short-lived, though (the decision role's maximum age), and bound to the MCP role's workload.
@@ -45,11 +45,10 @@ In the development profile without TLS, every caller has the one development ada
 ## Not yet
 
 - Client mode and the local bridge (M3). The MCP role itself is built (M2): [mcp-role.md](mcp-role.md).
-- Agents acting for users through delegations (the decision may then name a delegation and subject).
 
 ## Tests
 
 | Test | Covers |
 |---|---|
 | `internal/nativeapi` `TestMCPGatewayHTTP` | A read for the user through the gateway; no decision before the tenant enables MCP; refusals (V-028): the MCP workload's own claim, a forwarded MCP token, the decision from another workload, a decision another adapter requested, a decision for another operation, a broken signature, an expired decision |
-| `TestChainedEvidence` | The decision role's side: another user, a non-gateway's decision, a forwarded MCP token, a decision from an earlier recovery incarnation |
+| `TestChainedEvidence` | The decision role's side: another user, a non-gateway's decision, a forwarded MCP token, a decision from an earlier recovery incarnation; an agent's decision for itself, under another delegation or for another subject |

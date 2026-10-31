@@ -240,6 +240,25 @@ func (g *Gate) current(ctx context.Context, tenant string, ref decision.Ref) (id
 	return id, nil
 }
 
+// DelegatedSubject returns the subject a delegation names, at the
+// subject's current revision, for a gateway that keeps no catalog: its
+// agent names the delegation, never the subject, and the batch is still
+// admitted against the whole chain (DLG-001, TB3).
+func (g *Gate) DelegatedSubject(ctx context.Context, tenant, id string) (decision.Ref, error) {
+	d, err := g.delegations.Get(ctx, tenant, delegation.ID(id))
+	switch {
+	case errors.Is(err, delegation.ErrNotFound):
+		return decision.Ref{}, reject(ReasonDelegationUnknown)
+	case err != nil:
+		return decision.Ref{}, fmt.Errorf("gate: delegation: %w", err)
+	}
+	rev, err := g.CurrentRevision(ctx, tenant, d.Subject)
+	if err != nil {
+		return decision.Ref{}, err
+	}
+	return decision.Ref{ID: d.Subject, Revision: rev}, nil
+}
+
 // CurrentRevision returns an identity's current revision, for a gateway
 // that keeps no identity store and so cannot name one (TB3). The batch
 // it goes into is still admitted against that revision (ID-004).
@@ -258,7 +277,11 @@ func (g *Gate) CurrentRevision(ctx context.Context, tenant, id string) (uint64, 
 func (g *Gate) chain(ctx context.Context, env decision.Envelope) (delegation.Chain, error) {
 	chain, err := delegation.Resolve(ctx, g.delegations, env.Tenant, delegation.ID(env.Delegation), g.now())
 	if err == nil {
-		err = chain.Admit(env.Actor.ID, env.Subject.ID, env.Adapter)
+		presenter := env.Adapter
+		if env.Via != "" {
+			presenter = env.Via
+		}
+		err = chain.Admit(env.Actor.ID, env.Subject.ID, presenter)
 	}
 	if err == nil {
 		return chain, nil

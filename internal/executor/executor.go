@@ -204,7 +204,8 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		return Result{}, err
 	}
 	inv, err := s.d.Invocations.Create(ctx, invocation.Invocation{Tenant: c.Tenant, IdempotencyKey: r.IdempotencyKey,
-		OperationDigest: p.digest, Tool: p.tool.ID, ToolVersion: p.tool.Version, Arguments: p.args.Canonical(), Actor: c.Principal})
+		OperationDigest: p.digest, Tool: p.tool.ID, ToolVersion: p.tool.Version, Arguments: p.args.Canonical(), Actor: c.Principal,
+		Subject: c.Subject, Delegation: c.Delegation})
 	switch {
 	case errors.Is(err, invocation.ErrIdempotencyConflict):
 		return Result{}, ErrConflict
@@ -292,7 +293,9 @@ func (s *Service) Get(ctx context.Context, c enforce.Caller, id string) (Result,
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if inv.Actor != c.Principal {
+	// The caller who made it, or the user an agent made it for, sees it;
+	// anyone else needs resolve on the tool.
+	if !(inv.Actor == c.Principal && inv.Subject == c.Subject || c.Delegation == "" && inv.Subject == c.Principal) {
 		if _, _, err := enforce.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, registry.OpToolResolve, Audience, false,
 			[]enforce.Check{{ID: "tool", Role: registry.RoleTool, Action: "resolve", Resource: alias2(registry.ToolNamespace, inv.Tool)}}); err != nil {
 			return Result{}, ErrNotFound
@@ -330,6 +333,11 @@ func (s *Service) settle(ctx context.Context, c enforce.Caller, id, op, action s
 		[]enforce.Check{{ID: "tool", Role: registry.RoleTool, Action: action, Resource: alias2(registry.ToolNamespace, inv.Tool)}})
 	if err != nil {
 		return Result{}, mapEnforce(err)
+	}
+	// Neither the call's actor nor its subject settles it, whoever acts
+	// for them (INV-006, INV-009); the store checks the actor itself.
+	if c.Delegation != "" && (c.Subject == inv.Actor || c.Subject == inv.Subject) {
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalid, invocation.ErrSelfResolution)
 	}
 	b, err := fence.FromRecord(rec)
 	if err != nil {

@@ -190,7 +190,7 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		in.Document, in.newDocument = cryptowire.NewUUID().String(), true
-		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label, "kind": "document",
+		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Represented(), "project": b.Project, "label": b.Label, "kind": "document",
 			"encryption": b.Encryption}
 		if r.Collection {
 			in.attributes["kind"] = "collection"

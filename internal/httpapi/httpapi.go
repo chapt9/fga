@@ -106,9 +106,10 @@ const DecisionHeader = "Fga-Decision"
 // (TB3): the calling workload must be one of Adapters, and it presents its
 // decision for the user's call, for Operation, addressed to this role
 // (Verifier's audience), requested by that same workload, and still valid.
-// The user is the decision's actor, acting for themself, and the decision
-// goes on to the decision role as the user's evidence. A gateway's own
-// claims about the user are never accepted (TRU-003, V-028).
+// The caller is the decision's actor, acting for themself or, under a
+// delegation the decision admitted, for its subject; the decision goes on
+// to the decision role as the caller's evidence. A gateway's own claims
+// about the user are never accepted (TRU-003, V-028).
 type Gateway struct {
 	AdapterOf func(*http.Request) (string, error)
 	Adapters  map[string]bool
@@ -126,14 +127,15 @@ func (g *Gateway) authenticate(r *http.Request) (enforce.Caller, bool) {
 		return enforce.Caller{}, false
 	}
 	rec, err := g.Verifier.Check(signed)
-	if err != nil || rec.Operation != g.Operation || rec.Adapter != adapter || rec.Delegation != "" || rec.Subject.ID != "" {
+	if err != nil || rec.Operation != g.Operation || rec.Adapter != adapter || (rec.Delegation == "") != (rec.Subject.ID == "") {
 		return enforce.Caller{}, false
 	}
 	approval := r.Header.Get(ApprovalHeader)
 	if len(approval) > 64 {
 		return enforce.Caller{}, false
 	}
-	return enforce.Caller{Tenant: rec.Tenant, Principal: rec.Actor.ID, Token: signed.Evidence(), Approval: approval}, true
+	return enforce.Caller{Tenant: rec.Tenant, Principal: rec.Actor.ID, Subject: rec.Subject.ID, Delegation: rec.Delegation,
+		Token: signed.Evidence(), Approval: approval}, true
 }
 
 // AuthedVia is Authed that also accepts gateway calls: a request without a

@@ -65,8 +65,14 @@ type Options struct {
 // Caller is an authenticated user: the subject of a verified access token,
 // acting for itself (TB1).
 type Caller struct {
-	Tenant    string
-	Principal string
+	Tenant string
+	// Principal is the authenticated actor. Subject and Delegation are set
+	// when it acts for another identity under a delegation (DLG-001); the
+	// decision role then decides for the subject within the delegation and
+	// the actor's capability (DLG-003, DLG-004).
+	Principal  string
+	Subject    string
+	Delegation string
 	// Token is the user's access token, passed to the decision role as
 	// first-hop evidence (TRU-003).
 	Token string
@@ -74,6 +80,20 @@ type Caller struct {
 	// operations with a plan send it to the decision role.
 	Approval string
 }
+
+// Represented is the identity the caller acts for: the subject under a
+// delegation, otherwise the actor itself. It owns what the caller creates.
+func (c Caller) Represented() string {
+	if c.Delegation != "" {
+		return c.Subject
+	}
+	return c.Principal
+}
+
+// Is reports whether id is the caller's actor or the identity it acts for:
+// a check against acting on one's own request covers both (APR-002,
+// INV-006).
+func (c Caller) Is(id string) bool { return id == c.Principal || c.Delegation != "" && id == c.Subject }
 
 // Decider obtains decisions from the decision role.
 type Decider interface {
@@ -110,12 +130,19 @@ func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *
 func AuthorizeWith(ctx context.Context, d Decider, verifier *signing.Verifier, cat *catalog.Store, c Caller, op, audience string,
 	singleUse bool, checks []Check, o Options) (signing.Signed, signing.Record, error) {
 	id, err := cat.GetIdentity(ctx, c.Tenant, c.Principal)
-	if err != nil {
+	if err != nil || (c.Delegation == "") != (c.Subject == "") {
 		return signing.Signed{}, signing.Record{}, ErrNotFound
 	}
 	req := decisionsvc.Request{RequestID: cryptowire.NewUUID().String(), Tenant: c.Tenant, Operation: op,
 		OperationID: cryptowire.NewUUID().String(), Audience: audience, SingleUse: singleUse,
-		Actor: decisionsvc.Ref{ID: c.Principal, Revision: id.Revision}, Evidence: c.Token}
+		Actor: decisionsvc.Ref{ID: c.Principal, Revision: id.Revision}, Evidence: c.Token, Delegation: c.Delegation}
+	if c.Delegation != "" {
+		subject, err := cat.GetIdentity(ctx, c.Tenant, c.Subject)
+		if err != nil {
+			return signing.Signed{}, signing.Record{}, ErrNotFound
+		}
+		req.Subject = &decisionsvc.Ref{ID: c.Subject, Revision: subject.Revision}
+	}
 	h := sha256.New()
 	fmt.Fprintf(h, "fga.storage-operation/v1\n%s\n%s\n", op, c.Tenant)
 	for _, ch := range checks {
@@ -172,7 +199,12 @@ func AuthorizeWith(ctx context.Context, d Decider, verifier *signing.Verifier, c
 // bound reports whether rec is the decision for exactly req: tenant,
 // actor, operation, digest and every check's role, action and version.
 func bound(rec signing.Record, req decisionsvc.Request) bool {
-	if rec.Tenant != req.Tenant || rec.Actor.ID != req.Actor.ID || rec.Operation != req.Operation ||
+	subject := ""
+	if req.Subject != nil {
+		subject = req.Subject.ID
+	}
+	if rec.Tenant != req.Tenant || rec.Actor.ID != req.Actor.ID || rec.Subject.ID != subject || rec.Delegation != req.Delegation ||
+		rec.Operation != req.Operation ||
 		rec.OperationDigest != req.OperationDigest || rec.SingleUse != req.SingleUse || len(rec.Checks) != len(req.Checks) {
 		return false
 	}

@@ -38,6 +38,7 @@ A package that fails any step is an error with no plaintext: a tool error for `t
 | `FGA_KEY_PASSPHRASE` or `-passphrase-file` | The passphrase of protected keys |
 | `-mcp-url` or `FGA_MCP_URL` | The MCP role's endpoint |
 | `FGA_MCP_TOKEN` | The user's token for `fga-mcp` |
+| `FGA_MCP_DELEGATION` | For an agent: the delegation it acts under, sent as `Fga-Delegation` ([delegated-agents.md](delegated-agents.md)) |
 | `FGA_KEYS_URL`, `FGA_KEYS_TOKEN` | The keys role, for signer status |
 
 Stdout carries MCP only; diagnostics go to stderr.

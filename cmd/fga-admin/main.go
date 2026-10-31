@@ -15,6 +15,8 @@
 //	signing-key add    -tenant T -principal ID -public-key B64
 //	signing-key retire|compromise -tenant T -fingerprint FP  (compromise is journaled)
 //	recipient revoke   -tenant T -fingerprint FP             (journaled)
+//	delegation add     -tenant T -id ID -actor A -subject S -audience ADAPTER -grants 'type:a,b;type:c' -expires 24h [-parent ID]
+//	                   lets agent A act for S, presented through ADAPTER (the MCP role's workload, say), within the grants
 //	delegation revoke  -tenant T -id ID                      (journaled)
 //	epoch raise        -tenant T -epoch N                    (journaled)
 //	backup-key generate -out FILE [-encrypt]        create a backup key (keep it apart from catalog and backups)
@@ -58,6 +60,7 @@ import (
 	"fga/internal/backupcrypt"
 	"fga/internal/blob"
 	"fga/internal/catalog"
+	"fga/internal/delegation"
 	"fga/internal/journal"
 	"fga/internal/kek"
 	"fga/internal/keyfile"
@@ -158,6 +161,11 @@ func run(args []string) error {
 	typ := fs.String("type", "", "resource type")
 	actions := fs.String("actions", "", "comma-separated actions")
 	preset := fs.String("preset", "", "capability preset: storage or approver")
+	subject := fs.String("subject", "", "delegation add: the identity the actor acts for")
+	audience := fs.String("audience", "", "delegation add: the workload that presents the delegation, such as the MCP role's")
+	grantList := fs.String("grants", "", "delegation add: resource types and actions, as 'type:a,b;type:c' (* for every action)")
+	expires := fs.Duration("expires", 24*time.Hour, "delegation add: lifetime")
+	parentID := fs.String("parent", "", "delegation add: the delegation this one narrows")
 	principal := fs.String("principal", "", "principal identity")
 	publicKey := fs.String("public-key", "", "base64 public key")
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
@@ -315,6 +323,31 @@ func run(args []string) error {
 			return err
 		}
 		return journaled(journal.RecipientRevoked, *fingerprint, func() error { return e.store.RevokeRecipientKey(ctx, *tenant, *fingerprint) })
+	case "delegation add":
+		if err := need(*tenant, *id, *actor, *subject, *audience, *grantList); err != nil {
+			return err
+		}
+		d := delegation.Delegation{ID: delegation.ID(*id), Tenant: *tenant, Actor: *actor, Subject: *subject, Audience: *audience,
+			ExpiresAt: time.Now().Add(*expires), Parent: delegation.ID(*parentID)}
+		types := registry.CoreTypes()
+		for _, part := range strings.Split(*grantList, ";") {
+			typ, acts, ok := strings.Cut(strings.TrimSpace(part), ":")
+			if !ok || !types.HasResourceType(typ) {
+				return fmt.Errorf("delegation add: %q is not resource-type:actions of a known type", part)
+			}
+			g := delegation.Grant{ResourceType: typ, Actions: split(acts)}
+			for _, a := range g.Actions {
+				if a != delegation.AllActions && !types.HasAction(typ, a) {
+					return fmt.Errorf("delegation add: %s has no action %q", typ, a)
+				}
+			}
+			d.Grants = append(d.Grants, g)
+		}
+		if err := e.store.PutDelegation(ctx, d, time.Now()); err != nil {
+			return err
+		}
+		fmt.Printf("delegation %s: %s acts for %s through %s until %s\n", *id, *actor, *subject, *audience, d.ExpiresAt.Format(time.RFC3339))
+		return nil
 	case "delegation revoke":
 		if err := need(*tenant, *id); err != nil {
 			return err

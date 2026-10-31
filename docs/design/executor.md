@@ -31,7 +31,7 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
 
 `POST /v1/invocations {tool, version, arguments, idempotency_key, note}`, with the user's token for `fga-tools`:
 
-1. **Who:** the token's subject, acting for itself, or the user of an MCP call (below). Delegated agents are a later stretch.
+1. **Who:** the token's subject, acting for itself, or the caller of an MCP call (below), which may be an agent acting for a user under a delegation. The invocation records the actor, the subject and the delegation ([delegated-agents.md](delegated-agents.md)).
 2. **Which tool:** the reviewed record at exactly the requested version (AGT-004), with the arguments validated against its strict schema.
 3. **What exactly:** the call becomes its checks and its canonical plan (`opplan`), whose digest is the operation digest. The invocation is created under the idempotency key. The same key with the same plan and actor returns the same invocation; another plan or another actor is a conflict (INV-004).
 4. **May it:** the decision role decides the operation for the plan. A policy may require:
@@ -82,7 +82,7 @@ A pass that panics is contained; the next pass runs.
 
 ## Not yet
 
-- Delegated agents.
+- Context marks for egress (FLW-003 to FLW-008), with the optional managed-client profile.
 
 ## Tests
 
@@ -91,7 +91,7 @@ A pass that panics is contained; the next pass runs.
 | `internal/executor` `TestInvoke` | AGT-003 end to end against a recording destination: one dispatch with the destination's credential and the invocation as key; retry without redispatch; another plan or actor under the key; unknown tool, other version, extra argument, a user without rights, and a record changed after review, all refused |
 | `TestInvokeApproval` | A policy reading `request.operation.amount_minor` requires an approval for large payments; another plan is not covered; the approval is consumed with the dispatch |
 | `TestInvokeReservation` | Reserved in the dispatch's transaction; charged on success, released on refusal, held while unknown; a payment beyond the budget sent nowhere; no reservation without the mapping |
-| `TestResolution` | The actor cannot resolve; evidence is required; ABANDONED keeps the charge and never redispatches; another lead writes it off |
+| `TestResolution` | The actor cannot resolve; evidence is required; ABANDONED keeps the charge and never redispatches; another lead writes it off; an agent for a lead resolves another's call, never the lead's own |
 | `TestDispatchFence` | A revocation between decision and dispatch leaves the call unsent |
 | `TestReconcile` | A reported success and a stalled dispatch the destination never received are recorded, the reservations settled with them, nothing sent again; without a reconcile path, a stalled dispatch stays UNKNOWN with its charge held and is escalated once past the hold age |
 | `internal/mcpsvc` `TestMCPRegisteredTools` | Listing and calling through the MCP role, approvals included |

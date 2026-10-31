@@ -129,6 +129,11 @@ type Envelope struct {
 	// Subject and Delegation are empty when the actor acts for itself.
 	Subject    Ref
 	Delegation string
+	// Via, when set, is the gateway through which the delegated actor
+	// presented this batch: the earlier decision a role presents for its
+	// user was requested by that gateway, and the delegation must name the
+	// gateway, not the role behind it, as its audience (TB3, DLG-001).
+	Via string
 }
 
 // Batch is a set of checks evaluated under one authority envelope and one

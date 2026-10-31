@@ -14,9 +14,11 @@ import (
 )
 
 // decisionRequest is a DecideBatch request (decisionsvc.Request) as the
-// MCP role sends it: the user acting for themself, with the user's MCP
-// token as evidence. The actor revision is 0: the role keeps no identity
-// store, and the decision role binds the user's current revision (TB3).
+// MCP role sends it: the user acting for themself, or an agent under the
+// delegation its session is bound to, with the MCP token as evidence. The
+// actor revision is 0 and no subject is named: the role keeps no identity
+// store, and the decision role binds the actor's current revision and,
+// under a delegation, the subject the delegation names (TB3, DLG-001).
 type decisionRequest struct {
 	RequestID   string      `json:"request_id"`
 	Tenant      string      `json:"tenant"`
@@ -24,6 +26,7 @@ type decisionRequest struct {
 	OperationID string      `json:"operation_id"`
 	Audience    string      `json:"audience"`
 	Actor       actorRef    `json:"actor"`
+	Delegation  string      `json:"delegation,omitempty"`
 	Evidence    string      `json:"evidence"`
 	Checks      []toolCheck `json:"checks"`
 }
@@ -70,7 +73,7 @@ func (s *Service) decide(ctx context.Context, c caller, op, action string, tools
 // decideFor is decide addressed to audience.
 func (s *Service) decideFor(ctx context.Context, c caller, op, action, audience string, tools []string) (decisionResponse, error) {
 	req := decisionRequest{RequestID: newID(), Tenant: c.tenant, Operation: op, OperationID: newID(), Audience: audience,
-		Actor: actorRef{ID: c.principal}, Evidence: c.token}
+		Actor: actorRef{ID: c.principal}, Delegation: c.delegation, Evidence: c.token}
 	for i, t := range tools {
 		req.Checks = append(req.Checks, toolCheck{ID: fmt.Sprintf("tool-%d", i), Role: roleTool, Action: action,
 			Resource: toolAlias{Namespace: toolNamespace, Name: t}})

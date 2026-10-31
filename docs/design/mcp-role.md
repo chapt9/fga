@@ -66,7 +66,7 @@ The storage role decides the read and the envelope delivery exactly as for a nat
 
 ## Sessions (MCP-007, V-115)
 
-A session is bound to the tenant and user of the token that opened it, via the SDK's `TokenInfo.UserID`. A request carrying the session ID with another user's token is refused `403`. The session ID alone is never authority: every request is authenticated again, and every call is decided again. An idle session closes after `session_timeout` (default 30 minutes).
+A session is bound to the tenant and user of the token that opened it, and to the delegation an agent named in `Fga-Delegation` ([delegated-agents.md](delegated-agents.md)), via the SDK's `TokenInfo.UserID`. A request in the session under another delegation, or none, is refused `403`. A request carrying the session ID with another user's token is refused `403`. The session ID alone is never authority: every request is authenticated again, and every call is decided again. An idle session closes after `session_timeout` (default 30 minutes).
 
 ## Bounds and containment
 
@@ -123,7 +123,7 @@ The tests deploy through `internal/mcptest`: a decision role and a storage role 
 | V-002, V-050 | RES-002, RES-003, CNT-001 | `TestMCPReads`: the native API, `resources/read` and the read tool return the same unit under the same storage decision |
 | V-028 | TRU-003 | `internal/nativeapi` `TestMCPGatewayHTTP`: the MCP workload's own claims are refused |
 | V-029, V-120 | MCP-004 | `TestMCPUntrustedContent`. Tool registration is the executor's (stretch E1), whose tests repeat V-120 against it |
-| V-114 | FLW-008 | Not built: the optional managed-client profile, which comes with delegated agents |
+| V-114 | FLW-008 | Not built: the optional managed-client profile. Delegated agents are built ([delegated-agents.md](delegated-agents.md)) |
 | V-115 | MCP-007 | `TestMCPSessions` |
 | V-137 | MOD-004 | `cmd/fga-decision` `TestAllowlistCatchesForbiddenImports`, and every role's `TestImportAllowlist` |
 | V-169 | MCP-005 | `TestMCPReads` (server mode), `TestMCPClientMode` (client mode) |

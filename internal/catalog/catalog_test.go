@@ -101,6 +101,48 @@ func TestDelegationsAndResources(t *testing.T) {
 
 // TestGateOverCatalog wires the gate to PostgreSQL: the principal and its
 // roles come from the database.
+// TestPutDelegation covers DLG-001 and DLG-002 at creation: a child must
+// narrow its parent in actions and lifetime; a delegation is never
+// overwritten; actor and subject differ, are known, and the expiry lies
+// ahead.
+func TestPutDelegation(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO identities VALUES ('t-acme','agent-8',1,false,'{agent}','{}')`); err != nil {
+		t.Fatal(err)
+	}
+	read := []delegation.Grant{{ResourceType: "document.text_unit", Actions: []string{"read"}}}
+	child := delegation.Delegation{ID: "dlg-6", Tenant: "t-acme", Actor: "agent-8", Subject: "user-42", Audience: "tools-gw-1",
+		Grants: read, ExpiresAt: now.Add(30 * time.Minute), Parent: "dlg-5"}
+	if err := s.PutDelegation(ctx, child, now); err != nil {
+		t.Fatalf("a narrowing child: %v", err)
+	}
+	if chain, err := delegation.Resolve(ctx, s.Delegations(), "t-acme", "dlg-6", now); err != nil || len(chain) != 2 {
+		t.Fatalf("the child's chain: %v %v", chain, err)
+	}
+	edit := func(f func(*delegation.Delegation)) delegation.Delegation {
+		d := child
+		d.ID = "dlg-7"
+		f(&d)
+		return d
+	}
+	for name, d := range map[string]delegation.Delegation{
+		"wider than its parent": edit(func(d *delegation.Delegation) {
+			d.Grants = []delegation.Grant{{ResourceType: "document.text_unit", Actions: []string{"use-in-model"}}}
+		}),
+		"outliving its parent": edit(func(d *delegation.Delegation) { d.ExpiresAt = now.Add(2 * time.Hour) }),
+		"an ID in use":         edit(func(d *delegation.Delegation) { d.ID = "dlg-6" }),
+		"the actor for itself": edit(func(d *delegation.Delegation) { d.Actor, d.Parent = "user-42", "" }),
+		"already expired":      edit(func(d *delegation.Delegation) { d.ExpiresAt, d.Parent = now, "" }),
+		"an unknown actor":     edit(func(d *delegation.Delegation) { d.Actor, d.Parent = "agent-99", "" }),
+		"granting nothing":     edit(func(d *delegation.Delegation) { d.Grants, d.Parent = nil, "" }),
+	} {
+		if err := s.PutDelegation(ctx, d, now); err == nil {
+			t.Errorf("%s was recorded", name)
+		}
+	}
+}
+
 func TestGateOverCatalog(t *testing.T) {
 	s, _ := testStore(t)
 	g, err := gate.New(gate.Deps{Recipients: gate.MemoryRecipients{}, Identities: s.Identities(), Delegations: s.Delegations(), Capabilities: s,

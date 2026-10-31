@@ -30,6 +30,25 @@ const Profile = "fga.encrypted-package/v1"
 // as JSON text.
 const MIMEType = "application/vnd.fga.encrypted-package+json"
 
+// DelegationHeader names, on an agent's MCP requests, the delegation it
+// acts under. It names no subject: the subject is the one the delegation
+// record names, and the delegation must name the token's identity as its
+// actor (DLG-001). A session is bound to it (MCP-007).
+const DelegationHeader = "Fga-Delegation"
+
+// ValidDelegation reports whether id can name a delegation.
+func ValidDelegation(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' || r == ':') {
+			return false
+		}
+	}
+	return true
+}
+
 // ClientCapability is the value of Capability: the profile version the
 // client speaks and the fingerprint of the recipient key it decrypts with.
 type ClientCapability struct {
