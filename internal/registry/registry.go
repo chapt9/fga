@@ -385,6 +385,11 @@ type Operation struct {
 	// same rights again. An approval prerequisite is deferred to that
 	// commit, where it is consumed (APR-003).
 	Preparatory bool
+	// BindsLineage names the role whose check names a derived version: an
+	// allowed decision binds the version's transitive lineage as its
+	// dependencies, so a source change invalidates it although no source
+	// was decided (DRV-009, review v4 F04).
+	BindsLineage string
 }
 
 // Operations is the registry of operations.

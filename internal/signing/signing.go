@@ -171,9 +171,23 @@ type Record struct {
 	ObligationMappingVersion string       `json:"obligation_mapping_version"`
 	ObligationsDigest        string       `json:"obligations_digest"`
 	Obligations              []Obligation `json:"obligations"`
-	SingleUse                bool         `json:"single_use"`
-	IssuedAt                 time.Time    `json:"issued_at"`
-	ValidUntil               time.Time    `json:"valid_until"`
+	// Dependencies are resources the decision depends on without deciding
+	// them: a declassified derived version's transitive lineage (DRV-009).
+	// Enforcement binds and rechecks them like the checks' resources.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
+	SingleUse    bool         `json:"single_use"`
+	IssuedAt     time.Time    `json:"issued_at"`
+	ValidUntil   time.Time    `json:"valid_until"`
+}
+
+// Dependency is a resource a decision depends on, at the state it was
+// bound in.
+type Dependency struct {
+	ResourceType     string `json:"resource_type"`
+	ResourceID       string `json:"resource_id"`
+	Version          string `json:"version"`
+	Generation       uint64 `json:"generation"`
+	MetadataRevision uint64 `json:"metadata_revision"`
 }
 
 // ResourceBindingsDigest is the digest of the checks' resource bindings, in

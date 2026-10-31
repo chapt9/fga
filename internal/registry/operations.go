@@ -414,7 +414,7 @@ func baseOperations() []Operation {
 		{Name: OpDerivedPublishServerVersion, Checks: []CheckSpec{{Role: RoleOutput, ResourceType: "document.derived", Action: "new-version"},
 			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true}}},
 		{Name: OpDerivedDeclassifyReader, Checks: []CheckSpec{{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
-			{Role: RoleDeclassify, ResourceType: "document.derived", Action: "declassify"}}},
+			{Role: RoleDeclassify, ResourceType: "document.derived", Action: "declassify"}}, BindsLineage: RoleOutput},
 		{Name: OpKeyReleaseUnit, Checks: []CheckSpec{{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"}}},
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
@@ -506,7 +506,7 @@ func baseOperations() []Operation {
 		{Name: OpDerivedDeclassify, Checks: []CheckSpec{
 			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
 			{Role: RoleRecipientDeclass, ResourceType: "document.derived", Action: "declassify", Kind: KindRecipientEligibility},
-		}},
+		}, BindsLineage: RoleOutput},
 		{Name: OpDerivedShare, Checks: []CheckSpec{
 			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
 			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create"},

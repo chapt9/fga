@@ -385,7 +385,8 @@ func (s *Service) completeContent(ctx context.Context, primary signing.Record, d
 
 // recipientPath verifies the recipient-path decisions of a derived
 // output's delivery (DRV-002): either one declassify decision for this
-// output, version and recipient, or recipient-source decisions whose
+// output, version and recipient, bound to its lineage, or recipient-source
+// decisions whose
 // checks, all for this recipient, name the version's transitive lineage
 // exactly. Each is single-use, of the same tenant and actor as the
 // delivery, and is admitted in the same fence (DRV-009).
@@ -414,6 +415,9 @@ func (s *Service) recipientPath(ctx context.Context, primary signing.Record, e s
 			}
 		}
 		if !declassified {
+			return nil, ErrDecision
+		}
+		if err := keycheck.DependsOnLineage(ctx, s.d.Catalog.Pool(), recs[0], e.Version); err != nil {
 			return nil, ErrDecision
 		}
 	} else {

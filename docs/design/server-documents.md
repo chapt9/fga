@@ -89,7 +89,7 @@ So in server mode a member who may read every source reads the output with no sh
 | `TestServerOriginal` | Original upload and read, a member without `raw-read`, V-163, exports |
 | `internal/datakeys` `TestReleaseOriginal` | A release without every unit, or with a unit named twice, is refused |
 | `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end, including a multipart upload with an original and an export |
-| `TestServerDerived` | Lineage recorded unsigned; the label from the lineage; a member reads by their own path and loses it when a source is restricted; a lead reads by declassification; a retry; mode refusals |
+| `TestServerDerived` | Lineage recorded unsigned; the label from the lineage; a member reads by their own path and loses it when a source is restricted; a lead reads by declassification, and her stream ends when a source changes; a retry; mode refusals |
 | `TestServerApprovals` | An approved publication finalized with its lineage; another lineage is not covered (objects too) |
 | `internal/datakeys` `TestReleaseDerived` | A path over another source, no path, or another output's declassification releases no key |
 | `internal/nativeapi` `TestServerDerivedHTTP` | A multi-segment output streamed with its lineage and read by another member; a repeated finalize by sources; malformed uploads |

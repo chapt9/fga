@@ -149,7 +149,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience, Gateways: cfg.Gateways, SelfVerifier: self,
 		Operations: registry.CoreOperations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
 		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits,
-		Admission: admission.New(cfg.limits()), ToolOperations: store, Now: time.Now})
+		Admission: admission.New(cfg.limits()), ToolOperations: store, Lineage: store, Now: time.Now})
 }
 
 // tokenVerifier returns the configured first-hop token verifier, or nil.

@@ -159,6 +159,12 @@ type Approvals interface {
 	Get(ctx context.Context, tenant, id string) (approval.Approval, error)
 }
 
+// Lineage returns a derived version's transitive lineage as dependencies
+// at their current state; the catalog implements it.
+type Lineage interface {
+	Dependencies(ctx context.Context, tenant, version string) ([]signing.Dependency, error)
+}
+
 // ToolOperations returns a tenant's registered tool operation, if any.
 type ToolOperations interface {
 	ToolOperation(ctx context.Context, tenant, name string) (registry.Operation, bool, error)
@@ -228,6 +234,9 @@ type Deps struct {
 	// ToolOperations, if set, holds the tenants' registered tool
 	// operations (the executor, AGT-001); the catalog implements it.
 	ToolOperations ToolOperations
+	// Lineage binds the dependencies of operations that name one
+	// (registry.Operation.BindsLineage); without it they fail closed.
+	Lineage        Lineage
 	PublicAudience string
 	Signer         *signing.Signer
 	Outbox         audit.Outbox
@@ -487,6 +496,13 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	}
 	rec := s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation)
 	rec.ObligationMappingVersion, rec.Obligations = mapping, obligations
+	if op.BindsLineage != "" {
+		// A derived version decided without its sources still depends on
+		// them: their current state is bound with it (DRV-009).
+		if rec.Dependencies, err = s.dependencies(ctx, req, op.BindsLineage); err != nil {
+			return fail(ReasonCatalogUnavailable)
+		}
+	}
 	resp.Obligations = obligations
 	if used != nil {
 		rec.Context.Approval = signing.Ref{ID: used.ID, Revision: used.Revision}
@@ -498,6 +514,24 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	resp.ValidUntil = &binding.ValidUntil
 	resp.Signed = &SignedDecision{Payload: encode(signed.Payload), JWS: signed.JWS}
 	return resp, bound
+}
+
+// dependencies returns the transitive lineage of the version the check of
+// role names, as bound dependencies.
+func (s *Service) dependencies(ctx context.Context, req Request, role string) ([]signing.Dependency, error) {
+	if s.d.Lineage == nil {
+		return nil, errors.New("decisionsvc: no lineage source")
+	}
+	for _, c := range req.Checks {
+		if c.Role == role {
+			deps, err := s.d.Lineage.Dependencies(ctx, req.Tenant, c.Version)
+			if err == nil && len(deps) == 0 {
+				err = errors.New("decisionsvc: a derived version without lineage")
+			}
+			return deps, err
+		}
+	}
+	return nil, errors.New("decisionsvc: no check names the lineage")
 }
 
 func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot,

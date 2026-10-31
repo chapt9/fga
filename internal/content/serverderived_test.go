@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fga/internal/content"
 	"fga/internal/cryptowire"
@@ -85,6 +86,27 @@ func TestServerDerived(t *testing.T) {
 	}
 	if got, err := read(alice.Caller); err != nil || got != "the summary" {
 		t.Fatalf("the owner: %q %v", got, err)
+	}
+	// The lead's stream depends on every source although none was decided
+	// for her: a source change ends it (review v4 F04).
+	if _, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "big.txt", IdempotencyKey: "d4"},
+		sources, -1, bytes.NewReader(bytes.Repeat([]byte("s"), 4<<20))); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := st.Content.ReadDerivedPlain(ctx, lena.Caller, "vault", "big.txt", "")
+	if err != nil {
+		t.Fatalf("the lead's declassified stream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Read(make([]byte, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.SetLabel(ctx, alice.Caller, "vault", "data.csv", "confidential"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * r1test.LeaseCheckEvery)
+	if _, err := io.ReadAll(stream); !errors.Is(err, content.ErrLineageChanged) {
+		t.Fatalf("a declassified stream after a source change: %v, want %v", err, content.ErrLineageChanged)
 	}
 
 	// Each route serves its own mode.

@@ -149,6 +149,43 @@ func TestDerivedDelivery(t *testing.T) {
 	}
 }
 
+// TestDeclassifiedLeaseFollowsLineage is the regression test of review v4
+// F04: a stream admitted by declassification, without the reader's read on
+// any source, still depends on every source (DRV-009): a source change
+// ends it.
+func TestDeclassifiedLeaseFollowsLineage(t *testing.T) {
+	st := r1test.New(t)
+	st.LabeledBucket("reports", "p1", "public")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	lena := st.Client("lena", []string{"member", "lead"}, "p1")
+	up, err := alice.PrepareDocumentSpecs(ctx, "reports", "src.md", []string{"u1", "u2"},
+		[]content.DocumentUnitSpec{{Label: "internal"}, {Label: "restricted"}}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.PutDerived("reports", "big", bytes.Repeat([]byte("s"), 4<<20), unitSources(up), ""); err != nil {
+		t.Fatal(err)
+	}
+	s, err := st.Content.ReadDerivedCiphertext(ctx, lena.Caller, "reports", "big", "", lena.Recipient.Fingerprint().String())
+	if err != nil {
+		t.Fatalf("lena by declassification: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.Read(make([]byte, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "src.md", "", up.Intent.Units[0].Unit, "confidential"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * r1test.LeaseCheckEvery)
+	if _, err := io.ReadAll(s); !errors.Is(err, content.ErrLineageChanged) {
+		t.Fatalf("a declassified stream after a source change: %v, want %v", err, content.ErrLineageChanged)
+	}
+}
+
 // TestDerivedLeaseFollowsLineage covers DRV-009: a change to a source of
 // the transitive lineage ends an admitted derived stream with
 // LINEAGE_AUTHORITY_CHANGED, while the output itself is unchanged; a

@@ -28,7 +28,7 @@ The owner's client must already have created the recipient's envelope. A `declas
 
 ## Freshness (DRV-009, V-145)
 
-Every lineage source's resource binding (generation and metadata revision) is a check of the delivery decision, so the authority fence and the stream lease recheck them. A label change, deletion or other change to any transitive source invalidates the decision and aborts an admitted stream at its next lease check. The reported reason is `LINEAGE_AUTHORITY_CHANGED` when the changed resource is a lineage source rather than the output itself. The traversal is bounded by the limits above.
+Every lineage source's resource binding (generation and metadata revision) is a check of the delivery decision, so the authority fence and the stream lease recheck them. A delivery by declassification decides no source, yet depends on all of them: the decision role binds the version's transitive lineage as the decision's signed `dependencies` (operations with `BindsLineage`), the fence and every lease recheck them like the checks' resources, and the keys role refuses a declassify decision whose dependencies do not name exactly the version's transitive lineage (review v4 F04). A label change, deletion or other change to any transitive source invalidates the decision and aborts an admitted stream at its next lease check, by either path. The reported reason is `LINEAGE_AUTHORITY_CHANGED` when the changed resource is a lineage source rather than the output itself. The traversal is bounded by the limits above.
 
 ## Server mode (D-12, S4b)
 
@@ -53,7 +53,7 @@ Initial envelopes are for the caller's own keys only. The commit, under the fenc
 - `derived.recipient-sources`: the recipient's `read` on every object or unit source in the transitive lineage and `deliver` on every intermediate derived output, in batches;
 - `derived.declassify`: `deliver` and the recipient's `declassify` on this output and version.
 
-Package and ciphertext are for one of the caller's own keys. For a package, the recipient-path decisions are issued for the keys role and sent with the release (`derived.get-envelope`). The keys role verifies that they are either one declassify decision for this output, version and recipient, or recipient-source decisions covering the version's transitive lineage exactly. It admits them in the same fence as the release. Sharing commits the caller's re-wrapped envelope at the next generation.
+Package and ciphertext are for one of the caller's own keys. For a package, the recipient-path decisions are issued for the keys role and sent with the release (`derived.get-envelope`). The keys role verifies that they are either one declassify decision for this output, version and recipient, or recipient-source decisions covering the version's transitive lineage exactly. A declassify decision must bind the transitive lineage as its dependencies. It admits them in the same fence as the release. Sharing commits the caller's re-wrapped envelope at the next generation.
 
 **Freshness.** The ciphertext read is admitted over the merged binding of all decisions, and its lease rechecks that binding. If a recheck fails while the output's own binding still holds, the stream ends with `LINEAGE_AUTHORITY_CHANGED` (`content.ErrLineageChanged`, V-145).
 

@@ -76,7 +76,7 @@ type Binding struct {
 
 // FromRecord returns the binding of a verified decision record: its actor,
 // subject and every check principal; its delegation chain; every recipient
-// key; and every bound resource.
+// key; and every bound resource, its dependencies included.
 func FromRecord(rec signing.Record) (Binding, error) {
 	b := Binding{DecisionID: rec.DecisionID, Tenant: rec.Tenant, Incarnation: rec.RecoveryIncarnation,
 		PolicyEpoch: rec.PolicyEpoch, ValidUntil: rec.ValidUntil, SingleUse: rec.SingleUse}
@@ -102,6 +102,15 @@ func FromRecord(rec signing.Record) (Binding, error) {
 			}
 		}
 		r := Resource{Type: c.ResourceType, ID: c.ResourceID, Generation: c.Generation, MetadataRevision: c.MetadataRevision}
+		k := [2]string{r.Type, r.ID}
+		if old, ok := resources[k]; ok && old != r {
+			return Binding{}, fmt.Errorf("fence: %s %s is bound in two states", r.Type, r.ID)
+		}
+		resources[k] = r
+	}
+	// A dependency is rechecked like a check's resource (DRV-009).
+	for _, d := range rec.Dependencies {
+		r := Resource{Type: d.ResourceType, ID: d.ResourceID, Generation: d.Generation, MetadataRevision: d.MetadataRevision}
 		k := [2]string{r.Type, r.ID}
 		if old, ok := resources[k]; ok && old != r {
 			return Binding{}, fmt.Errorf("fence: %s %s is bound in two states", r.Type, r.ID)

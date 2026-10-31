@@ -82,10 +82,34 @@ func CompleteContent(ctx context.Context, q catalog.Querier, v *signing.Verifier
 	return out, nil
 }
 
+// DependsOnLineage checks that a declassification decision binds exactly
+// version's transitive lineage as its dependencies, so its fence and any
+// lease follow every source although none was decided (DRV-009, review v4
+// F04).
+func DependsOnLineage(ctx context.Context, q catalog.Querier, rec signing.Record, version cryptowire.UUID) error {
+	want, err := catalog.TransitiveLineage(ctx, q, rec.Tenant, version, 32)
+	if err != nil {
+		return err
+	}
+	got := map[cryptowire.LineageSource]bool{}
+	for _, d := range rec.Dependencies {
+		got[cryptowire.LineageSource{Type: d.ResourceType, ID: d.ResourceID, Version: d.Version}] = true
+	}
+	if len(want) == 0 || len(got) != len(want) || len(rec.Dependencies) != len(want) {
+		return ErrDecision
+	}
+	for _, src := range want {
+		if !got[src] {
+			return ErrDecision
+		}
+	}
+	return nil
+}
+
 // ReaderPath verifies the reader path of a server-mode derived output's
 // release to its reader, the caller (DRV-002, DRV-009): either one
 // derived.declassify-reader decision with deliver and declassify on this
-// output and version, or derived.sources decisions whose checks name the
+// output and version, bound to its lineage, or derived.sources decisions whose checks name the
 // version's transitive lineage exactly. All are the caller's own operation
 // checks, single-use, of primary's tenant and actor. It returns their fence
 // bindings.
@@ -114,6 +138,9 @@ func ReaderPath(ctx context.Context, q catalog.Querier, v *signing.Verifier, pri
 		}
 		if !declassified {
 			return nil, ErrDecision
+		}
+		if err := DependsOnLineage(ctx, q, recs[0], version); err != nil {
+			return nil, err
 		}
 	} else {
 		want, err := catalog.TransitiveLineage(ctx, q, primary.Tenant, version, 32)
