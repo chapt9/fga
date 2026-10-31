@@ -312,7 +312,7 @@ func TestV144(t *testing.T) {
 	obs["baseline.outcome"] = outcome(err, "ALLOW")
 
 	dir := filepath.Join(t.TempDir(), "backup")
-	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir); err != nil {
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	obs["backup.recipient_status"] = status()
@@ -320,7 +320,7 @@ func TestV144(t *testing.T) {
 	entries, _ := st.Journal.Entries()
 	obs["revoke.recovery_record_durable"] = err == nil && len(entries) == 1
 	obs["revoke.committed"] = st.Catalog.RevokeRecipientKey(ctx, r1test.Tenant, fp) == nil
-	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir); err != nil {
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, open, _ := st.Catalog.AuthorityState(ctx)

@@ -1,6 +1,7 @@
 package recovery_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"fga/internal/backupcrypt"
 	"fga/internal/content"
 	"fga/internal/r1test"
 	"fga/internal/recovery"
@@ -36,7 +38,7 @@ func TestRestoreReconcilesRevocation(t *testing.T) {
 	}
 
 	dir := filepath.Join(t.TempDir(), "backup")
-	m, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir)
+	m, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,7 @@ func TestRestoreReconcilesRevocation(t *testing.T) {
 		t.Fatalf("journal = %+v", entries)
 	}
 
-	inc, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir)
+	inc, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t))
 	if err != nil || inc != 2 {
 		t.Fatalf("restore = %d, %v", inc, err)
 	}
@@ -95,10 +97,10 @@ func TestReconcileQuarantines(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "backup")
-	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir); err != nil {
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir); err != nil {
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(filepath.Join(st.BlobDir, "blobs")); err != nil {
@@ -117,16 +119,75 @@ func TestReconcileQuarantines(t *testing.T) {
 func TestBackupIntegrity(t *testing.T) {
 	st := r1test.New(t)
 	dir := filepath.Join(t.TempDir(), "backup")
-	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir); err != nil {
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "catalog", "identities.copy"), []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir); err == nil {
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err == nil {
 		t.Fatal("a tampered backup was restored")
 	}
 }
+
+// TestBackupEncryption covers AVL-005: backup files are encrypted, an
+// encrypted backup needs its key, another key cannot open it, and a plain
+// backup is not mistaken for an encrypted one.
+func TestBackupEncryption(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := os.ReadFile(filepath.Join(dir, "catalog", "identities.copy"))
+	manifest, _ := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if bytes.Contains(ids, []byte("alice")) || bytes.Contains(manifest, []byte("fga.backup/v1")) {
+		t.Fatal("backup files hold plaintext")
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, nil); err == nil {
+		t.Fatal("an encrypted backup was restored without its key")
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, otherKey(t)); err == nil {
+		t.Fatal("an encrypted backup was restored with another key")
+	}
+	plain := filepath.Join(t.TempDir(), "plain")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, plain, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.ReadManifest(plain, backupKey(t)); err == nil {
+		t.Fatal("a plain backup was read as an encrypted one")
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatalf("restore with the key: %v", err)
+	}
+}
+
+var keys = map[string]*backupcrypt.Key{}
+
+func loadKey(t *testing.T, name string) *backupcrypt.Key {
+	t.Helper()
+	if k, ok := keys[name]; ok {
+		return k
+	}
+	raw, err := backupcrypt.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := backupcrypt.Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys[name] = k
+	return k
+}
+
+func backupKey(t *testing.T) *backupcrypt.Key { return loadKey(t, "backup") }
+func otherKey(t *testing.T) *backupcrypt.Key  { return loadKey(t, "other") }
 
 // TestReclaim covers PUB-005 and PUB-006: a withdrawn version's blob is
 // removed and the version marked RETIRED; an expired upload is aborted and

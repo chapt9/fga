@@ -48,6 +48,7 @@ sleep 2
 curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && echo "roles ready"
 
 ADMIN="$B/fga-admin -db $URL -journal journal -blobs blobs"
+$ADMIN backup-key generate -out backup.key
 $ADMIN bucket create -tenant t-acme -name reports -project p1 >/dev/null
 for u in alice bob; do
   $ADMIN identity put -tenant t-acme -id $u -roles member -attrs '{"projects":["p1"]}'
@@ -80,14 +81,18 @@ assert len(blobs)==1 and all(p[i:i+32] not in blobs[0] for i in range(0,len(p),6
 print("the blob holds no 32-byte plaintext sample")'
 
 
-$ADMIN backup -out backup1
+$ADMIN audit export -dir audit
+$ADMIN backup -backup-key backup.key -out backup1
 as alice; $B/fga rm -bucket reports -key q3/report.bin
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>/dev/null; then echo "UNEXPECTED: read after delete"; exit 1; fi; echo "deleted"
 $ADMIN recipient revoke -tenant t-acme -fingerprint $BOBFP
-$ADMIN restore -from backup1
+$ADMIN audit export -dir audit
+$ADMIN restore -backup-key backup.key -from backup1
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: read while admission closed"; exit 1; fi; echo "while closed: $(cat err.txt)"
 $ADMIN reconcile
 as alice; $B/fga get -bucket reports -key q3/report.bin -out alice2.out && cmp plain.bin alice2.out && echo "restored object readable by alice"
 as bob;   if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: revoked bob read"; exit 1; fi; echo "bob after restore (key revoked after backup): $(cat err.txt)"
 psql -h localhost -d $DB -Atc "select kind, count(*) from audit_outbox group by kind order by kind"
+$ADMIN audit export -dir audit
+echo "audit events exported: $(cat audit/*.jsonl | wc -l | tr -d ' ') lines, $(cat audit/*.jsonl | python3 -I -c 'import sys,json;print(len({json.loads(l)["id"] for l in sys.stdin}))') unique"
 echo SMOKE PASSED

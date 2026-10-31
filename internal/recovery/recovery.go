@@ -63,18 +63,35 @@ type FileEntry struct {
 	SHA256 string `json:"sha256"`
 }
 
-// BlobEntry is one ciphertext blob.
+// BlobEntry is one ciphertext blob: its length and digest as the catalog
+// records them, and the digest of its backup file (which differs when the
+// backup is encrypted).
 type BlobEntry struct {
-	Tenant string `json:"tenant"`
-	Blob   string `json:"blob"`
-	Length int64  `json:"length"`
-	SHA256 string `json:"sha256"`
-	File   string `json:"file"`
+	Tenant     string `json:"tenant"`
+	Blob       string `json:"blob"`
+	Length     int64  `json:"length"`
+	SHA256     string `json:"sha256"`
+	File       string `json:"file"`
+	FileSHA256 string `json:"file_sha256"`
 }
 
+// Sealer encrypts and decrypts backup files, bound to their path
+// (AVL-005). backupcrypt.Key implements it. A nil Sealer writes plain
+// files; fga-admin always passes one.
+type Sealer interface {
+	Seal(w io.Writer, aad []byte) (io.WriteCloser, error)
+	Open(r io.Reader, aad []byte) (io.Reader, error)
+}
+
+// marker names the file that records that a backup is encrypted, and how.
+const marker = "ENCRYPTED"
+
+func aad(name string) []byte { return []byte("fga.backup/v1\x00" + filepath.ToSlash(name)) }
+
 // Backup writes one consistent snapshot of the catalog and the blobs it
-// references to dir, which must not exist yet.
-func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir string) (Manifest, error) {
+// references to dir, which must not exist yet. With a sealer, every file,
+// the manifest included, is encrypted and bound to its path.
+func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir string, sealer Sealer, scheme string) (Manifest, error) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return Manifest{}, err
 	}
@@ -99,7 +116,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	}
 	for _, t := range Tables {
 		file := filepath.Join("catalog", t+".copy")
-		sum, err := writeFile(filepath.Join(dir, file), func(w io.Writer) error {
+		sum, err := writeFile(dir, file, sealer, func(w io.Writer) error {
 			_, err := conn.Conn().PgConn().CopyTo(ctx, w, "COPY "+pgx.Identifier{t}.Sanitize()+" TO STDOUT")
 			return err
 		})
@@ -144,34 +161,56 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 			continue
 		}
 		file := filepath.Join("blobs", r.blob.String())
-		sum, err := writeFile(filepath.Join(dir, file), func(w io.Writer) error { _, err := io.Copy(w, rc); return err })
+		sum, err := writeFile(dir, file, sealer, func(w io.Writer) error { _, err := io.Copy(w, rc); return err })
 		rc.Close()
 		if err != nil {
 			return Manifest{}, err
 		}
-		m.Blobs = append(m.Blobs, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: sum, File: file})
+		m.Blobs = append(m.Blobs, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: r.sum,
+			File: file, FileSHA256: sum})
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return Manifest{}, err
 	}
-	if _, err := writeFile(filepath.Join(dir, "manifest.json"), func(w io.Writer) error { _, err := w.Write(b); return err }); err != nil {
+	if sealer != nil {
+		if _, err := writeFile(dir, marker, nil, func(w io.Writer) error { _, err := io.WriteString(w, scheme+"\n"); return err }); err != nil {
+			return Manifest{}, err
+		}
+	}
+	if _, err := writeFile(dir, "manifest.json", sealer, func(w io.Writer) error { _, err := w.Write(b); return err }); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil
 }
 
-// writeFile creates path (0600) exclusively, fills it, flushes it and
-// returns the SHA-256 of what was written.
-func writeFile(path string, fill func(io.Writer) error) (string, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+// writeFile creates dir/name (0600) exclusively, fills it through the
+// sealer if there is one, flushes it and returns the SHA-256 of the bytes
+// on disk.
+func writeFile(dir, name string, sealer Sealer, fill func(io.Writer) error) (string, error) {
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err
 	}
 	h := sha256.New()
-	if err := fill(io.MultiWriter(f, h)); err != nil {
+	var w io.Writer = io.MultiWriter(f, h)
+	var sealed io.WriteCloser
+	if sealer != nil {
+		if sealed, err = sealer.Seal(w, aad(name)); err != nil {
+			f.Close()
+			return "", err
+		}
+		w = sealed
+	}
+	if err := fill(w); err != nil {
 		f.Close()
 		return "", err
+	}
+	if sealed != nil {
+		if err := sealed.Close(); err != nil {
+			f.Close()
+			return "", err
+		}
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
@@ -197,12 +236,42 @@ func fileDigest(path string) (string, error) {
 	return d.String(), nil
 }
 
+// openFile opens dir/name, decrypting it when the backup is encrypted.
+func openFile(dir, name string, sealer Sealer) (io.Reader, io.Closer, error) {
+	f, err := os.Open(filepath.Join(dir, name))
+	if err != nil {
+		return nil, nil, err
+	}
+	if sealer == nil {
+		return f, f, nil
+	}
+	r, err := sealer.Open(f, aad(name))
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return r, f, nil
+}
+
 // ReadManifest reads a backup's manifest and checks every file's digest.
-func ReadManifest(dir string) (Manifest, error) {
+// An encrypted backup needs its sealer, and a plain one must have none.
+func ReadManifest(dir string, sealer Sealer) (Manifest, error) {
 	var m Manifest
-	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	_, statErr := os.Stat(filepath.Join(dir, marker))
+	switch encrypted := statErr == nil; {
+	case encrypted && sealer == nil:
+		return m, errors.New("recovery: the backup is encrypted; the backup key is required")
+	case !encrypted && sealer != nil:
+		return m, errors.New("recovery: the backup is not encrypted")
+	}
+	r, c, err := openFile(dir, "manifest.json", sealer)
 	if err != nil {
 		return m, err
+	}
+	b, err := io.ReadAll(io.LimitReader(r, 64<<20))
+	c.Close()
+	if err != nil {
+		return m, fmt.Errorf("recovery: manifest: %w", err)
 	}
 	if err := strictjson.Decode(b, &m); err != nil || m.Format != Format {
 		return m, fmt.Errorf("recovery: malformed manifest: %v", err)
@@ -213,7 +282,7 @@ func ReadManifest(dir string) (Manifest, error) {
 		}
 	}
 	for _, f := range m.Blobs {
-		if sum, err := fileDigest(filepath.Join(dir, f.File)); err != nil || sum != f.SHA256 {
+		if sum, err := fileDigest(filepath.Join(dir, f.File)); err != nil || sum != f.FileSHA256 {
 			return m, fmt.Errorf("recovery: blob file %s does not match the manifest", f.File)
 		}
 	}
@@ -225,8 +294,8 @@ func ReadManifest(dir string) (Manifest, error) {
 // incarnation above the backup's, the current one and every incarnation in
 // the journal; the new incarnation is journaled. It returns that
 // incarnation.
-func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *journal.Journal, dir string) (uint64, error) {
-	m, err := ReadManifest(dir)
+func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *journal.Journal, dir string, sealer Sealer) (uint64, error) {
+	m, err := ReadManifest(dir, sealer)
 	if err != nil {
 		return 0, err
 	}
@@ -269,12 +338,12 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *jour
 			}
 		}
 		for _, f := range m.Tables {
-			r, err := os.Open(filepath.Join(dir, f.File))
+			r, c, err := openFile(dir, f.File, sealer)
 			if err != nil {
 				return err
 			}
 			_, err = conn.Conn().PgConn().CopyFrom(ctx, r, "COPY "+pgx.Identifier{f.Name}.Sanitize()+" FROM STDIN")
-			r.Close()
+			c.Close()
 			if err != nil {
 				return fmt.Errorf("recovery: restore %s: %w", f.Name, err)
 			}
@@ -292,12 +361,12 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *jour
 		if err := errors.Join(err1, err2, err3); err != nil {
 			return 0, err
 		}
-		f, err := os.Open(filepath.Join(dir, b.File))
+		r, c, err := openFile(dir, b.File, sealer)
 		if err != nil {
 			return 0, err
 		}
-		_, err = blobs.Put(blob.Ref{Tenant: tenant, Blob: id}, f, b.Length, sum)
-		f.Close()
+		_, err = blobs.Put(blob.Ref{Tenant: tenant, Blob: id}, r, b.Length, sum)
+		c.Close()
 		if err != nil && !errors.Is(err, blob.ErrConflict) {
 			return 0, err
 		}

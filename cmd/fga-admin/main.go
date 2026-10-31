@@ -16,8 +16,9 @@
 //	recipient revoke   -tenant T -fingerprint FP             (journaled)
 //	delegation revoke  -tenant T -id ID                      (journaled)
 //	epoch raise        -tenant T -epoch N                    (journaled)
-//	backup             -out DIR
-//	restore            -from DIR
+//	backup-key generate -out FILE                   create a backup key (keep it apart from catalog and backups)
+//	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
+//	restore            -backup-key FILE -from DIR
 //	reconcile
 //	reclaim
 //	audit export       -dir D [-follow]             drain the audit outbox into D
@@ -38,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/auditexport"
+	"fga/internal/backupcrypt"
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/journal"
@@ -122,7 +124,8 @@ func run(args []string) error {
 	publicKey := fs.String("public-key", "", "base64 public key")
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
 	epoch := fs.Uint64("epoch", 0, "policy epoch")
-	out := fs.String("out", "", "backup directory to create")
+	out := fs.String("out", "", "backup directory or key file to create")
+	backupKeyFile := fs.String("backup-key", "", "backup key file")
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
@@ -136,6 +139,16 @@ func run(args []string) error {
 			}
 		}
 		return nil
+	}
+	backupKey := func() (*backupcrypt.Key, error) {
+		if *backupKeyFile == "" {
+			return nil, errors.New("backups are encrypted: -backup-key is required")
+		}
+		raw, err := os.ReadFile(*backupKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		return backupcrypt.Load(raw)
 	}
 	journaled := func(kind, subject string, change func() error) error {
 		j, err := e.journal()
@@ -227,12 +240,33 @@ func run(args []string) error {
 			return errors.New("epoch raise needs -tenant and -epoch")
 		}
 		return journaled(journal.EpochRaised, strconv.FormatUint(*epoch, 10), func() error { return e.store.RaiseEpoch(ctx, *tenant, *epoch) })
+	case "backup-key generate":
+		if err := need(*out); err != nil {
+			return err
+		}
+		raw, err := backupcrypt.Generate()
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(raw); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
 	case "backup":
 		blobs, err := e.blobs()
 		if err != nil || need(*out) != nil {
 			return errors.Join(err, need(*out))
 		}
-		m, err := recovery.Backup(ctx, pool, blobs, *out)
+		key, err := backupKey()
+		if err != nil {
+			return err
+		}
+		m, err := recovery.Backup(ctx, pool, blobs, *out, key, backupcrypt.Scheme)
 		if err == nil {
 			fmt.Printf("backup %s: incarnation %d, %d tables, %d blobs\n", *out, m.Incarnation, len(m.Tables), len(m.Blobs))
 		}
@@ -246,7 +280,11 @@ func run(args []string) error {
 		if err != nil || need(*from) != nil {
 			return errors.Join(err, need(*from))
 		}
-		inc, err := recovery.Restore(ctx, pool, blobs, j, *from)
+		key, err := backupKey()
+		if err != nil {
+			return err
+		}
+		inc, err := recovery.Restore(ctx, pool, blobs, j, *from, key)
 		if err == nil {
 			fmt.Printf("restored %s as incarnation %d; admission is closed until reconcile\n", *from, inc)
 		}

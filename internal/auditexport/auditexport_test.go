@@ -110,7 +110,7 @@ func TestExportSurvivesRestore(t *testing.T) {
 	st.Bucket("reports", "p1")
 	alice := st.Client("alice", []string{"member"}, "p1")
 	dir := filepath.Join(t.TempDir(), "backup")
-	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir); err != nil {
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := alice.Put("reports", "after-backup", []byte("x")); err != nil {
@@ -121,7 +121,7 @@ func TestExportSurvivesRestore(t *testing.T) {
 	if _, err := x.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir); err != nil {
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	var inOutbox int
