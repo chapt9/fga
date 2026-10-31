@@ -334,3 +334,34 @@ func TestManifestAndUnitDescriptor(t *testing.T) {
 		t.Error("a unit descriptor without a manifest digest was encoded")
 	}
 }
+
+// TestValidEd25519PublicKey covers RCP-002's key validation for content
+// signing keys: generated keys pass; the identity, the points of order 2
+// and 4, a non-canonical encoding and a wrong length do not.
+func TestValidEd25519PublicKey(t *testing.T) {
+	for range 20 {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil || !ValidEd25519PublicKey(pub) {
+			t.Fatalf("a generated key was refused: %v", err)
+		}
+	}
+	le := func(hexBE string) []byte {
+		b, _ := hex.DecodeString(hexBE)
+		for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+			b[i], b[j] = b[j], b[i]
+		}
+		return b
+	}
+	for name, key := range map[string][]byte{
+		"the identity (y = 1)":        le("0000000000000000000000000000000000000000000000000000000000000001"),
+		"order 2 (y = p - 1)":         le("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec"),
+		"order 4 (y = 0)":             le("0000000000000000000000000000000000000000000000000000000000000000"),
+		"order 4 (y = 0, x negative)": le("8000000000000000000000000000000000000000000000000000000000000000"),
+		"non-canonical (y = p)":       le("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed"),
+		"short":                       make([]byte, 31),
+	} {
+		if ValidEd25519PublicKey(key) {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}

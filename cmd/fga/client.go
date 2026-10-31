@@ -40,6 +40,7 @@ import (
 //	fga keys protect   [-dir D]          encrypt recipient.key and signing.key with a passphrase
 //	fga keys unprotect [-dir D]          write them back in the clear
 //	fga keys enroll    -tenant T -principal P
+//	fga keys enroll-signer -tenant T -principal P   enroll the content-signing key with a possession proof
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
 //	                   in a server-mode bucket the server encrypts; -to does not apply, policy decides who reads
@@ -323,6 +324,12 @@ func clientCommand(cmd string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	switch cmd {
+	case "keys enroll-signer":
+		if err := c.EnrollSigner(ctx, *tenant, *principal); err != nil {
+			return err
+		}
+		fmt.Println(c.Signer.Fingerprint, "ACTIVE")
+		return nil
 	case "keys enroll":
 		v, err := c.Enroll(ctx, *tenant, *principal)
 		if err != nil {

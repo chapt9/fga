@@ -70,6 +70,16 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		}
 		return registry.Resource{ID: fingerprint, Tenant: tenant, Type: "crypto.recipient",
 			Attributes: map[string]any{"principal": principal, "status": "PENDING"}}, nil
+	case registry.PlannedSigner:
+		principal, fingerprint, ok := strings.Cut(alias.Name, "|")
+		if !ok || principal == "" || fingerprint == "" {
+			return registry.Resource{}, registry.ErrUnknownAlias
+		}
+		if _, err := v.s.GetIdentity(ctx, tenant, principal); err != nil {
+			return registry.Resource{}, registry.ErrUnknownResource
+		}
+		return registry.Resource{ID: fingerprint, Tenant: tenant, Type: "crypto.signing-key",
+			Attributes: map[string]any{"principal": principal, "status": "PENDING"}}, nil
 	}
 	return registry.Resource{}, registry.ErrUnknownAlias
 }

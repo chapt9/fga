@@ -132,8 +132,8 @@ func (s *Store) GrantCapabilities(ctx context.Context, tenant, actor string, act
 // AddSigningKey provisions an ACTIVE content-signing key for principal by
 // trusted provisioning (RCP-002) and returns its fingerprint.
 func (s *Store) AddSigningKey(ctx context.Context, tenant, principal string, public []byte) (string, error) {
-	if len(public) != 32 {
-		return "", errors.New("catalog: an Ed25519 public key has 32 bytes")
+	if !cryptowire.ValidEd25519PublicKey(public) {
+		return "", errors.New("catalog: not a usable Ed25519 public key")
 	}
 	fp := cryptowire.SigningKeyFingerprint(public).String()
 	now := time.Now()

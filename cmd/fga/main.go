@@ -37,7 +37,7 @@ func main() {
 
 const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR" +
 	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]" +
-	" | fga keys init|keys enroll|keys protect|keys unprotect|trust add|put|put-document|append|get|get-document|get-original|get-derived|search|ls|rm|share|finalize|label|set-encryption|propose-label|approvals [flags]" +
+	" | fga keys init|keys enroll|keys enroll-signer|keys protect|keys unprotect|trust add|put|put-document|append|get|get-document|get-original|get-derived|search|ls|rm|share|finalize|label|set-encryption|propose-label|approvals [flags]" +
 	" | fga approve|reject [flags] ID (see cmd/fga/client.go)" +
 	" | fga mcp-bridge [-dir DIR] [-mcp-url URL] (MCP over stdio; see cmd/fga/bridge.go)"
 
@@ -60,7 +60,7 @@ func run(args []string) error {
 		return errors.New(usage)
 	}
 	switch args[0] + " " + args[1] {
-	case "keys init", "keys enroll", "keys protect", "keys unprotect", "trust add":
+	case "keys init", "keys enroll", "keys enroll-signer", "keys protect", "keys unprotect", "trust add":
 		return clientCommand(args[0]+" "+args[1], args[2:])
 	case "keys generate":
 		return generateKeys(args[2:])

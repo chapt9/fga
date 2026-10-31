@@ -8,6 +8,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -701,6 +702,32 @@ func (c *Client) Enroll(ctx context.Context, tenant, principal string) (uint64, 
 		return 0, err
 	}
 	return ch.KeyVersion, nil
+}
+
+// EnrollSigner enrolls and activates the client's content-signing key
+// with a possession proof (RCP-002), so that it may sign publications.
+func (c *Client) EnrollSigner(ctx context.Context, tenant, principal string) error {
+	var ch struct {
+		ID          string `json:"challenge_id"`
+		Fingerprint string `json:"fingerprint"`
+		Nonce       []byte `json:"nonce"`
+	}
+	public := c.Signer.Private.Public().(ed25519.PublicKey)
+	body, n := jsonBody(map[string]any{"public_key": []byte(public)})
+	if _, err := c.do(ctx, http.MethodPost, c.KeysURL+"/v1/signing-keys", c.KeysToken, body, n, map[string]string{"Content-Type": "application/json"}, &ch); err != nil {
+		return err
+	}
+	if ch.Fingerprint != c.Signer.Fingerprint.String() {
+		return errors.New("fga: the keys role answered for another key")
+	}
+	proof, err := c.Signer.ProveSigningKey(ch.ID, tenant, principal, ch.Nonce)
+	if err != nil {
+		return err
+	}
+	body, n = jsonBody(map[string]string{"challenge_id": ch.ID, "proof": proof})
+	_, err = c.do(ctx, http.MethodPost, c.KeysURL+"/v1/signing-keys/"+url.PathEscape(ch.Fingerprint)+"/activate", c.KeysToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &map[string]any{})
+	return err
 }
 
 func (c *Client) now() time.Time {

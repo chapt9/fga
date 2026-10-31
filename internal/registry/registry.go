@@ -92,7 +92,7 @@ var r1TypeDefs = []TypeDef{
 	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke", "discover", "approve"}},
 	// Content-signing keys are looked up for verification; under default
 	// deny (ruling 7) the lookup is a registered, policy-decided action.
-	{Name: "crypto.signing-key", Actions: []string{"discover"}},
+	{Name: "crypto.signing-key", Actions: []string{"discover", "enroll", "activate", "retire", "approve"}},
 	{Name: "crypto.envelope", Actions: []string{"create", "release", "retire", "approve"}},
 	{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
 }
@@ -218,6 +218,8 @@ const (
 	PlannedEnvelope = "planned.envelope"
 	// PlannedRecipient: "<principal>|<recipient fingerprint>".
 	PlannedRecipient = "planned.recipient"
+	// PlannedSigner: "<principal>|<content-signing key fingerprint>".
+	PlannedSigner = "planned.signing-key"
 	// PlannedDocumentVersion: the document intent ID. A unit intent's
 	// object resolves under PlannedObject as a document.text_unit.
 	PlannedDocumentVersion = "planned.document-version"

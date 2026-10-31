@@ -32,6 +32,14 @@ const (
 	OpRevokeRecipient   = "crypto.recipient.revoke"
 	OpLookupRecipient   = "crypto.recipient.discover"
 	OpLookupSigner      = "crypto.signing-key.discover"
+	// Self-service content-signing keys (RCP-002, RCP-011): enrollment
+	// of the caller's planned key, activation by possession proof, and
+	// retirement for rotation. Compromise stays an administrator's,
+	// journaled operation.
+	OpEnrollSigner   = "crypto.signing-key.enroll"
+	OpActivateSigner = "crypto.signing-key.activate"
+	OpRetireSigner   = "crypto.signing-key.retire"
+	OpApproveSigner  = "crypto.signing-key.approve"
 	// Labels (LAB-002, LAB-004): a raise or an explicit label at
 	// publication is label, a lowering relabel; a classifier proposal is
 	// advisory.
@@ -494,6 +502,10 @@ func baseOperations() []Operation {
 		one(OpApproveEntry, RoleUnit, "text.entry", "approve"),
 		one(OpApproveEnvelope, RoleEnvelope, "crypto.envelope", "approve"),
 		one(OpApproveRecipient, RoleRecipient, "crypto.recipient", "approve"),
+		one(OpEnrollSigner, RoleSigner, "crypto.signing-key", "enroll"),
+		one(OpActivateSigner, RoleSigner, "crypto.signing-key", "activate"),
+		one(OpRetireSigner, RoleSigner, "crypto.signing-key", "retire"),
+		one(OpApproveSigner, RoleSigner, "crypto.signing-key", "approve"),
 		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
 		{Name: OpObjectExport, Checks: []CheckSpec{
 			{Role: RoleObject, ResourceType: "storage.object", Action: "export"},

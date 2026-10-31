@@ -174,6 +174,39 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		}
 		httpapi.WriteJSON(w, http.StatusOK, map[string]string{"fingerprint": r.PathValue("fp"), "status": "REVOKED"})
 	}))
+	// Self-service content-signing keys (RCP-002): enroll, activate with a
+	// detached JWS over the challenge, retire to rotate.
+	mux.HandleFunc("POST /v1/signing-keys", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
+		var b enrollBody
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		ch, err := svc.EnrollSigningKey(r.Context(), c, b.PublicKey)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusCreated, ch)
+	}))
+	mux.HandleFunc("POST /v1/signing-keys/{fp}/activate", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
+		var b proofBody
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		rec, err := svc.ActivateSigningKey(r.Context(), c, r.PathValue("fp"), b.ChallengeID, b.Proof)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, rec)
+	}))
+	mux.HandleFunc("DELETE /v1/signing-keys/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
+		if err := svc.RetireSigningKey(r.Context(), c, r.PathValue("fp")); err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, map[string]string{"fingerprint": r.PathValue("fp"), "status": "RETIRED"})
+	}))
 	mux.HandleFunc("GET /v1/signing-keys/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		rec, err := svc.SigningKey(r.Context(), c, r.PathValue("fp"))
 		if err != nil {

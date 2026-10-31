@@ -2,6 +2,7 @@ package envelope_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"maps"
 	"strings"
@@ -252,5 +253,72 @@ func TestKeyApprovals(t *testing.T) {
 	}
 	if n := st.Count(`SELECT count(*) FROM approvals WHERE state = 'CONSUMED'`); n != 3 {
 		t.Fatalf("%d approvals consumed, want 3", n)
+	}
+}
+
+// TestSigningKeyEnrollment covers RCP-002 and RCP-011 for self-service
+// content-signing keys: a client enrolls its own key, which signs nothing
+// until a correct, unexpired, unused proof by that key activates it; it
+// then signs publications; retired, it signs nothing new while what it
+// signed stays verifiable. A small-order key, another principal and a
+// proof by another key are refused.
+func TestSigningKeyEnrollment(t *testing.T) {
+	st := r1test.New(t)
+	ctx := context.Background()
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.User("mallory", []string{"member"}, "p1")
+	keys := st.KeysCaller("alice")
+	signer, _ := crypto.NewSigningKey()
+	public := signer.Private.Public().(ed25519.PublicKey)
+	if _, err := st.Envelopes.EnrollSigningKey(ctx, keys, make([]byte, 32)); !errors.Is(err, envelope.ErrInvalid) {
+		t.Fatalf("a small-order key: %v", err)
+	}
+	ch, err := st.Envelopes.EnrollSigningKey(ctx, keys, public)
+	if err != nil || ch.Fingerprint != signer.Fingerprint.String() {
+		t.Fatalf("enroll = %+v, %v", ch, err)
+	}
+	if rec, err := st.Envelopes.SigningKey(ctx, keys, ch.Fingerprint); err != nil || rec.Status != "PENDING" {
+		t.Fatalf("before the proof: %+v %v", rec, err)
+	}
+	previous := alice.Signer
+	alice.Signer = signer
+	alice.Trust.Signers[signer.Fingerprint] = public
+	if _, err := alice.Put("reports", "pending", []byte("x")); err == nil {
+		t.Fatal("a PENDING key signed a publication")
+	}
+	other, _ := crypto.NewSigningKey()
+	wrong, _ := other.ProveSigningKey(ch.ID, r1test.Tenant, "alice", ch.Nonce)
+	if _, err := st.Envelopes.ActivateSigningKey(ctx, keys, ch.Fingerprint, ch.ID, wrong); !errors.Is(err, envelope.ErrInvalid) {
+		t.Fatalf("a proof by another key: %v", err)
+	}
+	proof, _ := signer.ProveSigningKey(ch.ID, r1test.Tenant, "alice", ch.Nonce)
+	if _, err := st.Envelopes.ActivateSigningKey(ctx, st.KeysCaller("mallory"), ch.Fingerprint, ch.ID, proof); !errors.Is(err, envelope.ErrNotFound) {
+		t.Fatalf("another principal activates: %v", err)
+	}
+	if rec, err := st.Envelopes.ActivateSigningKey(ctx, keys, ch.Fingerprint, ch.ID, proof); err != nil || rec.Status != "ACTIVE" {
+		t.Fatalf("activate = %+v, %v", rec, err)
+	}
+	if _, err := st.Envelopes.ActivateSigningKey(ctx, keys, ch.Fingerprint, ch.ID, proof); err == nil {
+		t.Fatal("a challenge was used twice")
+	}
+	if _, err := alice.Put("reports", "rotated", []byte("signed by the new key")); err != nil {
+		t.Fatalf("a publication signed by the enrolled key: %v", err)
+	}
+	// Rotation: the old key retires; the new one keeps signing.
+	if err := st.Envelopes.RetireSigningKey(ctx, keys, previous.Fingerprint.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Envelopes.RetireSigningKey(ctx, st.KeysCaller("mallory"), ch.Fingerprint); !errors.Is(err, envelope.ErrNotFound) {
+		t.Fatalf("another principal retires: %v", err)
+	}
+	if err := st.Envelopes.RetireSigningKey(ctx, keys, ch.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Put("reports", "after", []byte("x")); err == nil {
+		t.Fatal("a RETIRED key signed a publication")
+	}
+	if got, err := alice.Get("reports", "rotated", ""); err != nil || string(got) != "signed by the new key" {
+		t.Fatalf("content signed before retirement: %q %v", got, err)
 	}
 }

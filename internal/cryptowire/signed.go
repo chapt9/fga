@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -188,6 +189,38 @@ func RecipientProof(shared, nonce []byte, challengeID, tenant, principal string,
 	}
 	m.Write([]byte(fingerprint.String()))
 	return m.Sum(nil), nil
+}
+
+// ValidEd25519PublicKey reports whether b is a canonical Ed25519 public
+// key of large order (RCP-002). A small-order key would let anyone forge a
+// share of signatures, its possession proof included. The check maps the
+// point to its Montgomery form, u = (1+y)/(1-y) (RFC 7748, 4.1), which has
+// the same order, and lets ValidX25519PublicKey reject low order there.
+func ValidEd25519PublicKey(b []byte) bool {
+	if len(b) != 32 {
+		return false
+	}
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	le := make([]byte, 32)
+	for i := range b {
+		le[31-i] = b[i]
+	}
+	le[0] &= 0x7f
+	y := new(big.Int).SetBytes(le)
+	one := big.NewInt(1)
+	if y.Cmp(p) >= 0 || y.Cmp(one) == 0 {
+		return false // a non-canonical encoding, or the identity
+	}
+	den := new(big.Int).Sub(one, y)
+	den.Mod(den, p)
+	u := new(big.Int).Add(one, y)
+	u.Mul(u, new(big.Int).ModInverse(den, p))
+	u.Mod(u, p)
+	ub := u.FillBytes(make([]byte, 32))
+	for i, j := 0, 31; i < j; i, j = i+1, j-1 {
+		ub[i], ub[j] = ub[j], ub[i]
+	}
+	return ValidX25519PublicKey(ub)
 }
 
 // ValidX25519PublicKey reports whether b is a usable X25519 public key.

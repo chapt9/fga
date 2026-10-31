@@ -53,6 +53,8 @@ func approveCheck(a approval.Approval) (string, check, bool) {
 		return registry.OpToolApprove, check{id: "tool", role: registry.RoleTool, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	case "crypto.envelope":
 		return registry.OpApproveEnvelope, check{id: "envelope", role: registry.RoleEnvelope, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
+	case "crypto.signing-key":
+		return registry.OpApproveSigner, check{id: "signer", role: registry.RoleSigner, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	case "crypto.recipient":
 		return registry.OpApproveRecipient, check{id: "recipient", role: registry.RoleRecipient, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	}

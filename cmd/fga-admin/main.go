@@ -86,7 +86,7 @@ var StoragePreset = map[string][]string{
 	"document.derived":   {"deliver", "declassify", "label", "relabel", "new-version", "share"},
 	"text.entry":         {"read", "use-in-model", "update", "share"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
-	"crypto.signing-key": {"discover"},
+	"crypto.signing-key": {"discover", "enroll", "activate", "retire"},
 	"agent.tool":         {"discover", "invoke"},
 }
 
@@ -101,6 +101,7 @@ var ApproverPreset = map[string][]string{
 	"text.entry":         {"approve"},
 	"crypto.envelope":    {"approve"},
 	"crypto.recipient":   {"approve"},
+	"crypto.signing-key": {"approve"},
 	"agent.tool":         {"approve"},
 }
 

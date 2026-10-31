@@ -77,7 +77,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Audit export** goes to local files only. There is no external collector and no signing or hash-chaining of export files. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
 - **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).
 - **Catalog encryption at rest (DAT-006)** is left to the volume.
-- **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
+- **Content-signing keys** are provisioned by the administrator, or enrolled by their own principal with a possession proof and retired for rotation; compromise stays the administrator's, journaled.
 - **Approvals** cover publication, deletion and label changes of objects, documents, units and derived outputs, and sharing. Envelope retirement and the activation and revocation of recipient keys are approvable too; enrollment only records a PENDING key. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
 - **Security journal:** it must be created once with `fga-admin journal init` before the keys and storage roles start. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
 - **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).

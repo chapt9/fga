@@ -78,7 +78,9 @@ for u in alice bob; do
   $ADMIN identity put -tenant t-acme -id $u -roles member -attrs '{"projects":["p1"]}'
   $ADMIN grant -tenant t-acme -actor $u -preset storage
   if [ $u = alice ]; then FGA_KEY_PASSPHRASE="alice passphrase" $B/fga keys init -dir $u -encrypt > $u.keys; else $B/fga keys init -dir $u > $u.keys; fi
-  $ADMIN signing-key add -tenant t-acme -principal $u -public-key "$(awk '/^signer/{print $3}' $u.keys)" >/dev/null
+  # alice's content-signing key is provisioned by the administrator; bob
+  # enrolls his own below, with a possession proof (RCP-002).
+  if [ $u = alice ]; then $ADMIN signing-key add -tenant t-acme -principal $u -public-key "$(awk '/^signer/{print $3}' $u.keys)" >/dev/null; fi
 done
 tok() { $B/fga dev-token -key issuer.key -key-id tok-1 -sub $1 -tenant t-acme -aud $2 -ttl 30m; }
 as() { export FGA_KEY_DIR=$1 FGA_TOKEN=$(tok $1 fga-storage) FGA_KEYS_TOKEN=$(tok $1 fga-keys) FGA_KEY_PASSPHRASE="$1 passphrase"
@@ -86,6 +88,7 @@ as() { export FGA_KEY_DIR=$1 FGA_TOKEN=$(tok $1 fga-storage) FGA_KEYS_TOKEN=$(to
 
 as alice; $B/fga keys enroll -tenant t-acme -principal alice
 as bob;   $B/fga keys enroll -tenant t-acme -principal bob
+as bob;   check $B/fga keys enroll-signer -tenant t-acme -principal bob
 BOBFP=$(awk '/^recipient/{print $2}' bob.keys)
 as alice; $B/fga trust add -recipient "$(awk '/^recipient/{print $3}' bob.keys)"
 as bob;   $B/fga trust add -signer "$(awk '/^signer/{print $3}' alice.keys)"
