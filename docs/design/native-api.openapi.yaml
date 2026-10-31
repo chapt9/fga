@@ -71,6 +71,18 @@ paths:
         "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/DeleteOutcome" } } } }
         "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/encryption:
+    put:
+      operationId: setBucketEncryption
+      description: Changes the bucket's encryption mode (server or client) for uploads begun afterwards (ENC-001). Needs manage on the bucket; a policy may require an approval. Open uploads and existing versions keep their mode.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/approval" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/EncryptionRequest" } } }
+      responses:
+        "200": { description: Mode set, content: { application/json: { schema: { $ref: "#/components/schemas/EncryptionOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/object/label:
     put:
       operationId: setLabel
@@ -440,7 +452,7 @@ components:
             additionalProperties: false
             required: [error]
             properties:
-              error: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, TOO_LARGE, OVERLOADED, UNAVAILABLE, APPROVAL_NOT_USABLE] }
+              error: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, TOO_LARGE, OVERLOADED, UNAVAILABLE, APPROVAL_NOT_USABLE, ENCRYPTION_MODE] }
   schemas:
     Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
     Base64: { type: string, contentEncoding: base64 }
@@ -608,6 +620,19 @@ components:
         object_id: { type: string, format: uuid }
         label: { type: string }
         previous_label: { type: string }
+        metadata_revision: { type: integer }
+    EncryptionRequest:
+      type: object
+      additionalProperties: false
+      required: [encryption]
+      properties:
+        encryption: { type: string, enum: [server, client] }
+    EncryptionOutcome:
+      type: object
+      properties:
+        bucket_id: { type: string, format: uuid }
+        encryption: { type: string, enum: [server, client] }
+        previous_encryption: { type: string, enum: [server, client] }
         metadata_revision: { type: integer }
     ProposalRequest:
       type: object

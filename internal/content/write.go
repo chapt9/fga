@@ -78,6 +78,9 @@ type Intent struct {
 	principal        string
 	result           []byte
 	label            string
+	// encryption is the mode the upload began under and its version is
+	// published under (ENC-001, ENC-002).
+	encryption string
 	// A unit intent (kind "unit") belongs to a document intent; its upload
 	// is authorized like its document's.
 	kind      string
@@ -143,7 +146,8 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	in := Intent{IntentID: cryptowire.NewUUID(), Tenant: tenantID, LogicalVersion: cryptowire.NewUUID(), CryptoVersion: cryptowire.NewUUID(),
 		Blob: cryptowire.NewUUID(), Attempt: cryptowire.NewUUID(), Suite: cryptowire.Suite1, Format: cryptowire.Format1,
 		MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime),
-		bucket: b.ID, key: r.Key, ifMatch: r.IfMatch, ifNoneMatch: r.IfNoneMatch, principal: c.Principal, label: r.Label}
+		bucket: b.ID, key: r.Key, ifMatch: r.IfMatch, ifNoneMatch: r.IfNoneMatch, principal: c.Principal, label: r.Label,
+		encryption: b.Encryption}
 
 	in.kind = "object"
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, r.Key)
@@ -174,7 +178,8 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	case errors.Is(err, ErrNotFound):
 		in.Object, in.newObject = cryptowire.NewUUID(), true
 		in.scope = b.Scope
-		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label}
+		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label,
+			"encryption": b.Encryption}
 		if r.Derived {
 			in.attributes["kind"] = "derived"
 		}
@@ -217,16 +222,23 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	if err != nil {
 		return Intent{}, err
 	}
+	// This route uploads client-encrypted content only (ENC-002).
+	if err := clientMode(b.Encryption); err != nil {
+		return Intent{}, err
+	}
 	attrs, _ := json.Marshal(in.attributes)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := modeHolds(ctx, tx, c.Tenant, b); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
 			  version, crypto_version, blob, attempt, expected_generation, if_match, if_none_match, planned_scope, planned_attributes,
-			  state, expires_at, created_at, label, kind)
-			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20,$21,$22)`,
+			  state, expires_at, created_at, label, kind, encryption)
+			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20,$21,$22,$23)`,
 			c.Tenant, in.IntentID, c.Principal, r.IdempotencyKey, r.digest(), b.ID, r.Key, in.Object, in.newObject,
 			in.LogicalVersion, in.CryptoVersion, in.Blob, in.Attempt, in.expectedGen, r.IfMatch, r.IfNoneMatch, in.scope, attrs,
-			in.ExpiresAt, s.d.Now(), in.label, in.kind)
+			in.ExpiresAt, s.d.Now(), in.label, in.kind, in.encryption)
 		if isUnique(err) {
 			return fmt.Errorf("%w: the idempotency key is in use", ErrConflict)
 		}
@@ -295,7 +307,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	sql := `SELECT i.id, t.id, i.object, i.version, i.crypto_version, i.blob, i.attempt, i.expires_at, i.state, i.new_object, i.bucket,
 	               i.key, i.expected_generation, i.if_match, i.if_none_match, i.planned_scope, i.planned_attributes, i.principal,
 	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label,
-	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object)
+	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object), i.encryption
 	          FROM upload_intents i JOIN tenants t ON t.name = i.tenant
 	          LEFT JOIN document_intents d ON d.tenant = i.tenant AND d.id = i.document_intent
 	         WHERE i.tenant = $1 AND i.id = $2 AND i.principal = $3`
@@ -306,7 +318,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Object, &in.LogicalVersion, &in.CryptoVersion,
 		&in.Blob, &in.Attempt, &in.ExpiresAt, &in.state, &in.newObject, &in.bucket, &in.key, &in.expectedGen, &in.ifMatch, &in.ifNoneMatch,
 		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label,
-		&in.kind, &in.docIntent, &in.docNew, &in.docObject)
+		&in.kind, &in.docIntent, &in.docNew, &in.docObject, &in.encryption)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -344,6 +356,9 @@ func (s *Service) PutCiphertext(ctx context.Context, c Caller, intentID cryptowi
 	}
 	retry := in.state == "STAGED" && in.ciphertextLength == length && in.ciphertextSHA256 == sum.String()
 	switch {
+	case in.encryption != "client":
+		// Client ciphertext is staged only for client-mode uploads (ENC-002).
+		return Receipt{}, ErrEncryptionMode
 	case retry:
 	case in.state != "RESERVED":
 		return Receipt{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
@@ -503,6 +518,9 @@ func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r Fina
 	if in.kind != "object" {
 		// A unit is published only with its document.
 		return Prepared{}, ErrNotFound
+	}
+	if err := clientMode(in.encryption); err != nil {
+		return Prepared{}, err
 	}
 	if in.state != "STAGED" {
 		return Prepared{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
@@ -731,10 +749,10 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
-		                             signer, descriptor, descriptor_signature, created_at, published_at)
-		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
+		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,
 		c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int64(d.CiphertextLength), d.CiphertextSHA256,
-		int(d.Suite), int(d.Format), d.Signer, r.Descriptor, r.DescriptorSignature, now); err != nil {
+		int(d.Suite), int(d.Format), d.Signer, r.Descriptor, r.DescriptorSignature, now, in.encryption); err != nil {
 		return Published{}, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, in.Object, in.LogicalVersion); err != nil {

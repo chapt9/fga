@@ -27,6 +27,8 @@ func classify(err error) (int, string, bool) {
 		return http.StatusConflict, httpapi.CodeConflict, true
 	case errors.Is(err, envelope.ErrDecision):
 		return http.StatusForbidden, httpapi.CodeInvalid, true
+	case errors.Is(err, envelope.ErrEncryptionMode):
+		return http.StatusConflict, httpapi.CodeEncryptionMode, true
 	case errors.Is(err, enforce.ErrApprovalNotUsable):
 		return http.StatusConflict, httpapi.CodeApprovalNotUsable, true
 	}

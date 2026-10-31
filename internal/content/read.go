@@ -129,6 +129,9 @@ func (s *Service) ReadPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return Package{}, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return Package{}, err
+	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
 	if err != nil {
 		return Package{}, err
@@ -180,6 +183,9 @@ func (s *Service) ReadCiphertext(ctx context.Context, c Caller, bucketName, key,
 			audit.Target{Type: "storage.object", ID: o.ID.String(), Version: v.ID.String(), Digest: v.SHA256}))
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := clientMode(v.Encryption); err != nil {
 		return nil, err
 	}
 	digest, err := cryptowire.ParseDigest(v.SHA256)

@@ -32,6 +32,7 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). Each key is also a `crypto.signing-key` resource whose only action is `discover`, so a self-service operation fails closed (RES-001) |
 | Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | `crypto.recipient` `discover` (`crypto.recipient.discover`; a PENDING key is decided as its planned resource) or `crypto.signing-key` `discover` (`crypto.signing-key.discover`), with a fence check. Without a rule the lookup is denied (ruling 7). A directory answer is not a trust anchor (RCP-002) |
 | Set a label | `PUT /v1/buckets/{bucket}/object/label?key=` | Object `label` (`storage.object.label`) to raise or keep, `relabel` (`storage.object.relabel`) to lower, on the proposed change `change.label` (labels-and-approvals.md) |
+| Set a bucket's encryption mode | `PUT /v1/buckets/{bucket}/encryption` | Bucket `manage` (`storage.bucket.set-encryption`) on the proposed change `change.encryption`, which shows `new_encryption` to policy; applies to uploads begun afterwards (encryption-modes.md) |
 | Propose a label | `POST /v1/buckets/{bucket}/object/label-proposals?key=` | Object `propose-label` (`storage.object.propose-label`); advisory only |
 | List approvals | `GET /v1/approvals?after=&limit=` | Per pending approval, a fresh `approve` decision on its target (`storage.object.approve` or `storage.bucket.approve`); others are left out |
 | Decide an approval | `POST /v1/approvals/{id}` | Single-use `approve` decision on the target, under the fence; never by the requester or acting agent |
@@ -67,6 +68,7 @@ Every error body is `{"error": CODE}` with no protected identifiers.
 | 401 | `UNAUTHENTICATED` | Missing or invalid token |
 | 404 | `NOT_FOUND` | Absent target, **and** any policy denial of an object, version or bucket operation (DEC-010, CNT-004): absent and denied look the same |
 | 409 | `CONFLICT` | Idempotency mismatch, intent in the wrong state, different bytes for a blob, stale authority after a bounded retry |
+| 409 | `ENCRYPTION_MODE` | The bucket or version is in the other encryption mode than the route serves (ENC-002). Every route here serves client mode until server mode is built (D-12, S3). Only an authorized caller gets it; anyone else gets `NOT_FOUND` |
 | 412 | `PRECONDITION_FAILED` | `If-Match` or `If-None-Match` failed at commit (only after the operation was authorized) |
 | 413 | `TOO_LARGE` | Body above the bound |
 | 429 | `OVERLOADED` | Admission limits (AVL-006) |

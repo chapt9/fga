@@ -7,7 +7,7 @@
 //
 // Commands:
 //
-//	bucket create      -tenant T -name N [-project P] [-label L] [-scope S]
+//	bucket create      -tenant T -name N [-project P] [-label L] [-scope S] [-encryption server|client]
 //	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]
 //	identity disable   -tenant T -id ID                      (journaled)
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
@@ -136,6 +136,7 @@ func run(args []string) error {
 	project := fs.String("project", "", "bucket default project")
 	label := fs.String("label", "internal", "bucket default label")
 	scope := fs.String("scope", "", "bucket policy scope")
+	encryption := fs.String("encryption", "server", "bucket encryption mode: server (the default) or client (ENC-001)")
 	roles := fs.String("roles", "", "comma-separated roles")
 	attrs := fs.String("attrs", "{}", "identity attributes as a JSON object")
 	actor := fs.String("actor", "", "actor identity")
@@ -219,9 +220,10 @@ func run(args []string) error {
 		if err := need(*tenant, *name); err != nil {
 			return err
 		}
-		bid, err := e.store.CreateBucket(ctx, *tenant, catalog.Bucket{Name: *name, Project: *project, Label: *label, Scope: *scope})
+		bid, err := e.store.CreateBucket(ctx, *tenant, catalog.Bucket{Name: *name, Project: *project, Label: *label, Scope: *scope,
+			Encryption: *encryption})
 		if err == nil {
-			fmt.Println(bid)
+			fmt.Println(bid, *encryption)
 		}
 		return err
 	case "identity put":

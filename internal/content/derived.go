@@ -139,6 +139,9 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 	if in.kind != "derived" {
 		return Published{}, ErrNotFound
 	}
+	if err := clientMode(in.encryption); err != nil {
+		return Published{}, err
+	}
 	if in.state != "STAGED" {
 		return Published{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
 	}
@@ -306,10 +309,10 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
-			                             signer, descriptor, descriptor_signature, created_at, published_at)
-			VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+			                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
+			VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,
 			c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int64(desc.CiphertextLength), desc.CiphertextSHA256,
-			int(desc.Suite), int(desc.Format), desc.Signer, r.Descriptor, r.DescriptorSignature, now); err != nil {
+			int(desc.Suite), int(desc.Format), desc.Signer, r.Descriptor, r.DescriptorSignature, now, in.encryption); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, in.Object, in.LogicalVersion); err != nil {
@@ -452,6 +455,9 @@ func (s *Service) DerivedPackage(ctx context.Context, c Caller, bucketName, key,
 	if err != nil {
 		return Package{}, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return Package{}, err
+	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, path...)
 	if err != nil {
 		return Package{}, err
@@ -512,6 +518,9 @@ func (s *Service) ReadDerivedCiphertext(ctx context.Context, c Caller, bucketNam
 	merged, err := fence.Merge(bindings)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if err := clientMode(v.Encryption); err != nil {
+		return nil, err
 	}
 	digest, err := cryptowire.ParseDigest(v.SHA256)
 	if err != nil {

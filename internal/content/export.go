@@ -167,6 +167,9 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 		return Export{}, err
 	}
 	for i, v := range versions {
+		if err := clientMode(v.Encryption); err != nil {
+			return Export{}, err
+		}
 		digest, err := cryptowire.ParseDigest(v.SHA256)
 		if err != nil {
 			return Export{}, fmt.Errorf("%w: stored digest", ErrUnavailable)
@@ -414,6 +417,9 @@ func (s *Service) ExportObject(ctx context.Context, c Caller, bucketName, key, v
 	if err != nil {
 		return ObjectExport{}, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return ObjectExport{}, err
+	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
 	if err != nil {
 		return ObjectExport{}, err
@@ -437,6 +443,9 @@ func (s *Service) ExportObject(ctx context.Context, c Caller, bucketName, key, v
 			audit.Target{Type: "storage.object", ID: o.ID.String(), Version: v.ID.String(), Digest: v.SHA256, Recipient: recipient}))
 	})
 	if err != nil {
+		return ObjectExport{}, err
+	}
+	if err := clientMode(v.Encryption); err != nil {
 		return ObjectExport{}, err
 	}
 	digest, err := cryptowire.ParseDigest(v.SHA256)

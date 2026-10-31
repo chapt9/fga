@@ -43,7 +43,9 @@ var LabelOrder = []string{"public", "internal", "confidential", "restricted"}
 
 // Policies is the storage policy release of the fixture.
 //
-//   - Members of a bucket's project may create objects in it and list it.
+//   - Members of a bucket's project may create objects in it and list it;
+//     its project leads may manage it, which includes changing its
+//     encryption mode (ENC-001).
 //   - An object's owner may use every listed object action on it; project
 //     members may read, stat and discover it; auditors may see history.
 //   - A recipient may receive its own active key's envelopes, and anyone
@@ -68,6 +70,8 @@ var Policies = map[string]string{
 	  {"id":"members-use-bucket","effect":"allow","actions":["create-object","list"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-manage-buckets","effect":"allow","actions":["manage"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"objects.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
 	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label","export"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
@@ -365,13 +369,21 @@ func (st *Stack) CallerFor(id, audience string) content.Caller {
 	return content.Caller{Tenant: Tenant, Principal: id, Token: tok}
 }
 
-// Bucket creates a bucket of project with label "internal".
+// Bucket creates a client-mode bucket of project with label "internal".
 func (st *Stack) Bucket(name, project string) { st.LabeledBucket(name, project, "internal") }
 
-// LabeledBucket creates a bucket of project whose objects get label.
+// LabeledBucket creates a client-mode bucket of project whose objects get
+// label.
 func (st *Stack) LabeledBucket(name, project, label string) {
+	st.ModeBucket(name, project, label, "client")
+}
+
+// ModeBucket creates a bucket of project whose objects get label, in
+// encryption mode (ENC-001).
+func (st *Stack) ModeBucket(name, project, label, mode string) {
 	st.T.Helper()
-	if _, err := st.Catalog.CreateBucket(context.Background(), Tenant, catalog.Bucket{Name: name, Project: project, Label: label}); err != nil {
+	if _, err := st.Catalog.CreateBucket(context.Background(), Tenant,
+		catalog.Bucket{Name: name, Project: project, Label: label, Encryption: mode}); err != nil {
 		st.T.Fatal(err)
 	}
 }

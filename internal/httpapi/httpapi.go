@@ -34,6 +34,9 @@ const (
 	// approval does not cover this operation.
 	CodeApprovalRequired  = "APPROVAL_REQUIRED"
 	CodeApprovalNotUsable = "APPROVAL_NOT_USABLE"
+	// CodeEncryptionMode answers 409: the target is in the other
+	// encryption mode than the route serves (ENC-002).
+	CodeEncryptionMode = "ENCRYPTION_MODE"
 )
 
 // ApprovalHeader carries the approval a caller presents when repeating an

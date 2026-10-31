@@ -56,6 +56,7 @@ import (
 //	fga rm             -bucket B -key K [-version V] [-document] [-approval A]
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
 //	fga label          -bucket B -key K -label L [-unit U | -derived] [-approval A]
+//	fga set-encryption -bucket B -encryption server|client [-approval A]   for uploads begun afterwards
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
@@ -235,6 +236,7 @@ func clientCommand(cmd string, args []string) error {
 	intent := fs.String("intent", "", "upload intent to finalize")
 	request := fs.String("request", "", "file holding a kept finalize request")
 	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
+	encryption := fs.String("encryption", "", "set-encryption: the bucket's new encryption mode, server or client")
 	collection := fs.Bool("collection", false, "put-document: create a text collection, one entry per paragraph")
 	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
 	project := fs.String("project", "", "search: project")
@@ -489,6 +491,13 @@ func clientCommand(cmd string, args []string) error {
 			return approvalHint(err)
 		}
 		fmt.Printf("label %s (was %s), metadata revision %d\n", o.Label, o.Previous, o.MetadataRevision)
+		return nil
+	case "set-encryption":
+		o, err := c.SetBucketEncryption(ctx, *bucket, *encryption)
+		if err != nil {
+			return approvalHint(err)
+		}
+		fmt.Printf("bucket encryption %s (was %s), metadata revision %d\n", o.Encryption, o.Previous, o.MetadataRevision)
 		return nil
 	case "propose-label":
 		p, err := c.ProposeLabel(ctx, *bucket, *key, *label, *classifier)

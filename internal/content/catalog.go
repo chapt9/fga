@@ -17,11 +17,12 @@ import (
 // committed state: a head with a LIVE current version (PUB-004).
 
 type bucket struct {
-	ID      cryptowire.UUID
-	Name    string
-	Scope   string
-	Project string
-	Label   string
+	ID         cryptowire.UUID
+	Name       string
+	Scope      string
+	Project    string
+	Label      string
+	Encryption string
 }
 
 type object struct {
@@ -47,6 +48,9 @@ type version struct {
 	Descriptor    []byte
 	DescriptorSig string
 	CreatedAt     time.Time
+	// Encryption is the mode the version was published under; a delete
+	// marker has none (ENC-002).
+	Encryption string
 }
 
 func (s *Service) tenantID(ctx context.Context, tenant string) (cryptowire.UUID, error) {
@@ -58,11 +62,35 @@ func (s *Service) tenantID(ctx context.Context, tenant string) (cryptowire.UUID,
 	return id, err
 }
 
+// clientMode refuses a target in server mode on a client-mode route
+// (ENC-002). Callers check it after authorization.
+func clientMode(mode string) error {
+	if mode != "client" {
+		return ErrEncryptionMode
+	}
+	return nil
+}
+
+// modeHolds runs in the fence of an upload's begin: the bucket is still in
+// the mode the upload was decided under, and stays so until the intent
+// commits, so a mode change applies only to uploads begun after it
+// (ENC-001).
+func modeHolds(ctx context.Context, tx pgx.Tx, tenant string, b bucket) error {
+	mode, err := catalog.BucketEncryption(ctx, tx, tenant, b.ID.String(), false)
+	if err != nil {
+		return err
+	}
+	if mode != b.Encryption {
+		return fmt.Errorf("%w: the bucket's encryption mode changed", ErrConflict)
+	}
+	return nil
+}
+
 func (s *Service) bucketByName(ctx context.Context, tenant, name string) (bucket, error) {
 	var b bucket
 	err := s.d.Catalog.Pool().QueryRow(ctx,
-		`SELECT id, name, scope, default_project, default_label FROM buckets WHERE tenant = $1 AND name = $2`, tenant, name).
-		Scan(&b.ID, &b.Name, &b.Scope, &b.Project, &b.Label)
+		`SELECT id, name, scope, default_project, default_label, encryption FROM buckets WHERE tenant = $1 AND name = $2`, tenant, name).
+		Scan(&b.ID, &b.Name, &b.Scope, &b.Project, &b.Label, &b.Encryption)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return b, ErrNotFound
 	}
@@ -88,13 +116,13 @@ func (s *Service) versionByID(ctx context.Context, q catalog.Querier, tenant str
 	sql := `SELECT id, object, delete_marker, coalesce(crypto_version, '00000000-0000-0000-0000-000000000000'),
 	               coalesce(blob, '00000000-0000-0000-0000-000000000000'), state, coalesce(ciphertext_length, 0),
 	               coalesce(ciphertext_sha256, ''), coalesce(suite, 0), coalesce(format, 0), coalesce(signer, ''),
-	               coalesce(descriptor, ''), coalesce(descriptor_signature, ''), created_at
+	               coalesce(descriptor, ''), coalesce(descriptor_signature, ''), created_at, coalesce(encryption, '')
 	          FROM object_versions WHERE tenant = $1 AND id = $2`
 	if lock {
 		sql += ` FOR UPDATE`
 	}
 	err := q.QueryRow(ctx, sql, tenant, id).Scan(&v.ID, &v.Object, &v.DeleteMarker, &v.CryptoVersion, &v.Blob, &v.State,
-		&v.Length, &v.SHA256, &v.Suite, &v.Format, &v.Signer, &v.Descriptor, &v.DescriptorSig, &v.CreatedAt)
+		&v.Length, &v.SHA256, &v.Suite, &v.Format, &v.Signer, &v.Descriptor, &v.DescriptorSig, &v.CreatedAt, &v.Encryption)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrNotFound
 	}

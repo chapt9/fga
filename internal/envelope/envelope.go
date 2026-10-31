@@ -33,6 +33,9 @@ var (
 	ErrConflict    = errors.New("envelope: conflict")
 	ErrUnavailable = errors.New("envelope: a dependency is unavailable")
 	ErrDecision    = errors.New("envelope: decision does not authorize this delivery")
+	// ErrEncryptionMode: the version is in server mode, which has no
+	// recipient envelopes (ENC-002).
+	ErrEncryptionMode = errors.New("envelope: the version is not in client mode")
 )
 
 // Deps are the service's collaborators. Every field is required.
@@ -174,14 +177,17 @@ type stored struct {
 	Status     string
 	// DocumentVersion is set for a unit envelope (profile 2).
 	DocumentVersion *cryptowire.UUID
+	// Encryption is the mode of the envelope's version (ENC-002).
+	Encryption string
 }
 
 func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string, id cryptowire.UUID, lock string) (stored, error) {
 	var e stored
-	err := q.QueryRow(ctx, `SELECT id, object, version, recipient, generation, context, ciphertext, signature, signer, digest, status, document_version
-	                          FROM envelopes WHERE tenant = $1 AND id = $2 `+lock, tenant, id).
+	err := q.QueryRow(ctx, `SELECT id, object, version, recipient, generation, context, ciphertext, signature, signer, digest, status, document_version,
+	                               (SELECT coalesce(v.encryption, '') FROM object_versions v WHERE v.tenant = e.tenant AND v.id = e.version)
+	                          FROM envelopes e WHERE tenant = $1 AND id = $2 `+lock, tenant, id).
 		Scan(&e.ID, &e.Object, &e.Version, &e.Recipient, &e.Generation, &e.Context, &e.Ciphertext, &e.Signature, &e.Signer, &e.Digest, &e.Status,
-			&e.DocumentVersion)
+			&e.DocumentVersion, &e.Encryption)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, ErrNotFound
 	}
@@ -224,8 +230,9 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	}
 	// A unit or original envelope is delivered only for its document
 	// operation, bound to its document version, and an object envelope
-	// only for the object operations.
-	if (unit || original) != (e.DocumentVersion != nil) {
+	// only for the object operations. Only a client-mode version is
+	// delivered through an envelope (ENC-002).
+	if (unit || original) != (e.DocumentVersion != nil) || e.Encryption != "client" {
 		return Delivered{}, ErrDecision
 	}
 	for _, c := range rec.Checks {

@@ -207,6 +207,10 @@ const ChangePrefix = "change."
 // ranks (D-06).
 const ChangeLabel = "change.label"
 
+// ChangeEncryption: "<bucket ID>|<new mode>". The bucket gains
+// new_encryption (ENC-001).
+const ChangeEncryption = "change.encryption"
+
 // Changer resolves proposed changes from authoritative state.
 type Changer interface {
 	Changed(ctx context.Context, tenant string, alias Alias) (Resource, error)

@@ -32,6 +32,8 @@ func classify(err error) (int, string, bool) {
 		return http.StatusConflict, httpapi.CodeConflict, true
 	case errors.Is(err, content.ErrTooLarge):
 		return http.StatusRequestEntityTooLarge, httpapi.CodeTooLarge, true
+	case errors.Is(err, content.ErrEncryptionMode):
+		return http.StatusConflict, httpapi.CodeEncryptionMode, true
 	}
 	return 0, "", false
 }
@@ -61,6 +63,9 @@ type (
 	approvalRequiredBody struct {
 		Status     string `json:"status"`
 		ApprovalID string `json:"approval_id"`
+	}
+	encryptionBody struct {
+		Encryption string `json:"encryption"`
 	}
 	labelBody struct {
 		Label string `json:"label"`
@@ -331,6 +336,18 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"versions": vs})
+	}))
+	mux.HandleFunc("PUT /v1/buckets/{bucket}/encryption", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var body encryptionBody
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		out, err := svc.SetBucketEncryption(r.Context(), c, r.PathValue("bucket"), body.Encryption)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
 	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/object/label", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)

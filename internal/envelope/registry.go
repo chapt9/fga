@@ -342,19 +342,19 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 	}
 	var objectID, cryptoVersion cryptowire.UUID
 	var tenantID cryptowire.UUID
-	var vstate, sum, scope string
+	var vstate, sum, scope, mode string
 	var marker bool
 	var length int64
 	var attrs map[string]any
 	err = s.d.Catalog.Pool().QueryRow(ctx, `
 		SELECT o.id, v.crypto_version, t.id, v.state, v.delete_marker, coalesce(v.ciphertext_sha256, ''), coalesce(v.ciphertext_length, 0),
-		       r.scope, r.attributes
+		       r.scope, r.attributes, coalesce(v.encryption, '')
 		  FROM objects o JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket
 		  JOIN object_versions v ON v.tenant = o.tenant AND v.object = o.id
 		  JOIN tenants t ON t.name = o.tenant
 		  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
 		 WHERE o.tenant = $1 AND b.name = $2 AND o.kind = 'object' AND o.key = $3 AND v.id::text = $4`, c.Tenant, bucketName, key, versionID).
-		Scan(&objectID, &cryptoVersion, &tenantID, &vstate, &marker, &sum, &length, &scope, &attrs)
+		Scan(&objectID, &cryptoVersion, &tenantID, &vstate, &marker, &sum, &length, &scope, &attrs, &mode)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && (vstate != "LIVE" || marker) {
 		return EnvelopeRef{}, ErrNotFound
 	}
@@ -394,6 +394,11 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 		return EnvelopeRef{}, ErrNotFound
 	case err != nil:
 		return EnvelopeRef{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	// A server-mode version takes no client envelope (ENC-002); the caller
+	// is authorized, so the answer reveals nothing new.
+	if mode != "client" {
+		return EnvelopeRef{}, ErrEncryptionMode
 	}
 	digest := cryptowire.EnvelopeDigest(e.Context, e.Ciphertext)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {

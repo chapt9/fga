@@ -410,6 +410,9 @@ func (s *Service) admitUnit(ctx context.Context, c Caller, rec signing.Record, d
 	if err != nil {
 		return nil, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return nil, err
+	}
 	digest, err := cryptowire.ParseDigest(v.SHA256)
 	if err != nil {
 		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
@@ -508,6 +511,9 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 	if err != nil {
 		return Package{}, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return Package{}, err
+	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, complete...)
 	if err != nil {
 		return Package{}, err
@@ -565,6 +571,9 @@ func (s *Service) ReadOriginal(ctx context.Context, c Caller, bucketName, key, v
 	merged, err := fence.Merge(bindings)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if err := clientMode(v.Encryption); err != nil {
+		return nil, err
 	}
 	digest, err := cryptowire.ParseDigest(v.SHA256)
 	if err != nil {

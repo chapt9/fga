@@ -1,6 +1,6 @@
 #!/bin/bash
 # Smoke test of the R1-B roles, with R1-C labels, approvals and document
-# publication, on one host
+# publication and the 2.6 encryption modes, on one host
 # (development profile): builds the binaries, creates a throwaway database,
 # starts fga-decision, fga-keys and fga-storage on loopback, and drives them
 # with fga and fga-admin.
@@ -57,7 +57,7 @@ ADMIN="$B/fga-admin -db $URL -journal journal -blobs blobs"
 export FGA_BACKUP_KEY_PASSPHRASE="smoke backup passphrase"
 $ADMIN backup-key generate -encrypt -out backup.key
 grep -q '"format":"fga.keyfile/v1"' backup.key && echo "backup key is passphrase-protected"
-$ADMIN bucket create -tenant t-acme -name reports -project p1 >/dev/null
+$ADMIN bucket create -tenant t-acme -name reports -project p1 -encryption client >/dev/null
 for u in alice bob; do
   $ADMIN identity put -tenant t-acme -id $u -roles member -attrs '{"projects":["p1"]}'
   $ADMIN grant -tenant t-acme -actor $u -preset storage
@@ -157,6 +157,21 @@ printf 'hello\n\nhow are you?\n\nfine, thanks' > chat.expected
 as bob;   check $B/fga get-document -bucket reports -key q3/chat.log -out bob-chat.txt; check cmp chat.expected bob-chat.txt
 as bob;   if $B/fga append -bucket reports -key q3/chat.log -in chat2.txt 2>err.txt; then echo "UNEXPECTED: bob appended"; exit 1; fi
 echo "collection appended by its owner and read back by bob; bob's append: $(cat err.txt)"
+
+# Encryption modes (specification 2.6, D-12): a new bucket is in server mode
+# by default. Server-mode uploads come with stretch S3, so the client routes
+# refuse a server-mode bucket, but only to a caller allowed to use it. A
+# project lead may change the mode, for uploads begun afterwards.
+$ADMIN bucket create -tenant t-acme -name vault -project p1 >/dev/null
+$ADMIN grant -tenant t-acme -actor lena -type storage.bucket -actions manage
+as alice; if $B/fga put -bucket vault -key a.bin -in plain.bin 2>err.txt; then echo "UNEXPECTED: client upload to a server-mode bucket"; exit 1; fi
+check grep -q ENCRYPTION_MODE err.txt
+echo "client upload to a server-mode bucket: $(cat err.txt)"
+as bob;   if $B/fga set-encryption -bucket vault -encryption client 2>err.txt; then echo "UNEXPECTED: bob changed the mode"; exit 1; fi
+echo "bob changes the mode: $(cat err.txt)"
+as lena;  check $B/fga set-encryption -bucket vault -encryption client
+as alice; check $B/fga put -bucket vault -key a.bin -in plain.bin
+echo "alice uploads once the lead has switched the bucket to client mode"
 
 
 $ADMIN audit export -dir audit

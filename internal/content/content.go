@@ -42,7 +42,11 @@ var (
 	ErrConflict     = errors.New("content: conflict")
 	ErrPrecondition = errors.New("content: precondition failed")
 	ErrTooLarge     = errors.New("content: too large")
-	ErrUnavailable  = enforce.ErrUnavailable
+	// ErrEncryptionMode: the target is in the other encryption mode than
+	// the route serves (ENC-002). It is returned only after the caller's
+	// authorization, so it reveals nothing to a caller without it.
+	ErrEncryptionMode = errors.New("content: wrong encryption mode")
+	ErrUnavailable    = enforce.ErrUnavailable
 	// ErrApprovalNotUsable: the presented approval does not cover the
 	// operation.
 	ErrApprovalNotUsable = enforce.ErrApprovalNotUsable

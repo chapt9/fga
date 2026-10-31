@@ -41,6 +41,9 @@ const (
 	// approval's target.
 	OpApproveObject = "storage.object.approve"
 	OpApproveBucket = "storage.bucket.approve"
+	// OpBucketSetEncryption changes a bucket's encryption mode for uploads
+	// begun afterwards (ENC-001).
+	OpBucketSetEncryption = "storage.bucket.set-encryption"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -253,6 +256,7 @@ func baseOperations() []Operation {
 		}, envelopeChecks(true)...)},
 		one(OpApproveObject, RoleObject, "storage.object", "approve"),
 		one(OpApproveBucket, RoleBucket, "storage.bucket", "approve"),
+		one(OpBucketSetEncryption, RoleBucket, "storage.bucket", "manage"),
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),

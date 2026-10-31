@@ -117,6 +117,8 @@ type storedDocIntent struct {
 	scope         string
 	attributes    map[string]any
 	result        []byte
+	// encryption is the mode the document version began under (ENC-001).
+	encryption string
 }
 
 // BeginDocument reserves a document version (DOC-002 step 1). A new key
@@ -155,7 +157,7 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	}
 	in := storedDocIntent{DocumentIntent: DocumentIntent{IntentID: cryptowire.NewUUID().String(), Tenant: tenantID.String(),
 		DocumentVersion: cryptowire.NewUUID().String(), MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime)},
-		principal: c.Principal, requestDigest: r.digest(), bucket: b.ID, key: r.Key, scope: b.Scope}
+		principal: c.Principal, requestDigest: r.digest(), bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption}
 	var kind string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id::text, o.kind, r.generation, r.scope, r.attributes FROM objects o
 	                                         JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
@@ -164,7 +166,8 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		in.Document, in.newDocument = cryptowire.NewUUID().String(), true
-		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label, "kind": "document"}
+		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label, "kind": "document",
+			"encryption": b.Encryption}
 		if r.Collection {
 			in.attributes["kind"] = "collection"
 		}
@@ -213,8 +216,12 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	if err != nil {
 		return DocumentIntent{}, err
 	}
+	// This route publishes client-encrypted units only (ENC-002).
+	if err := clientMode(b.Encryption); err != nil {
+		return DocumentIntent{}, err
+	}
 	versionAttrs := map[string]any{"document": in.Document}
-	for _, k := range []string{"bucket", "owner", "project", "label", "kind"} {
+	for _, k := range []string{"bucket", "owner", "project", "label", "kind", "encryption"} {
 		versionAttrs[k] = in.attributes[k]
 	}
 	va, _ := json.Marshal(versionAttrs)
@@ -224,12 +231,16 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		original, _ = json.Marshal(in.Original)
 	}
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := modeHolds(ctx, tx, c.Tenant, b); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO document_intents (tenant, id, principal, idempotency_key, request_digest, bucket, key, document, new_document,
-			  document_version, expected_generation, planned_scope, planned_attributes, units, state, expires_at, created_at, original)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'RESERVED',$15,$16,$17)`,
+			  document_version, expected_generation, planned_scope, planned_attributes, units, state, expires_at, created_at, original,
+			  encryption)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'RESERVED',$15,$16,$17,$18)`,
 			c.Tenant, in.IntentID, c.Principal, r.IdempotencyKey, in.requestDigest, b.ID, r.Key, in.Document, in.newDocument,
-			in.DocumentVersion, in.expectedGen, in.scope, va, units, in.ExpiresAt, s.d.Now(), original)
+			in.DocumentVersion, in.expectedGen, in.scope, va, units, in.ExpiresAt, s.d.Now(), original, in.encryption)
 		if isUnique(err) {
 			return fmt.Errorf("%w: the idempotency key is in use", ErrConflict)
 		}
@@ -240,10 +251,11 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
 				  version, crypto_version, blob, attempt, expected_generation, planned_scope, planned_attributes, state, expires_at,
-				  created_at, kind, document_intent)
-				VALUES ($1,$2,$3,$3,$4,$5,$6,'',$7,true,$8,$9,$10,$11,0,$12,$13,'RESERVED',$14,$15,'original',$16)`,
+				  created_at, kind, document_intent, encryption)
+				VALUES ($1,$2,$3,$3,$4,$5,$6,'',$7,true,$8,$9,$10,$11,0,$12,$13,'RESERVED',$14,$15,'original',$16,$17)`,
 				c.Tenant, o.IntentID, c.Principal, "document-intent:"+in.IntentID+":original", in.requestDigest, b.ID,
-				o.Unit, o.UnitVersion, o.CryptoVersion, o.Blob, o.Attempt, in.scope, va, in.ExpiresAt, s.d.Now(), in.IntentID); err != nil {
+				o.Unit, o.UnitVersion, o.CryptoVersion, o.Blob, o.Attempt, in.scope, va, in.ExpiresAt, s.d.Now(), in.IntentID,
+				in.encryption); err != nil {
 				return err
 			}
 		}
@@ -252,7 +264,7 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 				continue
 			}
 			attrs := map[string]any{"document": in.Document, "label": docLabel}
-			for _, k := range []string{"bucket", "owner", "project"} {
+			for _, k := range []string{"bucket", "owner", "project", "encryption"} {
 				attrs[k] = in.attributes[k]
 			}
 			if u.Label != "" {
@@ -265,10 +277,11 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
 				  version, crypto_version, blob, attempt, expected_generation, planned_scope, planned_attributes, state, expires_at,
-				  created_at, label, kind, document_intent)
-				VALUES ($1,$2,$3,$3,$4,$5,$6,'',$7,true,$8,$9,$10,$11,0,$12,$13,'RESERVED',$14,$15,$16,'unit',$17)`,
+				  created_at, label, kind, document_intent, encryption)
+				VALUES ($1,$2,$3,$3,$4,$5,$6,'',$7,true,$8,$9,$10,$11,0,$12,$13,'RESERVED',$14,$15,$16,'unit',$17,$18)`,
 				c.Tenant, u.IntentID, c.Principal, "document-intent:"+in.IntentID+":"+strconv.Itoa(u.Position), in.requestDigest, b.ID,
-				u.Unit, u.UnitVersion, u.CryptoVersion, u.Blob, u.Attempt, in.scope, ua, in.ExpiresAt, s.d.Now(), u.Label, in.IntentID); err != nil {
+				u.Unit, u.UnitVersion, u.CryptoVersion, u.Blob, u.Attempt, in.scope, ua, in.ExpiresAt, s.d.Now(), u.Label, in.IntentID,
+				in.encryption); err != nil {
 				return err
 			}
 		}
@@ -288,7 +301,8 @@ func (s *Service) reusable(ctx context.Context, tenant string, position int, u D
 		SELECT v.crypto_version::text, v.blob::text, v.ciphertext_sha256, v.ciphertext_length FROM object_versions v
 		  JOIN objects o ON o.tenant = v.tenant AND o.id = v.object
 		  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text AND r.type = $4
-		 WHERE v.tenant = $1 AND o.id::text = $2 AND v.id::text = $3 AND o.kind = 'unit' AND v.state = 'LIVE'`,
+		 WHERE v.tenant = $1 AND o.id::text = $2 AND v.id::text = $3 AND o.kind = 'unit' AND v.state = 'LIVE'
+		   AND v.encryption = 'client'`,
 		tenant, u.ReuseUnit, u.ReuseVersion, typ).Scan(&ui.CryptoVersion, &ui.Blob, &ui.CiphertextSHA256, &ui.CiphertextLength)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ui, ErrNotFound
@@ -326,7 +340,7 @@ func (s *Service) docIntent(ctx context.Context, q interface {
 	var units, attrs []byte
 	sql := `SELECT d.id::text, t.id::text, d.document::text, d.document_version::text, d.units, d.expires_at, d.principal, d.request_digest,
 	               d.state, d.bucket, d.key, d.new_document, d.expected_generation, d.planned_scope, d.planned_attributes,
-	               coalesce(d.result::text, ''), coalesce(d.original::text, '')
+	               coalesce(d.result::text, ''), coalesce(d.original::text, ''), d.encryption
 	          FROM document_intents d JOIN tenants t ON t.name = d.tenant
 	         WHERE d.tenant = $1 AND d.id::text = $2 AND d.principal = $3`
 	if lock {
@@ -335,7 +349,7 @@ func (s *Service) docIntent(ctx context.Context, q interface {
 	var result, original string
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Document, &in.DocumentVersion, &units,
 		&in.ExpiresAt, &in.principal, &in.requestDigest, &in.state, &in.bucket, &in.key, &in.newDocument, &in.expectedGen, &in.scope, &attrs, &result,
-		&original)
+		&original, &in.encryption)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -418,6 +432,9 @@ func (s *Service) FinalizeDocument(ctx context.Context, c Caller, intentID strin
 	}
 	if in.state != "RESERVED" || !s.d.Now().Before(in.ExpiresAt) {
 		return DocumentPublished{}, fmt.Errorf("%w: document intent is %s or expired", ErrConflict, in.state)
+	}
+	if err := clientMode(in.encryption); err != nil {
+		return DocumentPublished{}, err
 	}
 	if len(r.Units) != len(in.Units) {
 		return DocumentPublished{}, fmt.Errorf("%w: one descriptor per unit", ErrInvalid)
@@ -732,10 +749,10 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO document_versions (tenant, id, document, manifest, manifest_signature, manifest_digest, signer, extraction_version,
-			                               normalization_version, state, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'LIVE', $10)`,
+			                               normalization_version, state, created_at, encryption)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'LIVE', $10, $11)`,
 			c.Tenant, in.DocumentVersion, in.Document, r.Manifest, r.ManifestSignature, digest.String(), signer, m.ExtractionVersion,
-			m.NormalizationVersion, now); err != nil {
+			m.NormalizationVersion, now, in.encryption); err != nil {
 			return err
 		}
 		versionAttrs := map[string]any{"document": in.Document}
@@ -823,10 +840,10 @@ func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checke
 	d := u.descriptor
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
-		                             signer, descriptor, descriptor_signature, created_at, published_at)
-		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
+		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,
 		c.Tenant, u.UnitVersion, u.Unit, u.CryptoVersion, u.Blob, int64(d.CiphertextLength), d.CiphertextSHA256, int(d.Suite), int(d.Format),
-		d.Signer, f.Descriptor, f.DescriptorSignature, now); err != nil {
+		d.Signer, f.Descriptor, f.DescriptorSignature, now, u.staged.encryption); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, u.Unit, u.UnitVersion); err != nil {
@@ -934,10 +951,10 @@ func (s *Service) publishOriginal(ctx context.Context, tx pgx.Tx, c Caller, in s
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
-		                             signer, descriptor, descriptor_signature, created_at, published_at)
-		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
+		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,
 		c.Tenant, o.UnitVersion, o.Unit, o.CryptoVersion, o.Blob, int64(d.CiphertextLength), d.CiphertextSHA256, int(d.Suite), int(d.Format),
-		d.Signer, f.Descriptor, f.DescriptorSignature, now); err != nil {
+		d.Signer, f.Descriptor, f.DescriptorSignature, now, o.staged.encryption); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, o.Unit, o.UnitVersion); err != nil {

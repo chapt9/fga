@@ -404,6 +404,25 @@ func (c *Client) putLabel(ctx context.Context, target, label string) (LabelOutco
 	return out, err
 }
 
+// EncryptionOutcome reports a bucket's encryption mode change.
+type EncryptionOutcome struct {
+	Bucket           string `json:"bucket_id"`
+	Encryption       string `json:"encryption"`
+	Previous         string `json:"previous_encryption"`
+	MetadataRevision uint64 `json:"metadata_revision"`
+}
+
+// SetBucketEncryption changes a bucket's encryption mode, "server" or
+// "client", for uploads begun afterwards (ENC-001). It needs manage on the
+// bucket and may need an approval; existing versions keep their mode.
+func (c *Client) SetBucketEncryption(ctx context.Context, bucket, mode string) (EncryptionOutcome, error) {
+	var out EncryptionOutcome
+	body, n := jsonBody(map[string]string{"encryption": mode})
+	_, err := c.do(ctx, http.MethodPut, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/encryption", c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out, err
+}
+
 // Proposal is an advisory label proposal; it never changes the label.
 type Proposal struct {
 	ID            string `json:"proposal_id"`
