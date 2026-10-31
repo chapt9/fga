@@ -88,6 +88,7 @@ type Stack struct {
 	Blobs      *blob.Store
 	Content    *content.Service
 	Issuer     *authn.Issuer
+	Tokens     *authn.Verifier
 	DecisionPK ed25519.PublicKey
 	Clock      *time.Time
 	// Envelopes is the keys role. Keys is the envelope delivery the content
@@ -178,10 +179,11 @@ func New(t testing.TB) *Stack {
 		t.Fatal(err)
 	}
 	tokens := authn.NewVerifier("fga-dev", map[string]ed25519.PublicKey{"tok-1": tokPub}, now)
+	st.Tokens = tokens
 	st.Decisions, err = decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Operations: registry.R1Operations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
 		Audiences: []string{content.Audience, content.KeysAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
-		Now: now, Authn: tokens, AdapterAudiences: map[string]string{StorageAdapter: content.Audience, "keys-1": content.KeysAudience}})
+		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience}}})
 	if err != nil {
 		t.Fatal(err)
 	}

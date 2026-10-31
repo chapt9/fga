@@ -139,7 +139,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		t.Fatal(err)
 	}
 	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Operations: ops, Authority: FixedAuthority{Incarnation: 4}, Signer: signer,
-		Authn: tokens, AdapterAudiences: map[string]string{"storage-1": "fga-storage", "tools-gw-1": "fga-storage"}, PublicAudience: "fga-decision",
+		Authn: tokens, AdapterAudiences: map[string][]string{"storage-1": {"fga-storage"}, "tools-gw-1": {"fga-storage"}}, PublicAudience: "fga-decision",
 		Outbox: outbox, Audiences: []string{"storage"}, MaxAge: 30 * time.Second, Limits: DefaultLimits, Now: clock})
 	if err != nil {
 		t.Fatal(err)

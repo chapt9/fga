@@ -29,10 +29,10 @@ type Config struct {
 	// TokenIssuer verifies first-hop user tokens (TRU-003). Without it only
 	// delegated requests can be decided.
 	TokenIssuer *TokenIssuerConfig `json:"token_issuer,omitempty"`
-	// AdapterAudiences maps each adapter to the token audience of the users
+	// AdapterAudiences maps each adapter to the token audiences of the users
 	// it serves; PublicAudience is the audience of the public facade.
-	AdapterAudiences map[string]string `json:"adapter_audiences,omitempty"`
-	PublicAudience   string            `json:"public_audience,omitempty"`
+	AdapterAudiences map[string][]string `json:"adapter_audiences,omitempty"`
+	PublicAudience   string              `json:"public_audience,omitempty"`
 }
 
 // TokenIssuerConfig names one token issuer and its Ed25519 verification

@@ -169,10 +169,12 @@ type Deps struct {
 	Operations *registry.Operations
 	Authority  Authority
 	// Authn verifies first-hop evidence. AdapterAudiences maps each adapter
-	// to the token audience of the users it serves, and PublicAudience is
-	// the audience of tokens presented to the public facade.
+	// to the token audiences of the users it serves (one per role in
+	// production; the single development adapter may serve several), and
+	// PublicAudience is the audience of tokens presented to the public
+	// facade.
 	Authn            TokenVerifier
-	AdapterAudiences map[string]string
+	AdapterAudiences map[string][]string
 	PublicAudience   string
 	Signer           *signing.Signer
 	Outbox           audit.Outbox
@@ -368,15 +370,22 @@ func (s *Service) authenticated(adapter string, req Request) bool {
 	if req.Evidence == "" {
 		return req.Delegation != "" && adapter != PublicAdapter
 	}
-	audience := s.d.AdapterAudiences[adapter]
+	audiences := s.d.AdapterAudiences[adapter]
 	if adapter == PublicAdapter {
-		audience = s.d.PublicAudience
+		audiences = []string{s.d.PublicAudience}
 	}
-	if audience == "" || s.d.Authn == nil {
+	if s.d.Authn == nil {
 		return false
 	}
-	c, err := s.d.Authn.Verify(req.Evidence, audience)
-	return err == nil && c.Tenant == req.Tenant && c.Subject == req.Actor.ID
+	for _, audience := range audiences {
+		if audience == "" {
+			continue
+		}
+		if c, err := s.d.Authn.Verify(req.Evidence, audience); err == nil {
+			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID
+		}
+	}
+	return false
 }
 
 // DecidePublic serves the public facade: the caller is the token's subject

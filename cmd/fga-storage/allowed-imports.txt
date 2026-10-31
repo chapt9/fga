@@ -1,0 +1,37 @@
+# Packages the storage role may link (MOD-004). One import-path prefix per
+# line. Adding a line needs review: it widens the role's attack surface. No
+# client decryption, key unwrapping, MCP or executor package belongs here.
+fga/cmd/fga-storage
+fga/internal/audit
+fga/internal/authn
+fga/internal/blob
+fga/internal/catalog
+fga/internal/content
+fga/internal/cryptowire
+fga/internal/decision
+fga/internal/decisionsvc
+fga/internal/delegation
+fga/internal/envelope
+fga/internal/fence
+fga/internal/gate
+fga/internal/identity
+fga/internal/nativeapi
+fga/internal/policy
+fga/internal/registry
+fga/internal/release
+fga/internal/roleconfig
+fga/internal/rpc
+fga/internal/signing
+fga/internal/strictjson
+# Linked through the registry and release packages (cel-go policy engine).
+cel.dev/
+github.com/antlr4-go/antlr/
+github.com/go-jose/go-jose/
+github.com/jackc/
+golang.org/x/exp/
+golang.org/x/sync/
+golang.org/x/text/
+google.golang.org/genproto/googleapis/api/
+google.golang.org/genproto/googleapis/rpc/status
+go.yaml.in/yaml/v3
+google.golang.org/protobuf/

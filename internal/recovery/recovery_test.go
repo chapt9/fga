@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fga/internal/content"
 	"fga/internal/r1test"
@@ -124,5 +125,42 @@ func TestBackupIntegrity(t *testing.T) {
 	}
 	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir); err == nil {
 		t.Fatal("a tampered backup was restored")
+	}
+}
+
+// TestReclaim covers PUB-005 and PUB-006: a withdrawn version's blob is
+// removed and the version marked RETIRED; an expired upload is aborted and
+// its staged blob removed; live blobs stay.
+func TestReclaim(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	v1, err := alice.Put("reports", "doc", []byte("one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Put("reports", "doc", []byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.DeleteVersion(ctx, alice.Caller, "reports", "doc", v1.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Prepare(content.BeginRequest{Bucket: "reports", Key: "abandoned"}, []byte("x"), alice); err != nil {
+		t.Fatal(err)
+	}
+	got, err := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(2*time.Hour))
+	if err != nil || got.Retired != 1 || got.Aborted != 1 {
+		t.Fatalf("reclaim = %+v, %v", got, err)
+	}
+	var state string
+	_ = st.Pool.QueryRow(ctx, `SELECT state FROM object_versions WHERE id::text = $1`, v1.Version).Scan(&state)
+	if state != "RETIRED" {
+		t.Fatalf("withdrawn version is %s", state)
+	}
+	if b, err := alice.Get("reports", "doc", ""); err != nil || string(b) != "two" {
+		t.Fatalf("current version after reclaim: %q, %v", b, err)
+	}
+	if again, _ := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(2*time.Hour)); again != (recovery.Reclaimed{}) {
+		t.Fatalf("second run = %+v, want nothing", again)
 	}
 }
