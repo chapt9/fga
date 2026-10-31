@@ -21,6 +21,7 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/blob"
+	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/envelope"
 	"fga/internal/fence"
@@ -514,6 +515,9 @@ func (s *Service) CommitPublish(ctx context.Context, p Prepared) (Published, err
 	var result Published
 	mutate := []string{in.Object.String()}
 	err := s.fenced(ctx, rec, mutate, func(ctx context.Context, tx pgx.Tx) error {
+		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, desc.Signer); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
 		if in.label != "" {
 			// The label was checked against the order the decision was
 			// made under; it must still be that order (D-06).

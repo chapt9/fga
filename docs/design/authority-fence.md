@@ -37,7 +37,7 @@ All fences and all authority changers acquire rows in this order. A transaction 
 | 5 | `recipient_keys`: every recipient fingerprint, sorted | `FOR SHARE` | Same revision; status ACTIVE |
 | 6 | `resources`: every bound resource, sorted by (type, id) | `FOR UPDATE` when the operation changes it, otherwise `FOR SHARE` | Same generation and metadata revision |
 | 6a | `approvals`: the approval the record binds (`context_revisions.approval`), if any | `FOR UPDATE` in a transition, `FOR SHARE` in a read-only check | State APPROVED, same revision, unexpired (APR-002) |
-| 7 | Operation rows: object heads, then versions, then upload intents, then envelopes, each sorted by id; for a label decision, the active label order (`FOR SHARE`), whose generation must be the record's | `FOR UPDATE` | Operation-specific expected state (PUB-003, PUB-007, D-06) |
+| 7 | Operation rows: object heads, then versions, then upload intents, then envelopes, each sorted by id; for a label decision, the active label order (`FOR SHARE`), whose generation must be the record's; for a publication or share, the content-signing key's row (`FOR SHARE`), which must still be ACTIVE and the caller's | `FOR UPDATE` | Operation-specific expected state (PUB-003, PUB-007, D-06) |
 | 7a | `approvals` | update | The bound approval becomes CONSUMED, revision + 1, in the operation's transaction (APR-002, APR-003) |
 | 8 | `consumed_decisions` | insert | The decision ID was not consumed before (DEC-011) |
 | 9 | `audit_outbox` | insert | Capacity (AUD-002); a full outbox rolls the fence back. The mutation event names the consumed approval |

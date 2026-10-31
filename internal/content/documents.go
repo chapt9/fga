@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"fga/internal/audit"
+	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/decisionsvc"
 	"fga/internal/envelope"
@@ -637,6 +638,9 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 	var result DocumentPublished
 	err := mapFence(s.d.Fence.RunAll(ctx, bindings, mutate, func(ctx context.Context, tx pgx.Tx) error {
 		now := s.d.Now()
+		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
 		locked, err := s.docIntent(ctx, tx, c, in.IntentID, true)
 		if err != nil {
 			return err

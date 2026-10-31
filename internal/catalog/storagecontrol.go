@@ -138,6 +138,24 @@ func (s *Store) AddSigningKey(ctx context.Context, tenant, principal string, pub
 	return fp, err
 }
 
+// ErrSignerInactive means a content-signing key is not an ACTIVE key of the
+// expected principal.
+var ErrSignerInactive = errors.New("catalog: the content-signing key is not active")
+
+// SignerActiveTx rechecks inside a commit that fingerprint is still an
+// ACTIVE content-signing key of principal, holding its row so that a
+// concurrent retirement or compromise waits for the commit or is seen by
+// it (review finding 6, RCP-011).
+func SignerActiveTx(ctx context.Context, tx pgx.Tx, tenant, principal, fingerprint string) error {
+	var owner, status string
+	err := tx.QueryRow(ctx, `SELECT principal, status FROM signing_keys WHERE tenant = $1 AND fingerprint = $2 FOR SHARE`,
+		tenant, fingerprint).Scan(&owner, &status)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && (owner != principal || status != "ACTIVE") {
+		return ErrSignerInactive
+	}
+	return err
+}
+
 // SetSigningKeyStatus retires or marks compromised a content-signing key
 // (RCP-011). A compromised key never becomes active again.
 func (s *Store) SetSigningKeyStatus(ctx context.Context, tenant, fingerprint, status string) error {

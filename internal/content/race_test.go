@@ -8,8 +8,10 @@ import (
 
 	"fga/internal/content"
 	"fga/internal/decisionsvc"
+	"fga/internal/envelope"
 	"fga/internal/r1test"
 	"fga/internal/registry"
+	"fga/sdk/go/crypto"
 )
 
 // TestOverwriteDuringReadKeepsHistoryRule is the regression test of review
@@ -97,4 +99,74 @@ func TestOriginalDeliveryBindsUnits(t *testing.T) {
 	if _, err := st.Content.OriginalPackage(ctx, bob.Caller, "reports", "q3.pdf", "", bob.Recipient.Fingerprint().String()); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a fresh request after the change: %v", err)
 	}
+}
+
+// TestCompromisedSignerCannotCommit is the regression test of review
+// finding 6: the signer's status was checked while preparing a
+// publication but not where it commits, so a key marked compromised in
+// between still published. Object publication, document publication and
+// sharing now recheck the signer inside the fence. Each case marks the
+// key compromised after the pre-checks, while the decision is requested.
+func TestCompromisedSignerCannotCommit(t *testing.T) {
+	setup := func(t *testing.T) (*r1test.Stack, *r1test.Client, *r1test.Client) {
+		st := r1test.New(t)
+		st.Bucket("reports", "p1")
+		alice := st.Client("alice", []string{"member"}, "p1")
+		bob := st.Client("bob", []string{"member"}, "p1")
+		alice.Pin(bob)
+		return st, alice, bob
+	}
+	compromiseAt := func(t *testing.T, st *r1test.Stack, alice *r1test.Client, op string) {
+		st.BeforeDecide = func(req decisionsvc.Request) {
+			if req.Operation == op {
+				st.BeforeDecide = nil
+				if err := st.Catalog.SetSigningKeyStatus(ctx, r1test.Tenant, alice.Signer.Fingerprint.String(), "COMPROMISED"); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	}
+	t.Run("object", func(t *testing.T) {
+		st, alice, _ := setup(t)
+		u, err := alice.Prepare(content.BeginRequest{Bucket: "reports", Key: "doc", IdempotencyKey: "k1"}, []byte("x"), alice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compromiseAt(t, st, alice, registry.OpPublishCreate)
+		if _, err := alice.Finalize(u); err == nil {
+			t.Fatal("an object publication committed after its signer was compromised")
+		}
+	})
+	t.Run("document", func(t *testing.T) {
+		st, alice, _ := setup(t)
+		up, err := alice.PrepareDocument("reports", "q3.md", []string{"a"}, nil, alice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compromiseAt(t, st, alice, registry.OpDocPublishCreate)
+		if _, err := alice.FinalizeDocument(up); err == nil {
+			t.Fatal("a document publication committed after its signer was compromised")
+		}
+	})
+	t.Run("share", func(t *testing.T) {
+		st, alice, bob := setup(t)
+		if _, err := alice.Put("reports", "doc", []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		pkg, err := st.Content.ReadPackage(ctx, alice.Caller, "reports", "doc", "", alice.Recipient.Fingerprint().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		env, err := crypto.Reshare(crypto.Package{Descriptor: pkg.Descriptor, DescriptorSignature: pkg.DescriptorSignature,
+			Envelope: crypto.Envelope{Context: pkg.Envelope.Context, Ciphertext: pkg.Envelope.Ciphertext, Signature: pkg.Envelope.Signature}},
+			alice.Recipient, alice.Trust, crypto.Recipient{Fingerprint: bob.Recipient.Fingerprint(), KeyVersion: bob.KeyVersion}, 1, alice.Signer, *st.Clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compromiseAt(t, st, alice, registry.OpPublishEnvelope)
+		if _, err := st.Envelopes.Publish(ctx, st.KeysCaller("alice"), "reports", "doc", pkg.Version.Version,
+			envelope.EnvelopeIn{Context: env.Context, Ciphertext: env.Ciphertext, Signature: env.Signature}); err == nil {
+			t.Fatal("a share committed after its signer was compromised")
+		}
+	})
 }

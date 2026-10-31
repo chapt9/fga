@@ -366,6 +366,9 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 	}
 	digest := cryptowire.EnvelopeDigest(e.Context, e.Ciphertext)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, ctxv.Sharer.String()); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM object_versions WHERE tenant = $1 AND id::text = $2 FOR SHARE`, c.Tenant, versionID).Scan(&state); err != nil {
 			return err
