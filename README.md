@@ -10,21 +10,15 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 
 - **R1-A, shared authority:** built, including the catch-up list of the [handoff](docs/spec/HANDOFF.md) (section 5).
 - **R1-B, client-encrypted object storage:** built and running locally. That covers the storage and keys roles, the client SDK, the native API, backup, restore and reconcile.
-- **R1-C:** in progress. Built so far:
+- **R1-C, documents, labels and approvals:** built and running locally. That covers:
   - default deny for every user action, key lookups included (ruling 7);
-  - labels on storage objects (label order, ranks, label, relabel, advisory proposals);
-  - approvals of storage operations;
-  - document publication: client-side splitting into separately encrypted text units, signed manifest and unit descriptors (wire profile 2), batched decisions admitted together by the fence.
+  - labels (signed label order, computed ranks, label, relabel, advisory proposals) and approvals of storage operations;
+  - documents split on the client into separately encrypted text units with a signed manifest (wire profile 2), and the encrypted original file;
+  - disclosure of units (explicit selection, authorized subset without hidden counts, manifest only when complete), export to a recipient, and metadata search;
+  - text collections of `text.entry` entries;
+  - derived outputs with signed lineage.
 
-  - disclosure of units: explicit selection (all or nothing), authorized subset without hidden counts, manifest only when complete, unit packages through the keys role.
-
-  - the encrypted original file, disclosed only with raw-read and read on every unit (CNT-003).
-
-  - derived outputs with signed lineage: label at least the lineage maximum, delivery only to readers of the whole transitive lineage or by declassification, streams ended when a source changes.
-
-  - export of units to a recipient with the full check set, metadata search without totals, and text collections of `text.entry` entries.
-
-  R1-C has no step left beyond the final pass; see the known gaps below.
+  The fixes for the eight findings of the 31 October code review (`code_review_v1.txt`) each have a regression test.
 - **R2 and R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
@@ -37,7 +31,9 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Authority | `internal/identity`, `internal/delegation`, `internal/registry` (R1 types, operations, planned resources), `internal/catalog`, `internal/audit`, `internal/authn` (development token profile) | ID-*, DLG-*, RES-*, DAT-*, AUD-* |
 | Authority fence | `internal/fence`: checks, consumption and transition in one transaction under a fixed lock order | DAT-007, DEC-006, DEC-011 |
 | Storage | `internal/content` (content service), `internal/blob` (single-node store), `internal/nativeapi`, `cmd/fga-storage` | CNT-*, PUB-*, BKD-* |
-| Keys | `internal/envelope` (recipient registry, envelope publication, delivery, retirement), `cmd/fga-keys` | KEY-*, RCP-*, TRU-005 |
+| Keys | `internal/envelope` (recipient registry, envelope publication, delivery of object, unit, original, derived and export envelopes, retirement), `cmd/fga-keys` | KEY-*, RCP-*, TRU-005 |
+| Documents | `internal/content` (documents.go, disclosure.go, export.go, units.go), `internal/cryptowire` (wire profile 2, manifest, unit descriptor), `sdk/go/crypto` (splitting, unit sealing) ([documents.md](docs/design/documents.md)) | DOC-*, DSC-*, CNT-003, SRH-* |
+| Derived outputs | `internal/content/derived.go`, `internal/cryptowire/lineage.go` ([derived-outputs.md](docs/design/derived-outputs.md)) | DRV-001 to DRV-003, DRV-007 to DRV-009 |
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
 | Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006 |
 | Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
@@ -68,7 +64,14 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).
 - **Catalog encryption at rest (DAT-006)** is left to the volume.
 - **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
-- **Approvals on keys-role operations** are not wired: such an operation sends no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
+- **Approvals** cover finalize, delete, version delete and label changes of objects. Keys-role operations and document publication send no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
+- **Not built in R1-C:**
+  - relabelling of document units and derived outputs (their labels are set at publication);
+  - new versions of a derived output, and withdrawal of documents and units;
+  - export of whole objects (export covers document units).
+
+  The CLI has no command to create or append to a text collection; the API and Go fixtures do.
+- **Security journal:** it must be created once with `fga-admin journal init` before the keys role starts. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
 - **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).
 
 ## Checks
@@ -93,7 +96,14 @@ make spec
 
 ## Run the storage roles locally
 
-`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing. It covers a label raise, a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), a label proposal, a document publication read back unit by unit by both recipients, an original file only its owner may read, and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+`scripts/smoke.sh` builds every binary and creates a throwaway database and security journal (`fga-admin journal init`). It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers:
+- recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing;
+- a derived output (only its owner reads it) and a check that no blob holds plaintext;
+- a label raise, and a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), and a label proposal;
+- a document read back unit by unit by both recipients, an original file only its owner may read, and a metadata search;
+- deletion.
+
+It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke
