@@ -20,6 +20,7 @@
 //	restore            -from DIR
 //	reconcile
 //	reclaim
+//	audit export       -dir D [-follow]             drain the audit outbox into D
 package main
 
 import (
@@ -36,6 +37,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/auditexport"
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/journal"
@@ -121,6 +123,8 @@ func run(args []string) error {
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
 	epoch := fs.Uint64("epoch", 0, "policy epoch")
 	out := fs.String("out", "", "backup directory to create")
+	dir := fs.String("dir", "", "audit export directory")
+	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
 	if err := fs.Parse(sub); err != nil {
 		return err
@@ -261,6 +265,25 @@ func run(args []string) error {
 			fmt.Printf("replayed %d journal entries, quarantined %d versions; admission is open\n", rep.Replayed, rep.Quarantined)
 		}
 		return err
+	case "audit export":
+		if err := need(*dir); err != nil {
+			return err
+		}
+		x, err := auditexport.New(pool, *dir, 1000)
+		if err != nil {
+			return err
+		}
+		for {
+			n, err := x.Drain(ctx)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("exported %d audit events to %s\n", n, *dir)
+			if !*follow {
+				return nil
+			}
+			time.Sleep(5 * time.Second)
+		}
 	case "reclaim":
 		blobs, err := e.blobs()
 		if err != nil {
