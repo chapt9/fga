@@ -45,7 +45,7 @@ The configured buckets choose what `resources/list` goes through, never what may
 - **One tool, one kind.** `documents.read` refuses a text collection and `text.read` a document. A tool permission therefore stays what it names. The unit listing's `kind` field tells them apart.
 - **Client-mode content** never comes back as plaintext (MCP-005). A generic client gets an explicit capability error (V-170). A client that declares the encrypted-package capability gets the encrypted package (below).
 - **Not cached.** Every result is marked cache scope `private` with TTL 0: it is for one user, now (the SDK default is `public`).
-- **Untrusted content.** Text read from storage is returned as data. The role acts on none of it (MCP-004).
+- **Untrusted content (MCP-004).** Text read from storage is returned as data, and the role acts on none of it. Its only effects are reads. Nothing a document says reaches the tool registry, a delegation or an identity: those change only through their own authorized operations, which the MCP role does not offer. A follow-up the text asks for is an ordinary request, decided as any other (V-029, V-120).
 
 ## Client mode (M3, MCP-005)
 
@@ -107,7 +107,22 @@ The tests deploy through `internal/mcptest`: a decision role and a storage role 
 | `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
 | `TestMCPExport` | Server-mode export of an object and a document; export needs its own permission (a reader who may not export gets "not found"); client-mode export for another recipient, which only that recipient opens; none without a recipient, or for a recipient without an envelope |
 | `TestGatewayRevision` | Revision 0 is filled in only for a gateway's own MCP operations |
+| `TestMCPUntrustedContent` | V-029: a document that tells the agent to register a tool and widen its delegation is read as data, and no tool, delegation or identity changes; V-120: the follow-up calls it asks for are refused |
 | `TestSharedNames`, `TestWireFormat`, `TestResourceURIs` | The copied names and wire format; `fga://` URIs round trip, and malformed ones are refused |
 | `internal/mcpwire` `TestCapability` | The capability round trips; another version or a missing recipient is not the capability |
 | `cmd/fga-mcp` `TestImportAllowlist`, `TestValidate` | MCP-008 and MOD-004: no catalog, blob, key, payload, policy or decision-service package; configuration rules |
 | `scripts/smoke.sh` | A generic MCP client (JSON-RPC over HTTP): tools, a server-mode document and object equal to the native reads, another project's member refused, client-mode content refused, a session bound to its user; a client that declares its recipient key gets the client-mode object as a package |
+
+## R2 validation vectors
+
+| Vector | Requirement | Covered by |
+|---|---|---|
+| V-002, V-050 | RES-002, RES-003, CNT-001 | `TestMCPReads`: the native API, `resources/read` and the read tool return the same unit under the same storage decision |
+| V-028 | TRU-003 | `internal/nativeapi` `TestMCPGatewayHTTP`: the MCP workload's own claims are refused |
+| V-029, V-120 | MCP-004 | `TestMCPUntrustedContent`. Tool registration is the executor's (stretch E1), whose tests repeat V-120 against it |
+| V-114 | FLW-008 | Not built: the optional managed-client profile, which comes with delegated agents |
+| V-115 | MCP-007 | `TestMCPSessions` |
+| V-137 | MOD-004 | `cmd/fga-decision` `TestAllowlistCatchesForbiddenImports`, and every role's `TestImportAllowlist` |
+| V-169 | MCP-005 | `TestMCPReads` (server mode), `TestMCPClientMode` (client mode) |
+| V-170 | MCP-005 | `TestMCPClientMode`; `internal/mcpbridge` `TestBridge` for the capable client |
+
