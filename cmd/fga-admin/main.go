@@ -202,7 +202,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := catalog.RecordJournal(ctx, pool, js.ID, js.Entries); err != nil {
+		if err := catalog.RecordJournal(ctx, pool, js.ID, js.Chains); err != nil {
 			return err
 		}
 		return change()
@@ -219,7 +219,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := catalog.RecordJournal(ctx, pool, j.ID(), 0); err != nil {
+		if err := catalog.RecordJournal(ctx, pool, j.ID(), nil); err != nil {
 			return err
 		}
 		fmt.Println("journal", j.ID())

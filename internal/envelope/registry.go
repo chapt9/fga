@@ -33,9 +33,9 @@ const ChallengeLifetime = 5 * time.Minute
 // before they are committed, so a restore can replay them (AVL-008).
 type Journal interface {
 	Append(kind, tenant, subject string) error
-	// Binding is the journal's identity and entry count, which the
-	// catalog records with each journaled change.
-	Binding() (id string, entries int, err error)
+	// Binding is the journal's identity and the chain values of its
+	// entries, which the catalog records with each journaled change.
+	Binding() (id string, chains []string, err error)
 }
 
 // Challenge is an enrollment challenge for one key.
@@ -213,12 +213,12 @@ func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp stri
 		return err
 	}
 	var journalID string
-	var entries int
+	var chains []string
 	if s.d.Journal != nil {
 		if err := s.d.Journal.Append("recipient-revoked", c.Tenant, fp); err != nil {
 			return fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
 		}
-		if journalID, entries, err = s.d.Journal.Binding(); err != nil {
+		if journalID, chains, err = s.d.Journal.Binding(); err != nil {
 			return fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
 		}
 	}
@@ -226,7 +226,7 @@ func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp stri
 		// The catalog records the journal it is bound to and its entries
 		// (review finding 1).
 		if journalID != "" {
-			if err := catalog.RecordJournal(ctx, tx, journalID, entries); err != nil {
+			if err := catalog.RecordJournal(ctx, tx, journalID, chains); err != nil {
 				return err
 			}
 		}

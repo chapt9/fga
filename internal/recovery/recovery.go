@@ -59,10 +59,12 @@ type Manifest struct {
 	Format      string    `json:"format"`
 	CreatedAt   time.Time `json:"created_at"`
 	Incarnation uint64    `json:"incarnation"`
-	// JournalID and JournalEntries are the catalog's journal binding at the
+	// JournalID, JournalEntries and JournalHead are the catalog's journal
+	// binding at the
 	// backup (review finding 1); empty when it had none.
 	JournalID      string      `json:"journal_id,omitempty"`
 	JournalEntries int         `json:"journal_entries,omitempty"`
+	JournalHead    string      `json:"journal_head,omitempty"`
 	Tables         []FileEntry `json:"tables"`
 	Blobs          []BlobEntry `json:"blobs"`
 }
@@ -86,16 +88,33 @@ type Options struct {
 var ErrNoKEKs = errors.New("recovery: server-mode data keys need the KEK ring to be checked; admission stays closed")
 
 // ErrJournalContinuity means the security journal is not the one the
-// catalog is bound to, or has fewer entries than the catalog recorded, so
-// changes after the backup may be missing. Admission stays closed.
+// catalog is bound to, has fewer entries than the catalog recorded, lacks
+// the recorded history or has a broken chain, so changes after the backup
+// may be missing. Admission stays closed.
 var ErrJournalContinuity = errors.New("recovery: the security journal cannot be shown complete; admission stays closed")
 
-// continuity compares the journal with a recorded binding.
-func continuity(j journal.State, id string, entries int, ok bool, opts Options) error {
-	if ok && j.ID == id && j.Entries >= entries || opts.AcceptJournalLoss {
+// continuity compares the journal with a recorded binding: the same
+// journal, at least the recorded entries, and the recorded head at its
+// position in the chain (review v2 finding 1). A binding from before the
+// chain has no head.
+func continuity(j journal.State, id string, entries int, head string, ok bool, opts Options) error {
+	if opts.AcceptJournalLoss || ok && j.ID == id && j.Entries >= entries && (entries == 0 || head == "" || j.Chains[entries-1] == head) {
 		return nil
 	}
 	return fmt.Errorf("%w (journal %s with %d entries; recorded %q with %d)", ErrJournalContinuity, j.ID, j.Entries, id, entries)
+}
+
+// readJournal reads the journal's entries; a broken chain is a continuity
+// failure.
+func readJournal(j *journal.Journal) ([]journal.Entry, error) {
+	entries, err := j.Entries()
+	if errors.Is(err, journal.ErrBroken) {
+		return nil, fmt.Errorf("%w: %v", ErrJournalContinuity, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("recovery: security journal: %w", err)
+	}
+	return entries, nil
 }
 
 // FileEntry is one table file.
@@ -156,7 +175,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	if err := tx.QueryRow(ctx, `SELECT incarnation FROM authority_state WHERE id = 1`).Scan(&m.Incarnation); err != nil {
 		return Manifest{}, err
 	}
-	if m.JournalID, m.JournalEntries, _, err = catalog.JournalState(ctx, tx); err != nil {
+	if m.JournalID, m.JournalEntries, m.JournalHead, _, err = catalog.JournalState(ctx, tx); err != nil {
 		return Manifest{}, err
 	}
 	for _, t := range Tables {
@@ -352,19 +371,19 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 	if err != nil {
 		return 0, err
 	}
-	entries, err := j.Entries()
+	entries, err := readJournal(j)
 	if err != nil {
-		return 0, fmt.Errorf("recovery: security journal: %w", err)
+		return 0, err
 	}
-	js := journal.State{ID: j.ID(), Entries: len(entries)}
-	id, recorded, ok, err := catalog.JournalState(ctx, pool)
+	js := journal.StateOf(j.ID(), entries)
+	id, recorded, head, ok, err := catalog.JournalState(ctx, pool)
 	if err != nil {
 		return 0, err
 	}
 	if !ok {
-		id, recorded, ok = m.JournalID, m.JournalEntries, m.JournalID != ""
+		id, recorded, head, ok = m.JournalID, m.JournalEntries, m.JournalHead, m.JournalID != ""
 	}
-	if err := continuity(js, id, recorded, ok, opts); err != nil {
+	if err := continuity(js, id, recorded, head, ok, opts); err != nil {
 		return 0, err
 	}
 	next := m.Incarnation
@@ -381,6 +400,9 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 	}
 	next++
 	if err := j.Append(journal.Incarnation, "", strconv.FormatUint(next, 10)); err != nil {
+		return 0, fmt.Errorf("recovery: security journal: %w", err)
+	}
+	if js, err = j.State(); err != nil {
 		return 0, fmt.Errorf("recovery: security journal: %w", err)
 	}
 	conn, err := pool.Acquire(ctx)
@@ -425,7 +447,7 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 		}
 		// The restored catalog is bound to the journal it was restored
 		// with, including the incarnation entry just appended.
-		return catalog.SetJournal(ctx, tx, js.ID, js.Entries+1)
+		return catalog.SetJournal(ctx, tx, js.ID, js.Chains)
 	})
 	if err != nil {
 		return 0, err
@@ -476,17 +498,17 @@ func Reconcile(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *
 // entries (review finding 1).
 func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *journal.Journal, opts Options) (Report, error) {
 	var rep Report
-	entries, err := j.Entries()
+	entries, err := readJournal(j)
 	if err != nil {
-		return rep, fmt.Errorf("recovery: security journal unavailable, admission stays closed: %w", err)
+		return rep, fmt.Errorf("admission stays closed: %w", err)
 	}
 	pool := store.Pool()
-	js := journal.State{ID: j.ID(), Entries: len(entries)}
-	id, recorded, ok, err := catalog.JournalState(ctx, pool)
+	js := journal.StateOf(j.ID(), entries)
+	id, recorded, head, ok, err := catalog.JournalState(ctx, pool)
 	if err != nil {
 		return rep, err
 	}
-	if err := continuity(js, id, recorded, ok, opts); err != nil {
+	if err := continuity(js, id, recorded, head, ok, opts); err != nil {
 		return rep, err
 	}
 	// A catalog with server-mode data keys is not reopened unchecked; the
@@ -501,7 +523,7 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 		}
 	}
 	if opts.AcceptJournalLoss {
-		if err := catalog.SetJournal(ctx, pool, js.ID, js.Entries); err != nil {
+		if err := catalog.SetJournal(ctx, pool, js.ID, js.Chains); err != nil {
 			return rep, err
 		}
 	}

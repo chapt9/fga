@@ -5,10 +5,19 @@
 // durably before it is committed to the catalog, so a restore from an older
 // backup can replay it. Every entry is restrictive, so replaying an entry
 // whose catalog change never committed only removes access.
+//
+// The entries form a hash chain (review v2 finding 1): each names its
+// position and the chain value of the entry before it, and is published
+// atomically under its position, so a lost, altered or reordered entry
+// breaks the chain. The catalog records the chain value of the last entry
+// it saw, so a loss followed by new entries is not mistaken for the
+// recorded history either. Entries written before the chain (named by
+// time) are accepted only as a prefix, and the chain covers them.
 package journal
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,13 +47,42 @@ const (
 var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved}
 
 // Entry is one journaled change. Subject names what changed: an identity,
-// delegation or key, an epoch or an incarnation number.
+// delegation or key, an epoch or an incarnation number. Seq is its
+// position from 1 and Prev the chain value of the entry before it (the
+// journal's genesis for the first); an entry from before the chain has
+// neither.
 type Entry struct {
+	Seq     int       `json:"seq,omitempty"`
+	Prev    string    `json:"prev,omitempty"`
 	Kind    string    `json:"kind"`
 	Tenant  string    `json:"tenant"`
 	Subject string    `json:"subject"`
 	At      time.Time `json:"at"`
+	// Chain is the entry's chain value, computed on reading: the hash of
+	// the previous chain value and the entry's bytes.
+	Chain string `json:"-"`
 }
+
+// ErrBroken means the journal's chain does not verify: an entry is
+// missing, altered or out of order. Recovery refuses it.
+var ErrBroken = errors.New("journal: the chain of entries is broken")
+
+// genesis is the chain value before a journal's first entry.
+func genesis(id string) string {
+	h := sha256.Sum256([]byte("fga.journal/chain\x00" + id))
+	return hex.EncodeToString(h[:])
+}
+
+func link(prev string, raw []byte) string {
+	h := sha256.New()
+	h.Write([]byte(prev))
+	h.Write(raw)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// chainedName is the file name of the entry at seq. It sorts after every
+// name of an entry from before the chain, which starts with a digit.
+func chainedName(seq int) string { return fmt.Sprintf("s%020d.json", seq) }
 
 // Journal is a directory with one file per entry and an identity file.
 type Journal struct {
@@ -103,25 +141,43 @@ func Open(dir string, now func() time.Time) (*Journal, error) {
 // ID is the journal's identity.
 func (j *Journal) ID() string { return j.id }
 
-// State is a journal's identity and number of entries, which the catalog
-// records so that recovery can tell a complete journal from a lost or
-// older one.
+// State is a journal's identity and the chain values of its entries, in
+// order, which the catalog records so that recovery can tell a complete
+// journal from a lost or older one.
 type State struct {
 	ID      string
 	Entries int
+	Chains  []string
+}
+
+// Head is the chain value of the last entry, or "" for an empty journal.
+func (s State) Head() string {
+	if len(s.Chains) == 0 {
+		return ""
+	}
+	return s.Chains[len(s.Chains)-1]
+}
+
+// StateOf is the state of entries read from the journal id.
+func StateOf(id string, entries []Entry) State {
+	st := State{ID: id, Entries: len(entries), Chains: make([]string, len(entries))}
+	for i, e := range entries {
+		st.Chains[i] = e.Chain
+	}
+	return st
 }
 
 // State returns the journal's current state.
 func (j *Journal) State() (State, error) {
 	es, err := j.Entries()
-	return State{ID: j.id, Entries: len(es)}, err
+	return StateOf(j.id, es), err
 }
 
 // Binding is State as plain values, for callers that must not link this
 // package (the storage role reaches the envelope service).
-func (j *Journal) Binding() (string, int, error) {
+func (j *Journal) Binding() (string, []string, error) {
 	st, err := j.State()
-	return st.ID, st.Entries, err
+	return st.ID, st.Chains, err
 }
 
 // writeDurably creates name in dir exclusively, flushes it and then the
@@ -156,16 +212,28 @@ func (j *Journal) Append(kind, tenant, subject string) error {
 	if !slices.Contains(kinds, kind) || subject == "" {
 		return fmt.Errorf("journal: invalid entry %q", kind)
 	}
-	e := Entry{Kind: kind, Tenant: tenant, Subject: subject, At: j.now().UTC()}
-	b, err := json.Marshal(e)
-	if err != nil {
-		return err
+	// Another writer (the keys role, the storage role or fga-admin) may
+	// take the next position first; then the entry is chained again.
+	for range 100 {
+		es, err := j.Entries()
+		if err != nil {
+			return err
+		}
+		prev := genesis(j.id)
+		if len(es) > 0 {
+			prev = es[len(es)-1].Chain
+		}
+		e := Entry{Seq: len(es) + 1, Prev: prev, Kind: kind, Tenant: tenant, Subject: subject, At: j.now().UTC()}
+		b, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		err = publish(j.dir, chainedName(e.Seq), b)
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
 	}
-	random := make([]byte, 8)
-	if _, err := rand.Read(random); err != nil {
-		return err
-	}
-	return writeDurably(j.dir, fmt.Sprintf("%020d-%s.json", e.At.UnixNano(), hex.EncodeToString(random)), b)
+	return errors.New("journal: too many concurrent appends")
 }
 
 // Entries returns every entry in the order written. A malformed entry is an
@@ -183,7 +251,8 @@ func (j *Journal) Entries() ([]Entry, error) {
 	}
 	slices.Sort(names)
 	out := make([]Entry, 0, len(names))
-	for _, n := range names {
+	chain, chained := genesis(j.id), false
+	for i, n := range names {
 		b, err := os.ReadFile(filepath.Join(j.dir, n))
 		if err != nil {
 			return nil, err
@@ -192,7 +261,40 @@ func (j *Journal) Entries() ([]Entry, error) {
 		if err := strictjson.Decode(b, &e); err != nil || !slices.Contains(kinds, e.Kind) {
 			return nil, errors.Join(fmt.Errorf("journal: malformed entry %s", n), err)
 		}
+		switch {
+		case e.Seq == 0 && e.Prev == "" && !chained:
+			// An entry from before the chain.
+		case e.Seq == i+1 && e.Prev == chain && n == chainedName(e.Seq):
+			chained = true
+		default:
+			return nil, fmt.Errorf("%w at %s (position %d)", ErrBroken, n, i+1)
+		}
+		chain = link(chain, b)
+		e.Chain = chain
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// publish writes name in dir atomically: it is complete and durable before
+// it appears, and it is never replaced (os.ErrExist when it exists).
+func publish(dir, name string, b []byte) error {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return err
+	}
+	tmp := "tmp-" + hex.EncodeToString(random)
+	if err := writeDurably(dir, tmp, b); err != nil {
+		return err
+	}
+	defer os.Remove(filepath.Join(dir, tmp))
+	if err := os.Link(filepath.Join(dir, tmp), filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

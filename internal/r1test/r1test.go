@@ -314,7 +314,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	if st.Journal, err = journal.Init(st.JournalDir, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.RecordJournal(ctx, pool, st.Journal.ID(), 0); err != nil {
+	if err := catalog.RecordJournal(ctx, pool, st.Journal.ID(), nil); err != nil {
 		t.Fatal(err)
 	}
 	tokenKey := make([]byte, 32)

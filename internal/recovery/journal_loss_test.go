@@ -136,3 +136,43 @@ func TestStagedUploadDoesNotSurviveRestore(t *testing.T) {
 		t.Fatalf("published object after restore: %q, %v", got, err)
 	}
 }
+
+// TestJournalHistoryContinuity is the regression test of review v2
+// finding 1: continuity compared only the journal's identity and entry
+// count, so an entry lost and then hidden by a later one passed, and a
+// restore brought back the access it revoked. The journal is now a hash
+// chain, and the catalog records the hash of the last entry it saw.
+func TestJournalHistoryContinuity(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("payroll")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+		t.Fatal(err)
+	}
+	// Alice's entry is lost; bob's revocation brings the count back.
+	files, err := filepath.Glob(filepath.Join(st.JournalDir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("journal entries %v, %v", files, err)
+	}
+	if err := os.Remove(files[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("bob"), bob.Recipient.Fingerprint().String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); !errors.Is(err, recovery.ErrJournalContinuity) {
+		t.Fatalf("restore with a journal that lost an entry: %v", err)
+	}
+	var revoked int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM recipient_keys WHERE status = 'REVOKED'`).Scan(&revoked); err != nil || revoked != 2 {
+		t.Fatalf("a refused restore changed the catalog: %d revoked keys, %v", revoked, err)
+	}
+}

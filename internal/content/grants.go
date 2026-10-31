@@ -31,9 +31,9 @@ import (
 // Journal is the security journal (AVL-008).
 type Journal interface {
 	Append(kind, tenant, subject string) error
-	// Binding is the journal's identity and entry count, which the
-	// catalog records with each journaled change.
-	Binding() (id string, entries int, err error)
+	// Binding is the journal's identity and the chain values of its
+	// entries, which the catalog records with each journaled change.
+	Binding() (id string, chains []string, err error)
 }
 
 // GrantTarget names the resource a grant is on, in a bucket: the bucket
@@ -125,18 +125,18 @@ func grantActions(typ string, actions []string) ([]string, error) {
 
 // journalRemoval journals the removal of grant id before it is
 // committed and returns the journal binding to record with it.
-func (s *Service) journalRemoval(tenant, id string) (string, int, error) {
+func (s *Service) journalRemoval(tenant, id string) (string, []string, error) {
 	if s.d.Journal == nil {
-		return "", 0, fmt.Errorf("%w: no security journal is configured", ErrUnavailable)
+		return "", nil, fmt.Errorf("%w: no security journal is configured", ErrUnavailable)
 	}
 	if err := s.d.Journal.Append(journal.GrantRemoved, tenant, id); err != nil {
-		return "", 0, fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
+		return "", nil, fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
 	}
-	journalID, entries, err := s.d.Journal.Binding()
+	journalID, chains, err := s.d.Journal.Binding()
 	if err != nil {
-		return "", 0, fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
+		return "", nil, fmt.Errorf("%w: security journal: %v", ErrUnavailable, err)
 	}
-	return journalID, entries, nil
+	return journalID, chains, nil
 }
 
 // RecordGrant records a share grant on t (SHR-001). It needs share on the
@@ -176,9 +176,9 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 		return GrantOutcome{}, err
 	}
 	var journalID string
-	var entries int
+	var chains []string
 	if replaced != "" {
-		if journalID, entries, err = s.journalRemoval(c.Tenant, replaced); err != nil {
+		if journalID, chains, err = s.journalRemoval(c.Tenant, replaced); err != nil {
 			return GrantOutcome{}, err
 		}
 	}
@@ -200,7 +200,7 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 		}
 		out.MetadataRevision = meta
 		if journalID != "" {
-			if err := catalog.RecordJournal(ctx, tx, journalID, entries); err != nil {
+			if err := catalog.RecordJournal(ctx, tx, journalID, chains); err != nil {
 				return err
 			}
 		}
@@ -279,7 +279,7 @@ func (s *Service) RemoveGrant(ctx context.Context, c Caller, t GrantTarget, gran
 	if grantID == "" {
 		return GrantOutcome{}, ErrNotFound
 	}
-	journalID, entries, err := s.journalRemoval(c.Tenant, grantID)
+	journalID, chains, err := s.journalRemoval(c.Tenant, grantID)
 	if err != nil {
 		return GrantOutcome{}, err
 	}
@@ -293,7 +293,7 @@ func (s *Service) RemoveGrant(ctx context.Context, c Caller, t GrantTarget, gran
 			return err
 		}
 		out.MetadataRevision = meta
-		if err := catalog.RecordJournal(ctx, tx, journalID, entries); err != nil {
+		if err := catalog.RecordJournal(ctx, tx, journalID, chains); err != nil {
 			return err
 		}
 		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindMutation, rec, "SHARE_GRANT_REMOVED",
