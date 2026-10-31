@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,14 +167,20 @@ func advanceGrants(ctx context.Context, tx pgx.Tx, tenant, resourceID string) (u
 // changedGrant resolves a proposed share grant: its resource as it is,
 // with grantee, grantee_attributes, grant_actions and grant_expires_at
 // added, so a rule can condition on whom and what is granted (SHR-001).
-// An unknown or disabled grantee resolves with empty attributes; the
-// commit rejects it.
+// The grantee's attributes are shown only at the identity revision the
+// proposal names, which the commit binds (review v2 finding 2); an
+// unknown or disabled grantee, or another revision, resolves with empty
+// attributes, and the commit rejects it.
 func (v resourceView) changedGrant(ctx context.Context, tenant string, alias registry.Alias) (registry.Resource, error) {
 	parts := strings.Split(alias.Name, "|")
-	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+	if len(parts) != 5 || parts[0] == "" || parts[1] == "" || parts[3] == "" {
 		return registry.Resource{}, registry.ErrUnknownAlias
 	}
-	expires, err := time.Parse(time.RFC3339Nano, parts[3])
+	revision, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		return registry.Resource{}, registry.ErrUnknownAlias
+	}
+	expires, err := time.Parse(time.RFC3339Nano, parts[4])
 	if err != nil {
 		return registry.Resource{}, registry.ErrUnknownAlias
 	}
@@ -185,11 +192,11 @@ func (v resourceView) changedGrant(ctx context.Context, tenant string, alias reg
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
 	granteeAttrs := map[string]any{}
-	if i, err := v.s.GetIdentity(ctx, tenant, parts[1]); err == nil && !i.Disabled && i.Attributes != nil {
+	if i, err := v.s.GetIdentity(ctx, tenant, parts[1]); err == nil && !i.Disabled && i.Revision == revision && i.Attributes != nil {
 		granteeAttrs = i.Attributes
 	}
 	var actions []any
-	for _, a := range strings.Split(parts[2], ",") {
+	for _, a := range strings.Split(parts[3], ",") {
 		actions = append(actions, a)
 	}
 	attrs := make(map[string]any, len(r.Attributes)+4)

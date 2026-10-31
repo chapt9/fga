@@ -236,10 +236,12 @@ const ChangeLabel = "change.label"
 // new_encryption (ENC-001).
 const ChangeEncryption = "change.encryption"
 
-// ChangeGrant: "<resource ID>|<grantee>|<action>,...|<expiry, RFC 3339>".
-// The resource gains grantee, grantee_attributes (empty for an unknown
-// principal, which the commit then rejects), grant_actions and
-// grant_expires_at (SHR-001).
+// ChangeGrant: "<resource ID>|<grantee>|<grantee identity revision>|
+// <action>,...|<expiry, RFC 3339>". The resource gains grantee,
+// grantee_attributes (the grantee identity's attributes at exactly that
+// revision; empty for an unknown or disabled principal or another
+// revision, which the commit then rejects), grant_actions and
+// grant_expires_at (SHR-001, review v2 finding 2).
 const ChangeGrant = "change.grant"
 
 // Changer resolves proposed changes from authoritative state.

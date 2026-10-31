@@ -179,6 +179,9 @@ type Stack struct {
 	// BeforeDecide, if set, runs before each decision the storage and keys
 	// roles request (see Decider.Before).
 	BeforeDecide func(decisionsvc.Request)
+	// AfterDecide, if set, runs after each decision the storage role
+	// requests, before the operation commits.
+	AfterDecide func(decisionsvc.Request)
 	// Journal is the security journal; BlobDir and JournalDir are the
 	// directories of the blob store and the journal.
 	Journal    *journal.Journal
@@ -197,6 +200,9 @@ type Decider struct {
 	// Before, if set, runs before each request is decided; tests use it to
 	// interleave a concurrent change with an operation.
 	Before *func(decisionsvc.Request)
+	// After, if set, runs after each request is decided, before the
+	// operation commits.
+	After *func(decisionsvc.Request)
 }
 
 // Decide implements content.Decider.
@@ -204,7 +210,11 @@ func (d Decider) Decide(ctx context.Context, req decisionsvc.Request) (decisions
 	if d.Before != nil && *d.Before != nil {
 		(*d.Before)(req)
 	}
-	return d.Service.Decide(ctx, d.Adapter, req), nil
+	resp := d.Service.Decide(ctx, d.Adapter, req)
+	if d.After != nil && *d.After != nil {
+		(*d.After)(req)
+	}
+	return resp, nil
 }
 
 type deliveryFunc func(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (content.Delivered, error)
@@ -320,7 +330,8 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	tokenKey := make([]byte, 32)
 	_, _ = rand.Read(tokenKey)
 	st.Content, err = content.New(content.Deps{Catalog: st.Catalog, Blobs: st.Blobs, Fence: st.Fence,
-		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide}, Verifier: st.Verifier(content.Audience),
+		Decider:  Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide, After: &st.AfterDecide},
+		Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id, extra...)
 		}), DataKeys: dataKeys{st}, Journal: st.Journal, TokenKey: tokenKey, Limits: limits(), Now: now})

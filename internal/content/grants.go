@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -162,10 +163,18 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 	if r.Grantee == "" || len(r.Grantee) > 256 || strings.Contains(r.Grantee, "|") || !now.Before(expires) {
 		return GrantOutcome{}, ErrInvalid
 	}
+	// The decision sees the grantee as of this revision, and the commit
+	// requires it still (review v2 finding 2); an unknown grantee is 0.
+	var granteeRevision uint64
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT revision FROM identities WHERE tenant = $1 AND id = $2`, c.Tenant, r.Grantee).
+		Scan(&granteeRevision); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return GrantOutcome{}, err
+	}
 	changes := map[string]string{"grantee": r.Grantee, "actions": strings.Join(actions, ","), "expires_at": expires.Format(time.RFC3339Nano)}
 	rec, err := s.decidePlanned(ctx, c, registry.GrantOperation(typ, registry.GrantRecord),
 		[]check{{id: "target", role: registry.RoleGrantTarget, action: "share",
-			ref: planned(registry.ChangeGrant, id+"|"+r.Grantee+"|"+changes["actions"]+"|"+changes["expires_at"])}},
+			ref: planned(registry.ChangeGrant, id+"|"+r.Grantee+"|"+strconv.FormatUint(granteeRevision, 10)+"|"+changes["actions"]+"|"+
+				changes["expires_at"])}},
 		opplan.Summary{Action: "share", Targets: []opplan.Target{{Role: registry.RoleGrantTarget, Type: typ, ID: id}}, Changes: changes,
 			Details: details(map[string]string{"bucket": t.Bucket, "key": t.Key, "version": t.Version, "unit": t.Unit})})
 	if err != nil {
@@ -186,7 +195,7 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 		ExpiresAt: expires, Grantor: c.Principal, CreatedAt: now}
 	out := GrantOutcome{Grant: g}
 	err = s.fenced(ctx, rec, []string{id}, func(ctx context.Context, tx pgx.Tx) error {
-		if err := s.grantHolds(ctx, tx, c.Tenant, rec, r.Grantee, expires, now); err != nil {
+		if err := s.grantHolds(ctx, tx, c.Tenant, rec, r.Grantee, granteeRevision, expires, now); err != nil {
 			return err
 		}
 		meta, err := catalog.RecordGrant(ctx, tx, c.Tenant, g, replaced, rec.DecisionID)
@@ -214,19 +223,25 @@ func (s *Service) RecordGrant(ctx context.Context, c Caller, t GrantTarget, r Gr
 }
 
 // grantHolds checks in the fence that the grantee is a known, enabled and
-// unexpired principal of the tenant, and that expires does not pass the
+// unexpired principal of the tenant, still at the identity revision the
+// decision saw (review v2 finding 2), and that expires does not pass the
 // expiry of the grantor's identity, of the subject it acts for or of its
-// delegation (SHR-001).
-func (s *Service) grantHolds(ctx context.Context, tx pgx.Tx, tenant string, rec signing.Record, grantee string, expires, now time.Time) error {
+// delegation (SHR-001). The grantee's row is locked until the commit.
+func (s *Service) grantHolds(ctx context.Context, tx pgx.Tx, tenant string, rec signing.Record, grantee string, revision uint64,
+	expires, now time.Time) error {
 	var disabled bool
 	var until *time.Time
-	err := tx.QueryRow(ctx, `SELECT disabled, expires_at FROM identities WHERE tenant = $1 AND id = $2 FOR SHARE`, tenant, grantee).
-		Scan(&disabled, &until)
+	var current uint64
+	err := tx.QueryRow(ctx, `SELECT disabled, expires_at, revision FROM identities WHERE tenant = $1 AND id = $2 FOR SHARE`, tenant, grantee).
+		Scan(&disabled, &until, &current)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && (disabled || until != nil && !now.Before(*until)) {
 		return fmt.Errorf("%w: the grantee is not a known, enabled principal of the tenant", ErrInvalid)
 	}
 	if err != nil {
 		return err
+	}
+	if current != revision {
+		return fmt.Errorf("%w: the grantee changed since the decision", ErrConflict)
 	}
 	for _, id := range []string{rec.Actor.ID, rec.Subject.ID} {
 		if id == "" {

@@ -12,6 +12,7 @@ import (
 
 	"fga/internal/content"
 	"fga/internal/cryptowire"
+	"fga/internal/decisionsvc"
 	"fga/internal/journal"
 	"fga/internal/r1test"
 )
@@ -316,5 +317,46 @@ func TestGrantTargets(t *testing.T) {
 		if out.Grant.ResourceType != c.typ {
 			t.Errorf("%+v resolved to %s, want %s", c.target, out.Grant.ResourceType, c.typ)
 		}
+	}
+}
+
+// TestGrantBindsGrantee is the regression test of review v2 finding 2:
+// policy saw the grantee's attributes, but their identity revision was not
+// bound, so a grant decided while the grantee was in the object's project
+// still committed after they moved out of it. The commit now refuses a
+// grantee whose identity changed since the decision.
+func TestGrantBindsGrantee(t *testing.T) {
+	policies := grantPolicies()
+	policies["objects.json"] = strings.Replace(policies["objects.json"], `"delete-version","share","label","export"`,
+		`"delete-version","label","export"`, 1)
+	policies["objects.json"] = strings.TrimSuffix(policies["objects.json"], "]}") + `,
+	  {"id":"owner-shares-in-project","effect":"allow","actions":["share"],"roles":["*"],
+	   "when":"resource.attributes.owner == principal.id && (!has(resource.attributes.grantee_attributes) || has(resource.attributes.grantee_attributes.projects) && resource.attributes.project in resource.attributes.grantee_attributes.projects)"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.Client("bob", []string{"contractor"}, "p1")
+	if _, err := putPlain(st, alice.Caller, "vault", "plan.txt", "", []byte("the plan")); err != nil {
+		t.Fatal(err)
+	}
+	plan := content.GrantTarget{Bucket: "vault", Key: "plan.txt"}
+	moved := false
+	st.AfterDecide = func(req decisionsvc.Request) {
+		if req.Operation == "storage.object.record-grant" && !moved {
+			moved = true
+			if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "bob", []string{"contractor"}, map[string]any{"projects": []string{"p2"}}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := grant(st, alice.Caller, plan, "bob", time.Hour, "stat"); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("a grant whose grantee moved out of the project before the commit: %v", err)
+	}
+	st.AfterDecide = nil
+	if gs, err := st.Content.ListGrants(ctx, alice.Caller, plan); err != nil || len(gs) != 0 {
+		t.Fatalf("grants after the refused commit: %+v %v", gs, err)
+	}
+	if _, err := grant(st, alice.Caller, plan, "bob", time.Hour, "stat"); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a fresh grant to bob outside the project: %v", err)
 	}
 }

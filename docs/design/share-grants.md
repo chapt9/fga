@@ -38,7 +38,7 @@ The attribute is always present on resolved resources. A policy sentinel or test
 
 Each grantable type has three registered operations, each with one check, `share` on the resource (role `target`):
 
-- `<type>.record-grant`. The check resolves the proposed change `change.grant` (`<resource>|<grantee>|<actions>|<expiry>`): the resource as it is, plus `grantee`, `grantee_attributes` (the grantee identity's attributes, empty for an unknown or disabled principal), `grant_actions` and `grant_expires_at`. A policy can therefore limit whom and what may be granted, for example to grantees of the same project. The operation carries a plan, so a policy can require an approval.
+- `<type>.record-grant`. The check resolves the proposed change `change.grant` (`<resource>|<grantee>|<grantee identity revision>|<actions>|<expiry>`): the resource as it is, plus `grantee`, `grantee_attributes`, `grant_actions` and `grant_expires_at`. `grantee_attributes` are the grantee identity's attributes at exactly the named revision; they are empty for an unknown or disabled principal or another revision. A policy can therefore limit whom and what may be granted, for example to grantees of the same project. The operation carries a plan, so a policy can require an approval.
 - `<type>.remove-grant`. Carries a plan as well.
 - `<type>.list-grants`. Returns the unexpired grants.
 
@@ -48,7 +48,7 @@ Each grantable type has three registered operations, each with one check, `share
 2. The decision is made.
 3. If the grantee already has a grant on the resource, its removal is journaled (below), because the new grant replaces it.
 4. In the authority fence:
-   - the grantee must be a known, enabled and unexpired principal of the tenant;
+   - the grantee must be a known, enabled and unexpired principal of the tenant, still at the identity revision the decision saw. Its row stays locked until the commit, so a grantee who changed project after the decision is refused (`409 CONFLICT`, review v2 finding 2);
    - the expiry must not pass the expiry of the grantor's identity, of the subject it acts for, or of its delegation;
    - the grantee's earlier grant must still be the one that was journaled;
    - the resource must have fewer than 100 unexpired grants.
@@ -92,6 +92,7 @@ Record and remove answer `202` with the approval's ID when a policy requires one
 | `TestGrants` | V-172 to V-177, listing, a stream ending at removal and at expiry, replacement, journaled removals |
 | `TestGrantOutlivingGrantor` | An expiry beyond the grantor's identity is rejected |
 | `TestGrantClientMode` | V-178: eligible as a recipient, no key until an envelope is shared |
+| `TestGrantBindsGrantee` | Review v2 finding 2: a grantee who left the project between the decision and the commit is refused |
 | `TestGrantTargets` | Each target type and its read set |
 | `internal/recovery` `TestRestoreKeepsGrantRemoval` | A removal after the backup survives restore and reconcile |
 | `internal/nativeapi` `TestGrantsHTTP` | The routes and SDK |
