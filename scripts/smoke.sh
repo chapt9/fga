@@ -44,6 +44,9 @@ cat > storage.json <<J
 J
 $B/fga-decision -config decision.json > decision.log 2>&1 & echo $! > pids
 sleep 2
+# The security journal is created once, before the keys role opens it; a
+# missing journal is never recreated implicitly.
+$B/fga-admin -db $URL -journal journal journal init > /dev/null
 $B/fga-keys -config keys.json > keys.log 2>&1 & echo $! >> pids
 $B/fga-storage -config storage.json > storage.log 2>&1 & echo $! >> pids
 trap 'kill $(cat pids) 2>/dev/null; sleep 1; dropdb -h localhost --if-exists '$DB'' EXIT

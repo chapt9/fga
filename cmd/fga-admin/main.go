@@ -23,8 +23,9 @@
 // -passphrase-file or $FGA_BACKUP_KEY_PASSPHRASE (docs/design/key-files.md).
 //
 //	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
-//	restore            -backup-key FILE -from DIR
-//	reconcile
+//	journal init                          create the security journal once, at setup
+//	restore            -backup-key FILE -from DIR [-accept-journal-loss]
+//	reconcile          [-accept-journal-loss]
 //	reclaim
 //	audit export       -dir D [-follow]             drain the audit outbox into D
 package main
@@ -149,6 +150,8 @@ func run(args []string) error {
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
+	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
+		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
 	if err := fs.Parse(sub); err != nil {
 		return err
 	}
@@ -177,14 +180,37 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		// The journal entry is durable before the catalog change commits.
+		// The journal entry is durable before the catalog change commits,
+		// and the catalog records the journal's state (review finding 1).
 		if err := j.Append(kind, *tenant, subject); err != nil {
+			return err
+		}
+		js, err := j.State()
+		if err != nil {
+			return err
+		}
+		if err := catalog.RecordJournal(ctx, pool, js.ID, js.Entries); err != nil {
 			return err
 		}
 		return change()
 	}
 
 	switch cmd {
+	case "journal init":
+		// Once, at setup: a new journal bound to this catalog. A catalog
+		// already bound to another journal refuses it.
+		if *journalDir == "" {
+			return errors.New("journal init needs -journal")
+		}
+		j, err := journal.Init(*journalDir, time.Now)
+		if err != nil {
+			return err
+		}
+		if err := catalog.RecordJournal(ctx, pool, j.ID(), 0); err != nil {
+			return err
+		}
+		fmt.Println("journal", j.ID())
+		return nil
 	case "bucket create":
 		if err := need(*tenant, *name); err != nil {
 			return err
@@ -333,7 +359,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		inc, err := recovery.Restore(ctx, pool, blobs, j, *from, key)
+		inc, err := recovery.RestoreWith(ctx, pool, blobs, j, *from, key, recovery.Options{AcceptJournalLoss: *acceptJournalLoss})
 		if err == nil {
 			fmt.Printf("restored %s as incarnation %d; admission is closed until reconcile\n", *from, inc)
 		}
@@ -347,7 +373,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		rep, err := recovery.Reconcile(ctx, e.store, blobs, j)
+		rep, err := recovery.ReconcileWith(ctx, e.store, blobs, j, recovery.Options{AcceptJournalLoss: *acceptJournalLoss})
 		if err == nil {
 			fmt.Printf("replayed %d journal entries, quarantined %d versions; admission is open\n", rep.Replayed, rep.Quarantined)
 		}

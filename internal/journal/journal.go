@@ -43,18 +43,108 @@ type Entry struct {
 	At      time.Time `json:"at"`
 }
 
-// Journal is a directory with one file per entry.
+// Journal is a directory with one file per entry and an identity file.
 type Journal struct {
 	dir string
+	id  string
 	now func() time.Time
 }
 
-// Open opens (and creates, mode 0700) the journal directory.
-func Open(dir string, now func() time.Time) (*Journal, error) {
+// ErrMissing means dir holds no initialized journal. A missing journal is
+// never created implicitly: an empty one would hide the revocations a
+// restore must replay (review finding 1).
+var ErrMissing = errors.New("journal: no initialized security journal; run fga-admin journal init once at setup")
+
+// idFile names the journal's identity file.
+const idFile = "JOURNAL"
+
+type identity struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Init creates a new journal at dir (mode 0700) with a fresh random
+// identity. It refuses a directory that already holds one.
+func Init(dir string, now func() time.Time) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Journal{dir: dir, now: now}, nil
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return nil, err
+	}
+	id := identity{ID: hex.EncodeToString(random), CreatedAt: now().UTC()}
+	b, _ := json.Marshal(id)
+	if err := writeDurably(dir, idFile, b); err != nil {
+		return nil, fmt.Errorf("journal: init: %w", err)
+	}
+	return &Journal{dir: dir, id: id.ID, now: now}, nil
+}
+
+// Open opens the initialized journal at dir.
+func Open(dir string, now func() time.Time) (*Journal, error) {
+	b, err := os.ReadFile(filepath.Join(dir, idFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrMissing
+	}
+	if err != nil {
+		return nil, err
+	}
+	var id identity
+	if err := strictjson.Decode(b, &id); err != nil || len(id.ID) != 32 {
+		return nil, fmt.Errorf("journal: malformed identity file")
+	}
+	return &Journal{dir: dir, id: id.ID, now: now}, nil
+}
+
+// ID is the journal's identity.
+func (j *Journal) ID() string { return j.id }
+
+// State is a journal's identity and number of entries, which the catalog
+// records so that recovery can tell a complete journal from a lost or
+// older one.
+type State struct {
+	ID      string
+	Entries int
+}
+
+// State returns the journal's current state.
+func (j *Journal) State() (State, error) {
+	es, err := j.Entries()
+	return State{ID: j.id, Entries: len(es)}, err
+}
+
+// Binding is State as plain values, for callers that must not link this
+// package (the storage role reaches the envelope service).
+func (j *Journal) Binding() (string, int, error) {
+	st, err := j.State()
+	return st.ID, st.Entries, err
+}
+
+// writeDurably creates name in dir exclusively, flushes it and then the
+// directory.
+func writeDurably(dir, name string, b []byte) error {
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // Append writes one entry durably: an exclusive new file, flushed, then the
@@ -72,28 +162,7 @@ func (j *Journal) Append(kind, tenant, subject string) error {
 	if _, err := rand.Read(random); err != nil {
 		return err
 	}
-	name := filepath.Join(j.dir, fmt.Sprintf("%020d-%s.json", e.At.UnixNano(), hex.EncodeToString(random)))
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	d, err := os.Open(j.dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return writeDurably(j.dir, fmt.Sprintf("%020d-%s.json", e.At.UnixNano(), hex.EncodeToString(random)), b)
 }
 
 // Entries returns every entry in the order written. A malformed entry is an

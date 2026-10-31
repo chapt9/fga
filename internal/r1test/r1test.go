@@ -269,7 +269,10 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	if st.Blobs, err = blob.Open(st.BlobDir); err != nil {
 		t.Fatal(err)
 	}
-	if st.Journal, err = journal.Open(st.JournalDir, now); err != nil {
+	if st.Journal, err = journal.Init(st.JournalDir, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.RecordJournal(ctx, pool, st.Journal.ID(), 0); err != nil {
 		t.Fatal(err)
 	}
 	tokenKey := make([]byte, 32)

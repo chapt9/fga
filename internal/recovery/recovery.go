@@ -43,7 +43,7 @@ var Tables = []string{
 	"recipient_keys", "signing_keys", "buckets", "objects", "object_versions", "document_versions", "document_units",
 	"document_intents", "upload_intents", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox",
-	"label_orders", "label_order_active", "label_proposals",
+	"label_orders", "label_order_active", "label_proposals", "journal_state",
 }
 
 // Format is the manifest format of a backup.
@@ -51,11 +51,37 @@ const Format = "fga.backup/v1"
 
 // Manifest describes a backup and the digest of every file in it.
 type Manifest struct {
-	Format      string      `json:"format"`
-	CreatedAt   time.Time   `json:"created_at"`
-	Incarnation uint64      `json:"incarnation"`
-	Tables      []FileEntry `json:"tables"`
-	Blobs       []BlobEntry `json:"blobs"`
+	Format      string    `json:"format"`
+	CreatedAt   time.Time `json:"created_at"`
+	Incarnation uint64    `json:"incarnation"`
+	// JournalID and JournalEntries are the catalog's journal binding at the
+	// backup (review finding 1); empty when it had none.
+	JournalID      string      `json:"journal_id,omitempty"`
+	JournalEntries int         `json:"journal_entries,omitempty"`
+	Tables         []FileEntry `json:"tables"`
+	Blobs          []BlobEntry `json:"blobs"`
+}
+
+// Options are the operator's explicit choices for a recovery.
+type Options struct {
+	// AcceptJournalLoss proceeds although the security journal cannot be
+	// shown complete: revocations, compromised signers and epoch raises
+	// after the backup may be lost. Only an operator who has restored
+	// those changes by other means may set it.
+	AcceptJournalLoss bool
+}
+
+// ErrJournalContinuity means the security journal is not the one the
+// catalog is bound to, or has fewer entries than the catalog recorded, so
+// changes after the backup may be missing. Admission stays closed.
+var ErrJournalContinuity = errors.New("recovery: the security journal cannot be shown complete; admission stays closed")
+
+// continuity compares the journal with a recorded binding.
+func continuity(j journal.State, id string, entries int, ok bool, opts Options) error {
+	if ok && j.ID == id && j.Entries >= entries || opts.AcceptJournalLoss {
+		return nil
+	}
+	return fmt.Errorf("%w (journal %s with %d entries; recorded %q with %d)", ErrJournalContinuity, j.ID, j.Entries, id, entries)
 }
 
 // FileEntry is one table file.
@@ -114,6 +140,9 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // read-only
 	if err := tx.QueryRow(ctx, `SELECT incarnation FROM authority_state WHERE id = 1`).Scan(&m.Incarnation); err != nil {
+		return Manifest{}, err
+	}
+	if m.JournalID, m.JournalEntries, _, err = catalog.JournalState(ctx, tx); err != nil {
 		return Manifest{}, err
 	}
 	for _, t := range Tables {
@@ -297,6 +326,14 @@ func ReadManifest(dir string, sealer Sealer) (Manifest, error) {
 // the journal; the new incarnation is journaled. It returns that
 // incarnation.
 func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *journal.Journal, dir string, sealer Sealer) (uint64, error) {
+	return RestoreWith(ctx, pool, blobs, j, dir, sealer, Options{})
+}
+
+// RestoreWith is Restore with the operator's options. Before anything is
+// replaced, the journal must be the one the live catalog is bound to (or,
+// on an empty catalog, the backup's) and hold at least the entries
+// recorded there; otherwise restore refuses (review finding 1).
+func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *journal.Journal, dir string, sealer Sealer, opts Options) (uint64, error) {
 	m, err := ReadManifest(dir, sealer)
 	if err != nil {
 		return 0, err
@@ -304,6 +341,17 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *jour
 	entries, err := j.Entries()
 	if err != nil {
 		return 0, fmt.Errorf("recovery: security journal: %w", err)
+	}
+	js := journal.State{ID: j.ID(), Entries: len(entries)}
+	id, recorded, ok, err := catalog.JournalState(ctx, pool)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		id, recorded, ok = m.JournalID, m.JournalEntries, m.JournalID != ""
+	}
+	if err := continuity(js, id, recorded, ok, opts); err != nil {
+		return 0, err
 	}
 	next := m.Incarnation
 	var current uint64
@@ -350,8 +398,12 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *jour
 				return fmt.Errorf("recovery: restore %s: %w", f.Name, err)
 			}
 		}
-		_, err := tx.Exec(ctx, `UPDATE authority_state SET admission_open = false, incarnation = $1, changed_at = now() WHERE id = 1`, next)
-		return err
+		if _, err := tx.Exec(ctx, `UPDATE authority_state SET admission_open = false, incarnation = $1, changed_at = now() WHERE id = 1`, next); err != nil {
+			return err
+		}
+		// The restored catalog is bound to the journal it was restored
+		// with, including the incarnation entry just appended.
+		return catalog.SetJournal(ctx, tx, js.ID, js.Entries+1)
 	})
 	if err != nil {
 		return 0, err
@@ -387,12 +439,32 @@ type Report struct {
 // reopens admission (AVL-008, KEY-017, PUB-006). If the journal cannot be
 // read, admission stays closed: lost revocations are not assumed away.
 func Reconcile(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *journal.Journal) (Report, error) {
+	return ReconcileWith(ctx, store, blobs, j, Options{})
+}
+
+// ReconcileWith is Reconcile with the operator's options. The journal must
+// be the one the catalog is bound to and hold at least the recorded
+// entries (review finding 1).
+func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store, j *journal.Journal, opts Options) (Report, error) {
 	var rep Report
 	entries, err := j.Entries()
 	if err != nil {
 		return rep, fmt.Errorf("recovery: security journal unavailable, admission stays closed: %w", err)
 	}
 	pool := store.Pool()
+	js := journal.State{ID: j.ID(), Entries: len(entries)}
+	id, recorded, ok, err := catalog.JournalState(ctx, pool)
+	if err != nil {
+		return rep, err
+	}
+	if err := continuity(js, id, recorded, ok, opts); err != nil {
+		return rep, err
+	}
+	if opts.AcceptJournalLoss {
+		if err := catalog.SetJournal(ctx, pool, js.ID, js.Entries); err != nil {
+			return rep, err
+		}
+	}
 	for _, e := range entries {
 		var sql string
 		args := []any{e.Tenant, e.Subject}
