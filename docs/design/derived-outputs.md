@@ -51,4 +51,6 @@ Package and ciphertext are for one of the caller's own keys. For a package, the 
 
 **Freshness.** The ciphertext read is admitted over the merged binding of all decisions, and its lease rechecks that binding. If a recheck fails while the output's own binding still holds, the stream ends with `LINEAGE_AUTHORITY_CHANGED` (`content.ErrLineageChanged`, V-145).
 
-**Not yet.** Relabelling derived outputs, new versions of a derived output, and a recipient-bound declassify record for managed clients beyond the decision itself (DRV-008's reported label).
+**Relabelling.** `PUT …/derived/label?key=`: raising is `label`, lowering (also below the lineage maximum) is `relabel`, never below the bucket floor (labels-and-approvals.md). `derived_versions.effective_label` keeps the label computed at publication; the resource's label is the current one.
+
+**Not yet.** New versions of a derived output, and a recipient-bound declassify record for managed clients beyond the decision itself (DRV-008's reported label).

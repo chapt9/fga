@@ -77,9 +77,6 @@ type LabelOutcome struct {
 // metadata revision, so every decision and lease bound to the old one
 // fails (LAB-005); ciphertext and envelopes are unchanged.
 func (s *Service) SetLabel(ctx context.Context, c Caller, bucketName, key, label string) (LabelOutcome, error) {
-	if len(label) > 64 {
-		return LabelOutcome{}, ErrInvalid
-	}
 	b, err := s.bucketByName(ctx, c.Tenant, bucketName)
 	if err != nil {
 		return LabelOutcome{}, err
@@ -88,6 +85,77 @@ func (s *Service) SetLabel(ctx context.Context, c Caller, bucketName, key, label
 	if err != nil {
 		return LabelOutcome{}, err
 	}
+	return s.setLabel(ctx, c, labelTarget{typ: "storage.object", id: o.ID.String(), bucket: b, attrs: o.Attributes, meta: o.Meta,
+		role: registry.RoleObject, labelOp: registry.OpLabel, relabelOp: registry.OpRelabel,
+		details: map[string]string{"bucket": bucketName, "key": key}}, label)
+}
+
+// SetUnitLabel sets the label of a document unit (LAB-001, LAB-004): the
+// unit must belong to the selected version of the document at bucket/key.
+// The label is the unit's, in every document version that includes it;
+// derived outputs that name it lose their authority (LAB-005, DRV-009).
+// Text entries take their collection's label and are not labelled alone.
+func (s *Service) SetUnitLabel(ctx context.Context, c Caller, bucketName, key, versionSel, unit, label string) (LabelOutcome, error) {
+	d, m, err := s.unitTarget(ctx, c, bucketName, key, versionSel, unit)
+	if err != nil {
+		return LabelOutcome{}, err
+	}
+	if d.units != textUnits {
+		return LabelOutcome{}, fmt.Errorf("%w: text entries take their collection's label", ErrInvalid)
+	}
+	return s.labelResource(ctx, c, bucketName, "document.text_unit", m.entry.Unit, registry.RoleUnit, registry.OpUnitLabel, registry.OpUnitRelabel,
+		map[string]string{"bucket": bucketName, "key": key, "unit": unit}, label)
+}
+
+// SetDerivedLabel sets a derived output's label. Raising it is label;
+// lowering it, also below its lineage maximum, is relabel, which a policy
+// may make subject to an approval (LAB-004, DRV-007). It is never set
+// below the bucket's floor.
+func (s *Service) SetDerivedLabel(ctx context.Context, c Caller, bucketName, key, label string) (LabelOutcome, error) {
+	output, _, err := s.derivedTarget(ctx, c.Tenant, bucketName, key, "")
+	if err != nil {
+		return LabelOutcome{}, err
+	}
+	return s.labelResource(ctx, c, bucketName, "document.derived", output.String(), registry.RoleOutput, registry.OpDerivedLabel,
+		registry.OpDerivedRelabel, map[string]string{"bucket": bucketName, "key": key}, label)
+}
+
+// labelResource loads a resource and its bucket and sets its label.
+func (s *Service) labelResource(ctx context.Context, c Caller, bucketName, typ, id, role, labelOp, relabelOp string, details map[string]string,
+	label string) (LabelOutcome, error) {
+	b, err := s.bucketByName(ctx, c.Tenant, bucketName)
+	if err != nil {
+		return LabelOutcome{}, err
+	}
+	r, err := s.d.Catalog.GetResource(ctx, c.Tenant, id)
+	if err != nil || r.Type != typ {
+		return LabelOutcome{}, ErrNotFound
+	}
+	return s.setLabel(ctx, c, labelTarget{typ: typ, id: id, bucket: b, attrs: r.Attributes, meta: r.MetadataRevision, role: role,
+		labelOp: labelOp, relabelOp: relabelOp, details: details}, label)
+}
+
+// labelTarget is a resource whose protected label is set.
+type labelTarget struct {
+	typ, id            string
+	bucket             bucket
+	attrs              map[string]any
+	meta               uint64
+	role               string
+	labelOp, relabelOp string
+	details            map[string]string
+}
+
+// setLabel sets t's protected label (LAB-002, LAB-004): raising it, or
+// setting the same label, needs label; lowering it needs relabel, which a
+// policy may make subject to an approval. A label is never set outside the
+// order or below the bucket's floor. The change advances the resource's
+// metadata revision, so every decision and lease bound to the old one
+// fails (LAB-005); ciphertext and envelopes are unchanged.
+func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label string) (LabelOutcome, error) {
+	if len(label) > 64 {
+		return LabelOutcome{}, ErrInvalid
+	}
 	_, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
 	if errors.Is(err, catalog.ErrNoLabelOrder) {
 		return LabelOutcome{}, fmt.Errorf("%w: no label order is active", ErrInvalid)
@@ -95,33 +163,32 @@ func (s *Service) SetLabel(ctx context.Context, c Caller, bucketName, key, label
 	if err != nil {
 		return LabelOutcome{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if err := checkLabel(order, label, b.Label); err != nil {
+	if err := checkLabel(order, label, t.bucket.Label); err != nil {
 		return LabelOutcome{}, err
 	}
-	previous, _ := o.Attributes["label"].(string)
+	previous, _ := t.attrs["label"].(string)
 	newRank, _ := labels.Rank(order, label)
 	oldRank, _ := labels.Rank(order, previous)
-	op, action := registry.OpLabel, "label"
+	op, action := t.labelOp, "label"
 	if newRank < oldRank {
-		op, action = registry.OpRelabel, "relabel"
+		op, action = t.relabelOp, "relabel"
 	}
 	rec, err := s.decidePlanned(ctx, c, op,
-		[]check{{id: "object", role: registry.RoleObject, action: action, ref: planned(registry.ChangeLabel, o.ID.String()+"|"+label)}},
-		opplan.Summary{Action: action, Targets: []opplan.Target{{Role: registry.RoleObject, Type: "storage.object", ID: o.ID.String()}},
-			Changes: map[string]string{"label": label, "previous_label": previous},
-			Details: details(map[string]string{"bucket": bucketName, "key": key})})
+		[]check{{id: t.role, role: t.role, action: action, ref: planned(registry.ChangeLabel, t.id+"|"+label)}},
+		opplan.Summary{Action: action, Targets: []opplan.Target{{Role: t.role, Type: t.typ, ID: t.id}},
+			Changes: map[string]string{"label": label, "previous_label": previous}, Details: details(t.details)})
 	if err != nil {
 		return LabelOutcome{}, err
 	}
-	out := LabelOutcome{Object: o.ID.String(), Label: label, Previous: previous, MetadataRevision: o.Meta}
-	err = s.fenced(ctx, rec, []string{o.ID.String()}, func(ctx context.Context, tx pgx.Tx) error {
-		if err := s.labelOrderHolds(ctx, tx, rec, label, b.ID); err != nil {
+	out := LabelOutcome{Object: t.id, Label: label, Previous: previous, MetadataRevision: t.meta}
+	err = s.fenced(ctx, rec, []string{t.id}, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.labelOrderHolds(ctx, tx, rec, label, t.bucket.ID); err != nil {
 			return err
 		}
 		if label == previous {
 			return nil
 		}
-		meta, err := catalog.SetLabel(ctx, tx, c.Tenant, "storage.object", o.ID.String(), label)
+		meta, err := catalog.SetLabel(ctx, tx, c.Tenant, t.typ, t.id, label)
 		if err != nil {
 			return err
 		}
@@ -131,9 +198,8 @@ func (s *Service) SetLabel(ctx context.Context, c Caller, bucketName, key, label
 			outcome = "RELABELED"
 		}
 		// Labels are not written to the audit record (AUD-003); the
-		// object's metadata revision identifies the change.
-		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindMutation, rec, outcome,
-			audit.Target{Type: "storage.object", ID: o.ID.String(), Generation: meta}))
+		// resource's metadata revision identifies the change.
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindMutation, rec, outcome, audit.Target{Type: t.typ, ID: t.id, Generation: meta}))
 	})
 	if err != nil {
 		return LabelOutcome{}, err

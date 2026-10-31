@@ -41,6 +41,10 @@ func approveCheck(a approval.Approval) (string, check, bool) {
 		return registry.OpApproveObject, check{id: "object", role: registry.RoleObject, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	case "storage.bucket":
 		return registry.OpApproveBucket, check{id: "bucket", role: registry.RoleBucket, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
+	case "document.text_unit":
+		return registry.OpApproveUnit, check{id: "unit", role: registry.RoleUnit, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
+	case "document.derived":
+		return registry.OpApproveDerived, check{id: "output", role: registry.RoleOutput, action: "approve", ref: canonical(a.TargetType, a.TargetID)}, true
 	}
 	return "", check{}, false
 }

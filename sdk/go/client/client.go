@@ -382,10 +382,25 @@ type LabelOutcome struct {
 
 // Label sets a key's label. Lowering it may need an approval.
 func (c *Client) Label(ctx context.Context, bucket, key, label string) (LabelOutcome, error) {
+	return c.putLabel(ctx, objectURL(c.StorageURL, bucket, "/label", key, "", nil), label)
+}
+
+// LabelUnit sets the label of one unit of the document at bucket/key.
+func (c *Client) LabelUnit(ctx context.Context, bucket, key, unit, label string) (LabelOutcome, error) {
+	q := url.Values{"key": {key}, "unit": {unit}}
+	return c.putLabel(ctx, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/document/unit/label?"+q.Encode(), label)
+}
+
+// LabelDerived sets the label of the derived output at bucket/key.
+func (c *Client) LabelDerived(ctx context.Context, bucket, key, label string) (LabelOutcome, error) {
+	q := url.Values{"key": {key}}
+	return c.putLabel(ctx, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/derived/label?"+q.Encode(), label)
+}
+
+func (c *Client) putLabel(ctx context.Context, target, label string) (LabelOutcome, error) {
 	var out LabelOutcome
 	body, n := jsonBody(map[string]string{"label": label})
-	_, err := c.do(ctx, http.MethodPut, objectURL(c.StorageURL, bucket, "/label", key, "", nil), c.StorageToken, body, n,
-		map[string]string{"Content-Type": "application/json"}, &out)
+	_, err := c.do(ctx, http.MethodPut, target, c.StorageToken, body, n, map[string]string{"Content-Type": "application/json"}, &out)
 	return out, err
 }
 

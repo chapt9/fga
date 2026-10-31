@@ -92,6 +92,14 @@ const (
 	OpDocReadEntry        = "collection.entry.read"
 	OpDocManifestEntries  = "collection.manifest"
 	OpDocGetEntryEnvelope = "collection.entry.get-envelope"
+	// Labels of document units and derived outputs (LAB-002, LAB-004), and
+	// approvals on them (ruling 6).
+	OpUnitLabel      = "document.unit.label"
+	OpUnitRelabel    = "document.unit.relabel"
+	OpDerivedLabel   = "derived.label"
+	OpDerivedRelabel = "derived.relabel"
+	OpApproveUnit    = "document.unit.approve"
+	OpApproveDerived = "derived.approve"
 )
 
 // Check roles shared by several operations.
@@ -275,6 +283,12 @@ func baseOperations() []Operation {
 		{Name: OpDerivedSources, Checks: sourceChecks(KindOperation)},
 		{Name: OpDerivedRecipientSources, Checks: sourceChecks(KindRecipientEligibility)},
 		one(OpDerivedDeliver, RoleOutput, "document.derived", "deliver"),
+		one(OpUnitLabel, RoleUnit, "document.text_unit", "label"),
+		one(OpUnitRelabel, RoleUnit, "document.text_unit", "relabel"),
+		one(OpDerivedLabel, RoleOutput, "document.derived", "label"),
+		one(OpDerivedRelabel, RoleOutput, "document.derived", "relabel"),
+		one(OpApproveUnit, RoleUnit, "document.text_unit", "approve"),
+		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
 		{Name: OpDerivedDeclassify, Checks: []CheckSpec{
 			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
 			{Role: RoleRecipientDeclass, ResourceType: "document.derived", Action: "declassify", Kind: KindRecipientEligibility},

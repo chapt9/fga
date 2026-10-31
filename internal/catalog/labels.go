@@ -115,7 +115,8 @@ func AddProposal(ctx context.Context, tx pgx.Tx, tenant string, p Proposal) (Pro
 var _ registry.Changer = resourceView{}
 
 // Changed implements registry.Changer: a proposed label for an existing
-// object resolves to the object as it is, with new_label and floor added.
+// object, document unit or derived output resolves to it as it is, with
+// new_label and floor added.
 func (v resourceView) Changed(ctx context.Context, tenant string, alias registry.Alias) (registry.Resource, error) {
 	if alias.Namespace != registry.ChangeLabel {
 		return registry.Resource{}, registry.ErrUnknownAlias
@@ -128,7 +129,7 @@ func (v resourceView) Changed(ctx context.Context, tenant string, alias registry
 	if err != nil {
 		return registry.Resource{}, err
 	}
-	if r.Type != "storage.object" {
+	if r.Type != "storage.object" && r.Type != "document.text_unit" && r.Type != "document.derived" {
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
 	floor, err := LabelFloor(ctx, v.s.pool, tenant, id)

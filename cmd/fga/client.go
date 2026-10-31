@@ -52,7 +52,7 @@ import (
 //	fga ls             -bucket B [-prefix P]
 //	fga rm             -bucket B -key K [-version V] [-approval A]
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
-//	fga label          -bucket B -key K -label L [-approval A]
+//	fga label          -bucket B -key K -label L [-unit U | -derived] [-approval A]
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
@@ -234,6 +234,8 @@ func clientCommand(cmd string, args []string) error {
 	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
 	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
 	project := fs.String("project", "", "search: project")
+	unit := fs.String("unit", "", "label: a unit of the document at -key")
+	derivedOut := fs.Bool("derived", false, "label: the derived output at -key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -452,7 +454,16 @@ func clientCommand(cmd string, args []string) error {
 		fmt.Printf("published version %s etag %s\n", p.Version, p.ETag)
 		return os.Remove(*request)
 	case "label":
-		o, err := c.Label(ctx, *bucket, *key, *label)
+		var o client.LabelOutcome
+		var err error
+		switch {
+		case *unit != "":
+			o, err = c.LabelUnit(ctx, *bucket, *key, *unit, *label)
+		case *derivedOut:
+			o, err = c.LabelDerived(ctx, *bucket, *key, *label)
+		default:
+			o, err = c.Label(ctx, *bucket, *key, *label)
+		}
 		if err != nil {
 			return approvalHint(err)
 		}

@@ -77,8 +77,10 @@ var StoragePreset = map[string][]string{
 // ApproverPreset lets an actor decide approvals (ruling 6); policies still
 // say on which resources.
 var ApproverPreset = map[string][]string{
-	"storage.bucket": {"approve"},
-	"storage.object": {"approve"},
+	"storage.bucket":     {"approve"},
+	"storage.object":     {"approve"},
+	"document.text_unit": {"approve"},
+	"document.derived":   {"approve"},
 }
 
 type env struct {

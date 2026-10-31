@@ -654,6 +654,40 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		httpapi.WriteJSON(w, http.StatusOK, page)
 	}))
+	mux.HandleFunc("PUT /v1/buckets/{bucket}/document/unit/label", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		var body labelBody
+		if !ok || len(r.URL.Query()["unit"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		out, err := svc.SetUnitLabel(r.Context(), c, b, k, v, r.URL.Query().Get("unit"), body.Label)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
+	mux.HandleFunc("PUT /v1/buckets/{bucket}/derived/label", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, _, ok := derived(r)
+		var body labelBody
+		if !ok || v != "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		out, err := svc.SetDerivedLabel(r.Context(), c, b, k, body.Label)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
 	return mux
 }
 

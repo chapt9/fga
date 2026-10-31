@@ -66,7 +66,6 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
 - **Approvals** cover finalize, delete, version delete and label changes of objects. Keys-role operations and document publication send no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
 - **Not built in R1-C:**
-  - relabelling of document units and derived outputs (their labels are set at publication);
   - new versions of a derived output, and withdrawal of documents and units;
   - export of whole objects (export covers document units).
 

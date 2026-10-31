@@ -235,3 +235,82 @@ func TestClearanceRanks(t *testing.T) {
 		t.Fatalf("a stored clearance_rank counted: %v", err)
 	}
 }
+
+// TestUnitAndDerivedLabels covers LAB-004 for document units and derived
+// outputs: raising is label, lowering is relabel (with an approval in the
+// fixture), never below the bucket floor; a derived output can be lowered
+// below its lineage maximum only through relabel; text entries are not
+// labelled alone.
+func TestUnitAndDerivedLabels(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	lena := st.User("lena", []string{"member", "lead"}, "p1")
+	up, err := alice.PrepareDocument("reports", "q3.md", []string{"a", "b"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	unit := up.Intent.Units[0].Unit
+	resourceLabel := func(id string) string {
+		var l string
+		_ = st.Pool.QueryRow(ctx, `SELECT attributes->>'label' FROM resources WHERE id = $1`, id).Scan(&l)
+		return l
+	}
+	if out, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "q3.md", "", unit, "confidential"); err != nil || out.MetadataRevision != 2 {
+		t.Fatalf("raise a unit = %+v, %v", out, err)
+	}
+	if _, err := st.Content.SetUnitLabel(ctx, bob.Caller, "reports", "q3.md", "", unit, "restricted"); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a member labelled alice's unit: %v", err)
+	}
+	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "q3.md", "", unit, "public"); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("a unit below the floor: %v", err)
+	}
+	lower := func(set func(content.Caller) (content.LabelOutcome, error)) {
+		t.Helper()
+		_, err := set(alice.Caller)
+		var need *content.ApprovalRequired
+		if !errors.As(err, &need) {
+			t.Fatalf("lowering without approval: %v", err)
+		}
+		if _, err := st.Content.DecideApproval(ctx, lena, need.ID, true); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := set(withApproval(alice.Caller, need.ID)); err != nil {
+			t.Fatalf("approved lowering: %v", err)
+		}
+	}
+	// The derived output's lineage maximum is the unit's confidential.
+	p, err := alice.PutDerived("reports", "summary", []byte("s"), unitSources(up), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := resourceLabel(p.Object); l != "confidential" {
+		t.Fatalf("derived label %s", l)
+	}
+	lower(func(c content.Caller) (content.LabelOutcome, error) {
+		return st.Content.SetDerivedLabel(ctx, c, "reports", "summary", "internal")
+	})
+	if l := resourceLabel(p.Object); l != "internal" {
+		t.Fatalf("derived label after relabel %s", l)
+	}
+	lower(func(c content.Caller) (content.LabelOutcome, error) {
+		return st.Content.SetUnitLabel(ctx, c, "reports", "q3.md", "", unit, "internal")
+	})
+	if l := resourceLabel(unit); l != "internal" {
+		t.Fatalf("unit label after relabel %s", l)
+	}
+	col, err := alice.PrepareCollection("reports", "chat", []string{"hi"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(col); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "chat", "", col.Intent.Units[0].Unit, "confidential"); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("labelling a text entry: %v", err)
+	}
+}
