@@ -60,13 +60,17 @@ type Manifest struct {
 	CreatedAt   time.Time `json:"created_at"`
 	Incarnation uint64    `json:"incarnation"`
 	// JournalID, JournalEntries and JournalHead are the catalog's journal
-	// binding at the
-	// backup (review finding 1); empty when it had none.
-	JournalID      string      `json:"journal_id,omitempty"`
-	JournalEntries int         `json:"journal_entries,omitempty"`
-	JournalHead    string      `json:"journal_head,omitempty"`
-	Tables         []FileEntry `json:"tables"`
-	Blobs          []BlobEntry `json:"blobs"`
+	// binding at the backup (review findings 1 and v2 1); empty when it
+	// had none.
+	JournalID      string `json:"journal_id,omitempty"`
+	JournalEntries int    `json:"journal_entries,omitempty"`
+	JournalHead    string `json:"journal_head,omitempty"`
+	// Missing are the blobs the backup could not read and does not hold:
+	// those of quarantined versions, and others only when the operator
+	// accepted their loss (BackupOptions.AllowMissing). File is empty.
+	Missing []BlobEntry `json:"missing,omitempty"`
+	Tables  []FileEntry `json:"tables"`
+	Blobs   []BlobEntry `json:"blobs"`
 }
 
 // Options are the operator's explicit choices for a recovery.
@@ -149,13 +153,40 @@ const marker = "ENCRYPTED"
 
 func aad(name string) []byte { return []byte("fga.backup/v1\x00" + filepath.ToSlash(name)) }
 
+// ErrIncomplete means a blob of a LIVE or WITHDRAWN version could not be
+// read, so the backup would not hold that content (review v2 finding 4).
+var ErrIncomplete = errors.New("recovery: the backup would be incomplete")
+
+// BackupOptions are the operator's explicit choices for a backup.
+type BackupOptions struct {
+	// AllowMissing completes a backup although blobs of LIVE or WITHDRAWN
+	// versions cannot be read, listing them in the manifest as missing.
+	AllowMissing bool
+}
+
 // Backup writes one consistent snapshot of the catalog and the blobs it
 // references to dir, which must not exist yet. With a sealer, every file,
-// the manifest included, is encrypted and bound to its path.
+// the manifest included, is encrypted and bound to its path. A blob of a
+// LIVE or WITHDRAWN version that cannot be read fails the backup with
+// ErrIncomplete, and dir is removed; a quarantined version's is listed as
+// missing.
 func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir string, sealer Sealer, scheme string) (Manifest, error) {
+	return BackupWith(ctx, pool, blobs, dir, sealer, scheme, BackupOptions{})
+}
+
+// BackupWith is Backup with the operator's options.
+func BackupWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir string, sealer Sealer, scheme string, opts BackupOptions) (Manifest, error) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return Manifest{}, err
 	}
+	m, err := backup(ctx, pool, blobs, dir, sealer, scheme, opts)
+	if errors.Is(err, ErrIncomplete) {
+		os.RemoveAll(dir)
+	}
+	return m, err
+}
+
+func backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir string, sealer Sealer, scheme string, opts BackupOptions) (Manifest, error) {
 	for _, d := range []string{"catalog", "blobs"} {
 		if err := os.Mkdir(filepath.Join(dir, d), 0o700); err != nil {
 			return Manifest{}, err
@@ -190,7 +221,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 		m.Tables = append(m.Tables, FileEntry{Name: t, File: file, SHA256: sum})
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT t.id, v.blob, v.ciphertext_length, v.ciphertext_sha256 FROM object_versions v JOIN tenants t ON t.name = v.tenant
+		SELECT t.id, v.blob, v.ciphertext_length, v.ciphertext_sha256, v.state FROM object_versions v JOIN tenants t ON t.name = v.tenant
 		 WHERE v.blob IS NOT NULL AND v.state IN ('LIVE', 'WITHDRAWN', 'QUARANTINED')`)
 	if err != nil {
 		return Manifest{}, err
@@ -198,12 +229,12 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	type ref struct {
 		tenant, blob cryptowire.UUID
 		length       int64
-		sum          string
+		sum, state   string
 	}
 	var refs []ref
 	for rows.Next() {
 		var r ref
-		if err := rows.Scan(&r.tenant, &r.blob, &r.length, &r.sum); err != nil {
+		if err := rows.Scan(&r.tenant, &r.blob, &r.length, &r.sum, &r.state); err != nil {
 			rows.Close()
 			return Manifest{}, err
 		}
@@ -213,6 +244,7 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 	if err := rows.Err(); err != nil {
 		return Manifest{}, err
 	}
+	var unreadable []string
 	for _, r := range refs {
 		d, err := cryptowire.ParseDigest(r.sum)
 		if err != nil {
@@ -220,8 +252,12 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 		}
 		rc, err := blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: r.tenant, Blob: r.blob}, Length: r.length, SHA256: d})
 		if err != nil {
-			// A blob that is already missing is recorded as such by
-			// reconcile after a restore; the backup does not invent it.
+			// The backup does not invent a blob it cannot read, and says
+			// so; reconcile quarantines the version after a restore.
+			m.Missing = append(m.Missing, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: r.sum})
+			if r.state != "QUARANTINED" && !opts.AllowMissing {
+				unreadable = append(unreadable, r.blob.String())
+			}
 			continue
 		}
 		file := filepath.Join("blobs", r.blob.String())
@@ -232,6 +268,10 @@ func Backup(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, dir stri
 		}
 		m.Blobs = append(m.Blobs, BlobEntry{Tenant: r.tenant.String(), Blob: r.blob.String(), Length: r.length, SHA256: r.sum,
 			File: file, FileSHA256: sum})
+	}
+	if len(unreadable) > 0 {
+		return Manifest{}, fmt.Errorf("%w: %d blobs of live or withdrawn versions cannot be read (first %s); repair them, "+
+			"or back up accepting their loss (fga-admin backup -allow-missing)", ErrIncomplete, len(unreadable), unreadable[0])
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

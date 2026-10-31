@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fga/internal/backupcrypt"
+	"fga/internal/blob"
 	"fga/internal/content"
 	"fga/internal/r1test"
 	"fga/internal/recovery"
@@ -274,5 +275,42 @@ func TestRestoreKeepsGrantRemoval(t *testing.T) {
 	}
 	if n := active(); n != 0 {
 		t.Fatalf("%d active grants after reconcile", n)
+	}
+}
+
+// TestBackupReportsMissingBlobs is the regression test of review v2
+// finding 4: a blob that could not be read was skipped silently and the
+// backup reported success without that content. A backup now fails when a
+// LIVE or WITHDRAWN version's blob is unreadable, unless the operator
+// accepts it, and then the manifest lists it as missing.
+func TestBackupReportsMissingBlobs(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	p, err := alice.Put("reports", "doc", []byte("payroll"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref blob.Ref
+	if err := st.Pool.QueryRow(ctx, `SELECT t.id, v.blob FROM object_versions v JOIN tenants t ON t.name = v.tenant WHERE v.id::text = $1`,
+		p.Version).Scan(&ref.Tenant, &ref.Blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Blobs.Remove(ref); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); !errors.Is(err, recovery.ErrIncomplete) {
+		t.Fatalf("a backup missing a live blob: %v", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the incomplete backup was left behind: %v", err)
+	}
+	m, err := recovery.BackupWith(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme, recovery.BackupOptions{AllowMissing: true})
+	if err != nil || len(m.Blobs) != 0 || len(m.Missing) != 1 || m.Missing[0].Blob != ref.Blob.String() {
+		t.Fatalf("a backup accepting the missing blob: %+v, %v", m, err)
+	}
+	if got, err := recovery.ReadManifest(dir, backupKey(t)); err != nil || len(got.Missing) != 1 {
+		t.Fatalf("the manifest read back: %+v, %v", got, err)
 	}
 }

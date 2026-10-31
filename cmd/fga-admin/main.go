@@ -25,7 +25,8 @@
 // -passphrase-file or $FGA_BACKUP_KEY_PASSPHRASE (docs/design/key-files.md),
 // a protected KEK ring with -passphrase-file or $FGA_KEK_PASSPHRASE.
 //
-//	backup             -backup-key FILE -out DIR     encrypted backup (AVL-005)
+//	backup             -backup-key FILE -out DIR [-allow-missing]   encrypted backup (AVL-005); fails when a live blob
+//	                   cannot be read, unless -allow-missing lists it in the manifest as missing
 //	journal init                          create the security journal once, at setup
 //	restore            -backup-key FILE -from DIR [-accept-journal-loss]
 //	reconcile          [-accept-journal-loss] [-kek-file FILE]   -kek-file is needed when the catalog holds server-mode
@@ -162,6 +163,7 @@ func run(args []string) error {
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
 	kekFile := fs.String("kek-file", "", "reconcile: the KEK ring to check server-mode data keys against")
+	allowMissing := fs.Bool("allow-missing", false, "backup: complete although blobs of live versions cannot be read, listing them as missing")
 	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
 		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
 	if err := fs.Parse(sub); err != nil {
@@ -408,11 +410,15 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := recovery.Backup(ctx, pool, blobs, *out, key, backupcrypt.Scheme)
-		if err == nil {
-			fmt.Printf("backup %s: incarnation %d, %d tables, %d blobs\n", *out, m.Incarnation, len(m.Tables), len(m.Blobs))
+		m, err := recovery.BackupWith(ctx, pool, blobs, *out, key, backupcrypt.Scheme, recovery.BackupOptions{AllowMissing: *allowMissing})
+		if err != nil {
+			return err
 		}
-		return err
+		fmt.Printf("backup %s: incarnation %d, %d tables, %d blobs\n", *out, m.Incarnation, len(m.Tables), len(m.Blobs))
+		if len(m.Missing) > 0 {
+			fmt.Printf("%d blobs could not be read and are not in the backup; the manifest lists them\n", len(m.Missing))
+		}
+		return nil
 	case "restore":
 		blobs, err := e.blobs()
 		if err != nil {
