@@ -1,6 +1,9 @@
 # Packages the decision role may link (MOD-004). One import-path prefix per
 # line. Adding a line needs review: it widens the role's attack surface.
 fga/cmd/fga-decision
+# Reviewed 2026-10-31: concurrent-request bounds per calling workload and
+# in total (AVL-006); no dependencies.
+fga/internal/admission
 # Reviewed 2026-10-31: approval records (PostgreSQL only), read and opened
 # by the decision role, decided and consumed by enforcing roles.
 fga/internal/approval

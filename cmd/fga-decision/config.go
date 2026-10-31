@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/strictjson"
 )
 
@@ -38,6 +39,29 @@ type Config struct {
 	// its decisions for MCP tool calls may be addressed to; the role it
 	// calls presents such a decision as the user's evidence (TB3).
 	Gateways map[string][]string `json:"gateways,omitempty"`
+	// Admission bounds concurrent requests per calling workload and in
+	// total (AVL-006); absent means defaultAdmission.
+	Admission *AdmissionConfig `json:"admission,omitempty"`
+}
+
+// AdmissionConfig bounds the decision role's concurrent requests.
+type AdmissionConfig struct {
+	AdapterRequests int `json:"adapter_requests"`
+	TotalRequests   int `json:"total_requests"`
+}
+
+// defaultAdmission are the initial bounds (D-10 open; not measured): one
+// workload can hold at most a quarter of the role.
+var defaultAdmission = AdmissionConfig{AdapterRequests: 128, TotalRequests: 512}
+
+// limits returns the configured bounds as admission limits, keyed by
+// workload.
+func (c Config) limits() admission.Limits {
+	a := defaultAdmission
+	if c.Admission != nil {
+		a = *c.Admission
+	}
+	return admission.Limits{TenantRequests: a.AdapterRequests, TenantStreams: 1, TotalRequests: a.TotalRequests}
 }
 
 // TokenIssuerConfig names one token issuer and its Ed25519 verification
@@ -146,6 +170,9 @@ func (c Config) Validate() error {
 				fail("gateway %s may address only audiences the role signs for, not %s", gw, a)
 			}
 		}
+	}
+	if a := c.Admission; a != nil && (a.AdapterRequests <= 0 || a.TotalRequests < a.AdapterRequests) {
+		fail("admission needs adapter_requests above 0 and total_requests at least as large")
 	}
 	if (len(c.AdapterAudiences) > 0 || c.PublicAudience != "") && c.TokenIssuer == nil {
 		fail("adapter_audiences and public_audience need a token_issuer")

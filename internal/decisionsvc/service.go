@@ -19,6 +19,7 @@ import (
 	"slices"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/approval"
 	"fga/internal/audit"
 	"fga/internal/authn"
@@ -214,6 +215,11 @@ type Deps struct {
 	Audiences []string
 	MaxAge    time.Duration
 	Limits    Limits
+	// Admission bounds concurrent HTTP requests per calling workload (the
+	// public facade counts as one) and in total, so that no caller can
+	// exhaust the role every other role depends on (AVL-006). Nil leaves
+	// them unbounded, as in-process tests do.
+	Admission *admission.Limiter
 	Now       func() time.Time
 }
 

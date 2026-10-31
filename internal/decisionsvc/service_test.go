@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/audit"
 	"fga/internal/authn"
 	"fga/internal/decision"
@@ -497,5 +499,104 @@ func TestRecipientExpiryBoundsValidity(t *testing.T) {
 	}
 	if want := now.Add(20 * time.Second); !resp.ValidUntil.Equal(want) {
 		t.Fatalf("valid until %s, want the recipient's expiry %s", resp.ValidUntil, want)
+	}
+}
+
+// TestAdmission covers AVL-006 for the decision role: concurrent requests
+// are bounded per calling workload and in total, a request over a bound
+// is answered 429 at once, and slots are freed when requests end. A slot
+// is taken before the body is read, so a slow body holds one.
+func TestAdmission(t *testing.T) {
+	f := newFixture(t, 100)
+	f.svc.d.Admission = admission.New(admission.Limits{TenantRequests: 1, TenantStreams: 1, TotalRequests: 2})
+	srv := httptest.NewServer(f.svc.Handler(func(r *http.Request) (string, error) { return r.Header.Get("X-Test-Adapter"), nil }))
+	defer srv.Close()
+	var open []*io.PipeWriter
+	defer func() {
+		for _, pw := range open {
+			pw.Close()
+		}
+	}()
+	good := `{"request_id":"r","tenant":"t-acme","operation":"unit.read","operation_id":"o","operation_digest":"d","audience":"storage",
+	  "single_use":false,"actor":{"id":"agent-7","revision":12},"subject":{"id":"user-42","revision":88},"delegation":"dlg-5",
+	  "checks":[{"id":"c1","role":"unit","action":"read","resource":{"namespace":"mcp","name":"doc://q3#overview"}}]}`
+	post := func(adapter string, body io.Reader) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/decide-batch", body)
+		req.Header.Set("X-Test-Adapter", adapter)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Error(err)
+			return 0
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	// hold starts a request of adapter whose body stays open, and waits
+	// until it holds the adapter's slot: a probe of the same adapter is
+	// then refused, and only the held request can hold the slot. If a
+	// probe took the slot first, the held request is refused at once
+	// (the connection closes) and is started again. finish sends the
+	// rest of the body and waits for the response.
+	hold := func(adapter string) (finish func() int) {
+		deadline := time.Now().Add(10 * time.Second)
+	attempt:
+		for time.Now().Before(deadline) {
+			pr, pw := io.Pipe()
+			open = append(open, pw)
+			done := make(chan int, 1)
+			go func() { done <- post(adapter, pr) }()
+			for time.Now().Before(deadline) {
+				select {
+				case <-done:
+					pw.Close()
+					continue attempt
+				default:
+				}
+				if post(adapter, strings.NewReader(good)) == http.StatusTooManyRequests {
+					return func() int {
+						_, _ = io.WriteString(pw, good)
+						pw.Close()
+						return <-done
+					}
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		t.Fatalf("%s's slow request never held a slot", adapter)
+		return nil
+	}
+	finishA := hold("gw-a")
+	if code := post("gw-a", strings.NewReader(good)); code != http.StatusTooManyRequests {
+		t.Fatalf("a second request of the same workload: %d", code)
+	}
+	if code := post("gw-b", strings.NewReader(good)); code != http.StatusOK {
+		t.Fatalf("another workload: %d", code)
+	}
+	finishB := hold("gw-b")
+	if code := post("gw-c", strings.NewReader(good)); code != http.StatusTooManyRequests {
+		t.Fatalf("a third workload over the total: %d", code)
+	}
+	if a, b := finishA(), finishB(); a != http.StatusOK || b != http.StatusOK {
+		t.Fatalf("the held requests: %d %d", a, b)
+	}
+	if code := post("gw-a", strings.NewReader(good)); code != http.StatusOK {
+		t.Fatalf("after the slots were freed: %d", code)
+	}
+
+	// A request over a bound is refused before its body is read: a body
+	// that never ends gets its 429 at once.
+	occupy, _ := f.svc.d.Admission.Acquire("gw-d", false)
+	defer occupy()
+	pr, pw := io.Pipe()
+	open = append(open, pw)
+	refused := make(chan int, 1)
+	go func() { refused <- post("gw-d", pr) }()
+	select {
+	case code := <-refused:
+		if code != http.StatusTooManyRequests {
+			t.Fatalf("over the bound with an open body: %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a refused request waited for its body")
 	}
 }

@@ -45,6 +45,11 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 			http.Error(w, "unauthenticated adapter", http.StatusUnauthorized)
 			return
 		}
+		release, ok := s.admit(w, adapter)
+		if !ok {
+			return
+		}
+		defer release()
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
 		if err != nil {
 			http.Error(w, "request too large or unreadable", http.StatusRequestEntityTooLarge)
@@ -66,6 +71,11 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return
 		}
+		release, ok := s.admit(w, PublicAdapter)
+		if !ok {
+			return
+		}
+		defer release()
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
 		if err != nil {
 			http.Error(w, "request too large or unreadable", http.StatusRequestEntityTooLarge)
@@ -90,6 +100,24 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	return mux
+}
+
+// admit takes one of caller's request slots (Deps.Admission). Over a
+// bound it answers 429 at once and returns false; callers treat that as
+// the role being unavailable, so nothing is allowed (fail closed). The
+// connection is closed, so the server reads nothing more of a refused
+// request's body.
+func (s *Service) admit(w http.ResponseWriter, caller string) (func(), bool) {
+	if s.d.Admission == nil {
+		return func() {}, true
+	}
+	release, ok := s.d.Admission.Acquire(caller, false)
+	if !ok {
+		w.Header().Set("Connection", "close")
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "overloaded", http.StatusTooManyRequests)
+	}
+	return release, ok
 }
 
 func encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

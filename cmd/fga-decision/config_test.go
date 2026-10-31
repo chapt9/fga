@@ -31,6 +31,8 @@ func TestValidate(t *testing.T) {
 		{"decision age too long", func(c *Config) { c.DecisionMaxAge = "1h" }, "decision_max_age"},
 		{"no audiences", func(c *Config) { c.Audiences = nil }, "audiences"},
 		{"no database", func(c *Config) { c.DatabaseURL = "" }, "database_url"},
+		{"a zero workload bound", func(c *Config) { c.Admission = &AdmissionConfig{TotalRequests: 10} }, "admission"},
+		{"a total below the workload bound", func(c *Config) { c.Admission = &AdmissionConfig{AdapterRequests: 10, TotalRequests: 5} }, "admission"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,6 +42,11 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+	// Without an admission section the role is still bounded (AVL-006).
+	if l := validDev().limits(); l.TenantRequests != defaultAdmission.AdapterRequests || l.TotalRequests != defaultAdmission.TotalRequests ||
+		l.Validate() != nil {
+		t.Fatalf("default limits %+v", l)
 	}
 	prod := validDev()
 	prod.Profile, prod.DevAdapterID, prod.TLS, prod.Listen = profileProduction, "", tls, "0.0.0.0:7443"

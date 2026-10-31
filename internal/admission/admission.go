@@ -33,7 +33,9 @@ func (l Limits) Validate() error {
 	return nil
 }
 
-// Limiter counts admitted work.
+// Limiter counts admitted work. Its key is the class of caller a role
+// bounds: the tenant in the storage and keys roles, the calling workload
+// in the decision role (TenantRequests then bounds each workload).
 type Limiter struct {
 	limits  Limits
 	mu      sync.Mutex

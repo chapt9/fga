@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/admission"
 	"fga/internal/approval"
 	"fga/internal/authn"
 	"fga/internal/catalog"
@@ -147,7 +148,8 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience, Gateways: cfg.Gateways, SelfVerifier: self,
 		Operations: registry.CoreOperations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
-		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
+		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits,
+		Admission: admission.New(cfg.limits()), Now: time.Now})
 }
 
 // tokenVerifier returns the configured first-hop token verifier, or nil.

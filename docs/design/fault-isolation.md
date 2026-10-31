@@ -53,7 +53,7 @@ One caller must not be able to exhaust a role that others depend on.
 | Role | Bound |
 |---|---|
 | storage, keys | Concurrent requests per tenant and in total, concurrent streams per tenant (`internal/admission`, AVL-006); a request over a bound is answered `429 OVERLOADED` |
-| decision | Request size, checks per request and time per decision (DEC-009) |
+| decision | Request size, checks per request and time per decision (DEC-009). Concurrent requests per calling workload (the public facade counts as one) and in total: `admission` in the role's configuration, `adapter_requests` 128 and `total_requests` 512 when absent, so no workload holds more than a quarter of the role. A request over a bound is answered `429` at once, and its connection closed; callers treat it as the role being unavailable, so nothing is allowed |
 
 Not yet: a bound per calling workload at the storage role.
 
@@ -64,3 +64,5 @@ Not yet: a bound per calling workload at the storage role.
 | `internal/guard` `TestHandler`, `TestGo`, `TestRecover` | A panicking request is answered 500 and logged, a panic after the response began aborts it, streaming flushes through the guard, a goroutine's panic reaches its fail-closed handler |
 | `internal/roleconfig` `TestServeGuardsPanics` | The storage and keys roles' server answers a panicking request 500 and serves the next |
 | `internal/content` `TestLeaseCheckPanic` | A panicking recheck ends the stream; without the guard it ends the process |
+| `internal/decisionsvc` `TestAdmission` | The decision role's bounds per workload and in total; a slow request body holds its slot; a refused request is answered before its body is read; slots are freed |
+| `cmd/fga-decision` `TestValidate` | Bad bounds are refused; without an `admission` section the defaults apply |
