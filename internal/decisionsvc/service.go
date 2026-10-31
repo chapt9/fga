@@ -9,17 +9,21 @@
 package decisionsvc
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"fga/internal/approval"
 	"fga/internal/audit"
 	"fga/internal/authn"
 	"fga/internal/decision"
 	"fga/internal/gate"
+	"fga/internal/opplan"
 	"fga/internal/policy"
 	"fga/internal/registry"
 	"fga/internal/release"
@@ -39,6 +43,7 @@ const (
 	ReasonSigningFailed      decision.Reason = "SIGNING_FAILED"
 	ReasonAdmissionClosed    decision.Reason = "ADMISSION_CLOSED"
 	ReasonAuthentication     decision.Reason = "AUTHENTICATION_FAILED"
+	ReasonApprovalNotUsable  decision.Reason = "APPROVAL_NOT_USABLE"
 )
 
 // Ref names an identity at the revision the adapter built the request from.
@@ -89,6 +94,13 @@ type Request struct {
 	// adapter (TRU-003). It authenticates the actor.
 	Evidence string  `json:"evidence,omitempty"`
 	Checks   []Check `json:"checks"`
+	// Plan is the operation's canonical plan, as the enforcing role renders
+	// it for an approver (APR-005). When present, OperationDigest must be
+	// its digest, and a NEEDS_APPROVAL outcome opens a pending approval for
+	// it.
+	Plan *opplan.Summary `json:"plan,omitempty"`
+	// Approval names an approval the caller was given for this operation.
+	Approval string `json:"approval,omitempty"`
 }
 
 // Result reports one check, with the business and ceiling effects kept apart
@@ -120,6 +132,15 @@ type Response struct {
 	Requires     []string        `json:"requires,omitempty"`
 	ValidUntil   *time.Time      `json:"valid_until,omitempty"`
 	Signed       *SignedDecision `json:"signed,omitempty"`
+	// ApprovalID names the pending approval of a NEEDS_APPROVAL outcome.
+	ApprovalID string `json:"approval_id,omitempty"`
+}
+
+// Approvals is the approval store as the decision role uses it: it opens
+// pending approvals for plans and reads the approvals requests name.
+type Approvals interface {
+	Open(ctx context.Context, a approval.Approval) (approval.Approval, error)
+	Get(ctx context.Context, tenant, id string) (approval.Approval, error)
 }
 
 // TokenVerifier verifies a bearer access token for an audience.
@@ -178,10 +199,12 @@ type Deps struct {
 	PublicAudience   string
 	Signer           *signing.Signer
 	Outbox           audit.Outbox
-	Audiences        []string
-	MaxAge           time.Duration
-	Limits           Limits
-	Now              func() time.Time
+	// Approvals is optional; without it, NEEDS_APPROVAL is final.
+	Approvals Approvals
+	Audiences []string
+	MaxAge    time.Duration
+	Limits    Limits
+	Now       func() time.Time
 }
 
 // Service decides batches.
@@ -301,12 +324,30 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if req.Subject != nil {
 		env.Subject = decision.Ref(*req.Subject)
 	}
-	d := s.d.Decider.DecideBatch(ctx, decision.Batch{Envelope: env, SnapshotDigest: snap.Digest, Checks: checks})
-	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
+	if req.Plan != nil && (req.Plan.Operation != req.Operation || opplan.Digest(*req.Plan) != req.OperationDigest) {
+		return deny(ReasonInvalidRequest)
+	}
+	d := s.d.Decider.DecideBatch(ctx, decision.Batch{Envelope: env, SnapshotDigest: snap.Digest, Checks: checks,
+		LabelOrder: snap.Info.LabelOrder})
 	for _, r := range d.Results {
 		resp.Results = append(resp.Results, Result{CheckID: r.CheckID, PrincipalID: r.Principal.ID, Business: r.Business.String(),
 			Ceiling: ceilingName(r.Ceiling), Effect: effectName(r.Effect), Reason: string(r.Reason)})
 	}
+	var used *approval.Approval
+	if d.Outcome == decision.OutcomeNeedsApproval {
+		a, reason, err := s.settleApproval(ctx, req, snap.Epoch, bound, &d)
+		switch {
+		case err != nil:
+			return fail(ReasonCatalogUnavailable)
+		case reason != "":
+			return deny(reason)
+		case d.Outcome == decision.OutcomeAllow:
+			used = &a
+		default:
+			resp.ApprovalID = a.ID
+		}
+	}
+	resp.Outcome, resp.Reason, resp.Requires = d.Outcome.String(), string(d.Reason), d.Requires
 	if d.Outcome != decision.OutcomeAllow {
 		return resp, bound
 	}
@@ -319,15 +360,23 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		}
 		return fail(ReasonCatalogUnavailable)
 	}
-	// A time condition bounds validity (POL-008, DEC-005). A bound that has
+	// A time condition bounds validity (POL-008, DEC-005), and so does the
+	// expiry of an approval the decision relies on. A bound that has
 	// already arrived leaves nothing to sign.
 	if !d.NextChange.IsZero() && d.NextChange.Before(binding.ValidUntil) {
 		binding.ValidUntil = d.NextChange
 	}
+	if used != nil && used.ExpiresAt.Before(binding.ValidUntil) {
+		binding.ValidUntil = used.ExpiresAt
+	}
 	if !s.d.Now().Before(binding.ValidUntil) {
 		return deny(gate.ReasonDecisionExpired)
 	}
-	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation))
+	rec := s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation)
+	if used != nil {
+		rec.Context.Approval = signing.Ref{ID: used.ID, Revision: used.Revision}
+	}
+	signed, err := s.d.Signer.Sign(rec)
 	if err != nil {
 		return fail(ReasonSigningFailed)
 	}
@@ -475,4 +524,93 @@ func newID() string {
 		panic(fmt.Sprintf("decisionsvc: random ID: %v", err)) // crypto/rand does not fail on supported platforms
 	}
 	return hex.EncodeToString(b)
+}
+
+// approvable are the resource types an approval can target in R1-C
+// (ruling 6; storage-role operations only).
+var approvable = map[string]bool{"storage.object": true, "storage.bucket": true}
+
+// settleApproval handles a NEEDS_APPROVAL outcome (APR-001 to APR-003).
+// Without an approval in the request it opens a pending approval for the
+// request's plan, if any. With one, an approval that is approved, unexpired,
+// for this operation, digest, requester and actor, given by someone else,
+// and requested under the current policy epoch and resource revisions
+// satisfies the approval prerequisite: d becomes ALLOW (or
+// NEEDS_RESERVATION) and the approval is returned for binding. A pending
+// approval is returned unchanged; anything else is a reason to deny.
+func (s *Service) settleApproval(ctx context.Context, req Request, epoch uint64, bound []registry.Resource, d *decision.Decision) (approval.Approval, decision.Reason, error) {
+	if s.d.Approvals == nil {
+		return approval.Approval{}, "", nil
+	}
+	requester := req.Actor.ID
+	if req.Subject != nil {
+		requester = req.Subject.ID
+	}
+	bindings := approvalBindings(bound)
+	if req.Approval == "" {
+		if req.Plan == nil {
+			return approval.Approval{}, "", nil
+		}
+		target, ok := planTarget(*req.Plan, bound)
+		if !ok {
+			return approval.Approval{}, ReasonInvalidRequest, nil
+		}
+		plan := *req.Plan
+		plan.OperationDigest = req.OperationDigest
+		a, err := s.d.Approvals.Open(ctx, approval.Approval{Tenant: req.Tenant, Operation: req.Operation, OperationDigest: req.OperationDigest,
+			Summary: plan, RequestedBy: requester, Actor: req.Actor.ID, ExpiresAt: s.d.Now().Add(approval.Lifetime),
+			TargetType: target.Type, TargetID: target.ID, PolicyEpoch: epoch, Bindings: bindings})
+		return a, "", err
+	}
+	a, err := s.d.Approvals.Get(ctx, req.Tenant, req.Approval)
+	if errors.Is(err, approval.ErrNotFound) {
+		return approval.Approval{}, ReasonApprovalNotUsable, nil
+	}
+	if err != nil {
+		return approval.Approval{}, "", err
+	}
+	same := a.Operation == req.Operation && a.OperationDigest == req.OperationDigest && a.RequestedBy == requester && a.Actor == req.Actor.ID
+	switch {
+	case same && a.State == approval.StatePending && s.d.Now().Before(a.ExpiresAt):
+		return a, "", nil
+	case !same || a.State != approval.StateApproved || !s.d.Now().Before(a.ExpiresAt) || a.Approver == requester ||
+		a.Approver == req.Actor.ID || a.PolicyEpoch != epoch || !slices.Equal(a.Bindings, bindings):
+		return approval.Approval{}, ReasonApprovalNotUsable, nil
+	}
+	d.Requires = slices.DeleteFunc(d.Requires, func(p string) bool { return p == policy.RequireApproval })
+	d.Outcome, d.Reason = decision.OutcomeAllow, ""
+	if len(d.Requires) > 0 {
+		d.Outcome, d.Reason = decision.OutcomeNeedsReservation, decision.ReasonReservationRequired
+	}
+	return a, "", nil
+}
+
+// approvalBindings are the revisions of the existing resources a request
+// is bound to, in a canonical order; planned resources have none.
+func approvalBindings(bound []registry.Resource) []approval.Binding {
+	out := []approval.Binding{}
+	for _, r := range bound {
+		b := approval.Binding{Type: r.Type, ID: r.ID, Generation: r.Generation, MetadataRevision: r.MetadataRevision}
+		if r.Generation == 0 || slices.Contains(out, b) {
+			continue
+		}
+		out = append(out, b)
+	}
+	slices.SortFunc(out, func(x, y approval.Binding) int { return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.ID, y.ID)) })
+	return out
+}
+
+// planTarget returns the plan's approval target: its first target, which
+// must be an approvable type and one of the request's bound resources.
+func planTarget(p opplan.Summary, bound []registry.Resource) (opplan.Target, bool) {
+	if len(p.Targets) == 0 || !approvable[p.Targets[0].Type] {
+		return opplan.Target{}, false
+	}
+	t := p.Targets[0]
+	for _, r := range bound {
+		if r.Type == t.Type && r.ID == t.ID && r.Generation > 0 {
+			return t, true
+		}
+	}
+	return opplan.Target{}, false
 }

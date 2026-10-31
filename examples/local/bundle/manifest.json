@@ -4,8 +4,8 @@
   "business": ["buckets.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json"],
   "ceiling": ["ceiling-recipients.json"],
   "cost_limit": 10000,
-  "label_order": [],
-  "label_generation": 0,
+  "label_order": ["public", "internal", "confidential", "restricted"],
+  "label_generation": 1,
   "test_evidence": "the sentinels of this manifest",
   "key_id": "",
   "signature": "",
@@ -29,6 +29,18 @@
     {"name": "without a rule another principal's recipient key stays hidden", "set": "business",
      "principal": {"id": "user-7", "roles": ["auditor"], "attributes": {}},
      "resource": {"type": "crypto.recipient", "id": "sha256:02", "scope": "", "attributes": {"principal": "user-9", "status": "ACTIVE"}},
-     "action": "discover", "want": "deny"}
+     "action": "discover", "want": "deny"},
+    {"name": "an owner lowers a label only with an approval (relabel is allowed, with a prerequisite)", "set": "business",
+     "principal": {"id": "user-9", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "storage.object", "id": "obj-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9", "label": "confidential", "new_label": "internal"}},
+     "action": "relabel", "want": "allow"},
+    {"name": "a member who is not a lead cannot approve", "set": "business",
+     "principal": {"id": "user-42", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "storage.object", "id": "obj-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9"}},
+     "action": "approve", "want": "deny"},
+    {"name": "a project lead approves", "set": "business",
+     "principal": {"id": "user-5", "roles": ["member", "lead"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "storage.object", "id": "obj-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9"}},
+     "action": "approve", "want": "allow"}
   ]
 }

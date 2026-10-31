@@ -16,6 +16,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/decisionsvc"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -32,7 +33,31 @@ const (
 var (
 	ErrNotFound    = errors.New("not found")
 	ErrUnavailable = errors.New("a dependency is unavailable")
+	// ErrApprovalNotUsable means the approval the caller named is not
+	// approved for exactly this operation (rejected, expired, consumed, or
+	// requested for another operation, requester or resource state).
+	ErrApprovalNotUsable = errors.New("the approval is not usable for this operation")
 )
+
+// ApprovalRequired is the error of an operation that every check allows
+// once an approval is given (APR-001). ID names the pending approval;
+// telling the caller tells them only that they could do this with an
+// approval.
+type ApprovalRequired struct {
+	ID string
+}
+
+func (e *ApprovalRequired) Error() string { return "approval required: " + e.ID }
+
+// Options are the optional inputs of an authorization.
+type Options struct {
+	// Plan is the operation's canonical plan (APR-005). With a plan, the
+	// operation digest is the plan's, so an approval binds exactly the
+	// planned operation, and a NEEDS_APPROVAL answer opens an approval.
+	Plan *opplan.Summary
+	// Approval names an approval the caller was given for this operation.
+	Approval string
+}
 
 // Caller is an authenticated user: the subject of a verified access token,
 // acting for itself (TB1).
@@ -42,6 +67,9 @@ type Caller struct {
 	// Token is the user's access token, passed to the decision role as
 	// first-hop evidence (TRU-003).
 	Token string
+	// Approval is the approval the caller presents with this request. Only
+	// operations with a plan send it to the decision role.
+	Approval string
 }
 
 // Decider obtains decisions from the decision role.
@@ -70,6 +98,14 @@ type Check struct {
 // here and verified by that role.
 func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *catalog.Store, c Caller, op, audience string,
 	singleUse bool, checks []Check) (signing.Signed, signing.Record, error) {
+	return AuthorizeWith(ctx, d, verifier, cat, c, op, audience, singleUse, checks, Options{})
+}
+
+// AuthorizeWith is Authorize with a plan and an approval. A NEEDS_APPROVAL
+// answer with an approval ID is *ApprovalRequired; an approval the decision
+// role refuses is ErrApprovalNotUsable.
+func AuthorizeWith(ctx context.Context, d Decider, verifier *signing.Verifier, cat *catalog.Store, c Caller, op, audience string,
+	singleUse bool, checks []Check, o Options) (signing.Signed, signing.Record, error) {
 	id, err := cat.GetIdentity(ctx, c.Tenant, c.Principal)
 	if err != nil {
 		return signing.Signed{}, signing.Record{}, ErrNotFound
@@ -89,6 +125,15 @@ func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *
 			ch.Resource.Type, ch.Resource.ID, ch.Version, ch.Recipient)
 	}
 	req.OperationDigest = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if o.Plan != nil {
+		if o.Approval == "" {
+			o.Approval = c.Approval
+		}
+		req.Approval = o.Approval
+		plan := *o.Plan
+		plan.Operation = op
+		req.Plan, req.OperationDigest = &plan, opplan.Digest(plan)
+	}
 
 	resp, err := d.Decide(ctx, req)
 	switch {
@@ -96,6 +141,10 @@ func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision: %v", ErrUnavailable, err)
 	case resp.Outcome == "ERROR":
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision %s", ErrUnavailable, resp.Reason)
+	case resp.Outcome == "NEEDS_APPROVAL" && resp.ApprovalID != "":
+		return signing.Signed{}, signing.Record{}, &ApprovalRequired{ID: resp.ApprovalID}
+	case resp.Outcome == "DENY" && resp.Reason == string(decisionsvc.ReasonApprovalNotUsable) && o.Approval != "":
+		return signing.Signed{}, signing.Record{}, ErrApprovalNotUsable
 	case resp.Outcome != "ALLOW" || resp.Signed == nil:
 		// Absent and denied look the same to the caller (DEC-010).
 		return signing.Signed{}, signing.Record{}, ErrNotFound
@@ -111,7 +160,7 @@ func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *
 	} else {
 		rec, err = verifier.Inspect(signed)
 	}
-	if err != nil || !bound(rec, req) {
+	if err != nil || !bound(rec, req) || rec.Context.Approval.ID != "" && rec.Context.Approval.ID != o.Approval {
 		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision does not verify", ErrUnavailable)
 	}
 	return signed, rec, nil

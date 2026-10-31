@@ -29,7 +29,16 @@ const (
 	CodeTooLarge     = "TOO_LARGE"
 	CodeUnavailable  = "UNAVAILABLE"
 	CodeOverloaded   = "OVERLOADED"
+	// CodeApprovalRequired answers 202: the operation needs an approval,
+	// named in the body. CodeApprovalNotUsable answers 409: the presented
+	// approval does not cover this operation.
+	CodeApprovalRequired  = "APPROVAL_REQUIRED"
+	CodeApprovalNotUsable = "APPROVAL_NOT_USABLE"
 )
+
+// ApprovalHeader carries the approval a caller presents when repeating an
+// operation that needed one (APR-001).
+const ApprovalHeader = "Fga-Approval"
 
 // TokenVerifier verifies access tokens; authn.Verifier implements it.
 type TokenVerifier interface {
@@ -73,7 +82,11 @@ func Authenticate(tokens TokenVerifier, audience string, r *http.Request) (enfor
 	if err != nil {
 		return enforce.Caller{}, false
 	}
-	return enforce.Caller{Tenant: c.Tenant, Principal: c.Subject, Token: token}, true
+	approval := r.Header.Get(ApprovalHeader)
+	if len(approval) > 64 {
+		return enforce.Caller{}, false
+	}
+	return enforce.Caller{Tenant: c.Tenant, Principal: c.Subject, Token: token, Approval: approval}, true
 }
 
 // Authed wraps h with bearer-token authentication for audience.

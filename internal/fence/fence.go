@@ -37,6 +37,7 @@ var (
 	ErrResource        = errors.New("fence: a bound resource changed")
 	ErrExpired         = errors.New("fence: decision expired")
 	ErrReplayed        = errors.New("fence: single-use decision already consumed")
+	ErrApproval        = errors.New("fence: the approval changed, expired or was consumed")
 )
 
 // Ref names a row by ID at a revision.
@@ -67,6 +68,10 @@ type Binding struct {
 	Delegations []Ref
 	Keys        []Ref // recipient-key fingerprints and revisions
 	Resources   []Resource
+	// Approval is the approval the decision relied on, if any. It must
+	// still be APPROVED at its revision, and Run consumes it (APR-002,
+	// APR-003).
+	Approval *Ref
 }
 
 // FromRecord returns the binding of a verified decision record: its actor,
@@ -111,6 +116,9 @@ func FromRecord(rec signing.Record) (Binding, error) {
 			return Binding{}, err
 		}
 	}
+	if a := rec.Context.Approval; a.ID != "" {
+		b.Approval = &Ref{ID: a.ID, Revision: a.Revision}
+	}
 	b.Identities = sortedRefs(ids)
 	b.Keys = sortedRefs(keys)
 	for _, d := range rec.DelegationChain {
@@ -148,18 +156,29 @@ func New(pool *pgxpool.Pool, margin time.Duration, now func() time.Time) *Fence 
 	return &Fence{pool: pool, margin: margin, now: now}
 }
 
-// Run locks and rechecks b in the fixed order, calls fn for the operation's
-// own rows (step 7), consumes a single-use decision (step 8), checks the
-// time once more and commits. mutate names the resources the operation
-// changes; they are locked for update rather than share. Any failure rolls
-// everything back.
+// Run locks and rechecks b in the fixed order (steps 1 to 7), calls fn for
+// the operation's own rows, consumes the approval the decision relied on
+// and a single-use decision, checks the time once more and commits. mutate
+// names the resources the operation changes; they are locked for update
+// rather than share. Any failure rolls everything back.
 func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
-		if err := f.check(ctx, tx, b, mutate); err != nil {
+		if err := f.check(ctx, tx, b, mutate, true); err != nil {
 			return err
 		}
 		if err := fn(ctx, tx); err != nil {
 			return err
+		}
+		if b.Approval != nil {
+			tag, err := tx.Exec(ctx, `UPDATE approvals SET state = 'CONSUMED', consumed_at = $4, revision = revision + 1
+			                           WHERE tenant = $1 AND id = $2 AND revision = $3 AND state = 'APPROVED'`,
+				b.Tenant, b.Approval.ID, b.Approval.Revision, f.now())
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return ErrApproval
+			}
 		}
 		if b.SingleUse {
 			tag, err := tx.Exec(ctx, `INSERT INTO consumed_decisions (decision_id, valid_until, incarnation) VALUES ($1, $2, $3)
@@ -179,7 +198,7 @@ func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx
 // check. Stream leases use it to revalidate an admitted read (CNT-008).
 func (f *Fence) Check(ctx context.Context, b Binding) error {
 	return pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
-		return f.check(ctx, tx, b, nil)
+		return f.check(ctx, tx, b, nil, false)
 	})
 }
 
@@ -190,8 +209,9 @@ func (f *Fence) checkTime(b Binding) error {
 	return nil
 }
 
-// check runs steps 1 to 6 of the lock order.
-func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string) error {
+// check runs steps 1 to 7 of the lock order; run says whether Run will
+// consume the approval.
+func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string, run bool) error {
 	if err := f.checkTime(b); err != nil {
 		return err
 	}
@@ -283,6 +303,26 @@ func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string
 			return fmt.Errorf("fence: resource: %w", err)
 		case gen != r.Generation || meta != r.MetadataRevision:
 			return ErrResource
+		}
+	}
+
+	// 7. The approval the decision relied on, locked for update when Run
+	// will consume it.
+	if a := b.Approval; a != nil {
+		lock := "FOR SHARE"
+		if run {
+			lock = "FOR UPDATE"
+		}
+		var state string
+		var rev uint64
+		var expires time.Time
+		err := tx.QueryRow(ctx, `SELECT state, revision, expires_at FROM approvals WHERE tenant = $1 AND id = $2 `+lock, b.Tenant, a.ID).
+			Scan(&state, &rev, &expires)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (state != "APPROVED" || rev != a.Revision || !now.Before(expires)) {
+			return ErrApproval
+		}
+		if err != nil {
+			return fmt.Errorf("fence: approval: %w", err)
 		}
 	}
 	return nil

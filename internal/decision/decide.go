@@ -6,9 +6,11 @@ package decision
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
+	"fga/internal/labels"
 	"fga/internal/policy"
 )
 
@@ -139,6 +141,9 @@ type Batch struct {
 	Checks         []Check
 	// Operation holds the validated operation facts shared by every check.
 	Operation map[string]any
+	// LabelOrder is the signed release's label order (D-06), from least to
+	// most restrictive; empty means no ranks are computed.
+	LabelOrder []string
 }
 
 // CheckResult reports one check. The business and ceiling effects are kept
@@ -367,12 +372,13 @@ func requiresOf(effect CheckEffect, business policy.ActionResult) []string {
 // evaluate returns the result for the check's action. An action the engine
 // did not answer gets the zero ActionResult, whose effect is EffectUnknown.
 func (d *Decider) evaluate(ctx context.Context, set policy.Set, b Batch, principal policy.Principal, c Check, now time.Time) (policy.ActionResult, error) {
+	principal, resource := ranked(b.LabelOrder, principal, c.Resource)
 	res, err := d.evaluator.Evaluate(ctx, policy.Request{
 		SnapshotDigest: b.SnapshotDigest,
 		Operation:      b.Operation,
 		Set:            set,
 		Principal:      principal,
-		Resource:       c.Resource,
+		Resource:       resource,
 		Actions:        []string{c.Action},
 		Now:            now,
 	})
@@ -403,4 +409,49 @@ func combine(ceiling, business policy.ActionResult) (CheckEffect, Reason) {
 	default:
 		return CheckDeny, ReasonMissingResult
 	}
+}
+
+// Attributes the decision role computes from the signed label order
+// (D-06, FLW-004). Stored attributes of the same names are dropped, so a
+// policy only ever sees computed ranks.
+const (
+	AttrLabelRank     = "label_rank"
+	AttrNewLabelRank  = "new_label_rank"
+	AttrFloorRank     = "floor_rank"
+	AttrClearanceRank = "clearance_rank"
+)
+
+// ranked returns copies of principal and resource with the label ranks
+// added: the resource's label, proposed new label and floor (a missing or
+// unknown label ranks highest), and the principal's clearance when it is in
+// the order. A principal without a known clearance has no clearance_rank,
+// so a condition on it errors and denies (POL-005).
+func ranked(order []string, p policy.Principal, r policy.Resource) (policy.Principal, policy.Resource) {
+	pa := maps.Clone(p.Attributes)
+	ra := maps.Clone(r.Attributes)
+	delete(pa, AttrClearanceRank)
+	for _, k := range []string{AttrLabelRank, AttrNewLabelRank, AttrFloorRank} {
+		delete(ra, k)
+	}
+	if len(order) > 0 {
+		if ra == nil {
+			ra = map[string]any{}
+		}
+		label, _ := ra["label"].(string)
+		rank, _ := labels.Rank(order, label)
+		ra[AttrLabelRank] = int64(rank)
+		for attr, rankAttr := range map[string]string{"new_label": AttrNewLabelRank, "floor": AttrFloorRank} {
+			if v, ok := ra[attr].(string); ok {
+				rank, _ := labels.Rank(order, v)
+				ra[rankAttr] = int64(rank)
+			}
+		}
+		if c, ok := pa["clearance"].(string); ok {
+			if rank, known := labels.Rank(order, c); known {
+				pa[AttrClearanceRank] = int64(rank)
+			}
+		}
+	}
+	p.Attributes, r.Attributes = pa, ra
+	return p, r
 }

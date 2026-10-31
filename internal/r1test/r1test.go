@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/approval"
 	"fga/internal/authn"
 	"fga/internal/blob"
 	"fga/internal/catalog"
@@ -37,6 +38,9 @@ const Tenant = "t-acme"
 // StorageAdapter is the workload name of the storage role.
 const StorageAdapter = "storage-1"
 
+// LabelOrder is the fixture release's label order (D-06), generation 1.
+var LabelOrder = []string{"public", "internal", "confidential", "restricted"}
+
 // Policies is the storage policy release of the fixture.
 //
 //   - Members of a bucket's project may create objects in it and list it.
@@ -49,13 +53,23 @@ const StorageAdapter = "storage-1"
 //   - Members may look up recipient keys (to share) and signing keys (to
 //     verify); a principal may use its own keys. Every action is listed:
 //     nothing is allowed without a rule (ruling 7).
+//   - An owner may set or raise its object's label, and lower it only with
+//     an approval; members may propose labels; project leads approve.
 //   - The ceiling forbids receive-key for a key that is not active.
 var Policies = map[string]string{
 	"buckets.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
 	  {"id":"members-use-bucket","effect":"allow","actions":["create-object","list"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"objects.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
-	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-lowers-with-approval","effect":"allow","actions":["relabel"],"roles":["*"],"requires":["approval"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"members-propose-labels","effect":"allow","actions":["propose-label"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-approve-objects","effect":"allow","actions":["approve"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"members-read","effect":"allow","actions":["read","stat","discover"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects"},
 	  {"id":"auditors-history","effect":"allow","actions":["read-history","discover-history"],"roles":["auditor"]},
@@ -80,8 +94,9 @@ var Policies = map[string]string{
 
 // UserActions are the capabilities every fixture user gets (DLG-004).
 var UserActions = map[string][]string{
-	"storage.bucket":     {"create-object", "list", "manage"},
-	"storage.object":     {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share"},
+	"storage.bucket": {"create-object", "list", "manage", "approve"},
+	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
+		"label", "relabel", "propose-label", "approve"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
@@ -171,7 +186,8 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	env := release.R1Environment()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	releases := release.NewManager(map[string]ed25519.PublicKey{"pub-1": pub}, env, st.Catalog, now)
-	info := release.Info{Audience: release.AudienceDecision, CostLimit: engine.DefaultOptions.CostLimit, TestEvidence: "r1test"}
+	info := release.Info{Audience: release.AudienceDecision, CostLimit: engine.DefaultOptions.CostLimit, TestEvidence: "r1test",
+		LabelOrder: LabelOrder, LabelGeneration: 1}
 	env.Stamp(&info)
 	b := release.Bundle{Epoch: 1, Info: info, Documents: map[string][]byte{}, CeilingDeclared: true, KeyID: "pub-1"}
 	for name, doc := range policies {
@@ -191,6 +207,9 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		t.Fatal(err)
 	}
 	pgtest.Exec(t, pool, `INSERT INTO tenant_epochs VALUES ('`+Tenant+`', 1)`)
+	if err := st.Catalog.SetLabelOrder(ctx, 1, LabelOrder); err != nil {
+		t.Fatal(err)
+	}
 
 	resolver := registry.NewResolver(st.Catalog.Resources(), types)
 	g, err := gate.New(gate.Deps{Identities: st.Catalog.Identities(), Delegations: st.Catalog.Delegations(), Capabilities: st.Catalog,
@@ -216,6 +235,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	st.Tokens = tokens
 	st.Decisions, err = decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Operations: registry.R1Operations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
+		Approvals: approval.New(pool, now),
 		Audiences: []string{content.Audience, content.KeysAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
 		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience}}})
 	if err != nil {

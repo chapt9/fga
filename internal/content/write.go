@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +24,7 @@ import (
 	"fga/internal/cryptowire"
 	"fga/internal/envelope"
 	"fga/internal/fence"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -35,6 +38,11 @@ type BeginRequest struct {
 	// IfNoneMatch requires no current live version at commit (PUB-007).
 	IfMatch     string
 	IfNoneMatch bool
+	// Label is an explicit label for a new key (LAB-002); empty takes the
+	// bucket's default. It must be in the active label order and not below
+	// the bucket's floor, and publishing it needs label on the planned
+	// object. An existing key keeps its label; it is changed with SetLabel.
+	Label string
 }
 
 // Intent is an upload intent's identities (BeginEncryptedUpload, KEY-003).
@@ -63,6 +71,7 @@ type Intent struct {
 	attributes       map[string]any
 	principal        string
 	result           []byte
+	label            string
 }
 
 // ValidKey reports whether key is a valid object key: 1 to 1024 bytes of
@@ -74,6 +83,9 @@ func ValidKey(key string) bool {
 func (r BeginRequest) digest() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "fga.begin/v1\n%q\n%q\n%q\n%t\n", r.Bucket, r.Key, r.IfMatch, r.IfNoneMatch)
+	if r.Label != "" {
+		fmt.Fprintf(h, "label %q\n", r.Label)
+	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
@@ -84,7 +96,7 @@ func (r BeginRequest) digest() string {
 // published with; the client cannot set them. An identical retry under the
 // same idempotency key returns the same intent.
 func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, error) {
-	if !ValidKey(r.Key) || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 || (r.IfMatch != "" && r.IfNoneMatch) {
+	if !ValidKey(r.Key) || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 || (r.IfMatch != "" && r.IfNoneMatch) || len(r.Label) > 64 {
 		return Intent{}, ErrInvalid
 	}
 	if in, err := s.intentByIdempotency(ctx, c, r.IdempotencyKey); err == nil {
@@ -116,7 +128,7 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 	in := Intent{IntentID: cryptowire.NewUUID(), Tenant: tenantID, LogicalVersion: cryptowire.NewUUID(), CryptoVersion: cryptowire.NewUUID(),
 		Blob: cryptowire.NewUUID(), Attempt: cryptowire.NewUUID(), Suite: cryptowire.Suite1, Format: cryptowire.Format1,
 		MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime),
-		bucket: b.ID, key: r.Key, ifMatch: r.IfMatch, ifNoneMatch: r.IfNoneMatch, principal: c.Principal}
+		bucket: b.ID, key: r.Key, ifMatch: r.IfMatch, ifNoneMatch: r.IfNoneMatch, principal: c.Principal, label: r.Label}
 
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, r.Key)
 	var op string
@@ -126,11 +138,21 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		in.Object, in.newObject = cryptowire.NewUUID(), true
 		in.scope = b.Scope
 		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label}
+		if r.Label != "" {
+			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
+				return Intent{}, err
+			}
+			in.attributes["label"] = r.Label
+		}
 		op = registry.OpBeginCreate
 		checks = []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", b.ID.String())}}
 	case err != nil:
 		return Intent{}, err
 	default:
+		if current, _ := o.Attributes["label"].(string); r.Label != "" && r.Label != current {
+			return Intent{}, fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
+		}
+		in.label = ""
 		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
 		op = registry.OpBeginVersion
 		checks = []check{{id: "object", role: registry.RoleObject, action: "new-version", ref: canonical("storage.object", o.ID.String())}}
@@ -144,11 +166,11 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		_, err := tx.Exec(ctx, `
 			INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
 			  version, crypto_version, blob, attempt, expected_generation, if_match, if_none_match, planned_scope, planned_attributes,
-			  state, expires_at, created_at)
-			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20)`,
+			  state, expires_at, created_at, label)
+			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20,$21)`,
 			c.Tenant, in.IntentID, c.Principal, r.IdempotencyKey, r.digest(), b.ID, r.Key, in.Object, in.newObject,
 			in.LogicalVersion, in.CryptoVersion, in.Blob, in.Attempt, in.expectedGen, r.IfMatch, r.IfNoneMatch, in.scope, attrs,
-			in.ExpiresAt, s.d.Now())
+			in.ExpiresAt, s.d.Now(), in.label)
 		if isUnique(err) {
 			return fmt.Errorf("%w: the idempotency key is in use", ErrConflict)
 		}
@@ -198,7 +220,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	var sum *string
 	sql := `SELECT i.id, t.id, i.object, i.version, i.crypto_version, i.blob, i.attempt, i.expires_at, i.state, i.new_object, i.bucket,
 	               i.key, i.expected_generation, i.if_match, i.if_none_match, i.planned_scope, i.planned_attributes, i.principal,
-	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest
+	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label
 	          FROM upload_intents i JOIN tenants t ON t.name = i.tenant
 	         WHERE i.tenant = $1 AND i.id = $2 AND i.principal = $3`
 	if lock {
@@ -207,7 +229,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	var result string
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Object, &in.LogicalVersion, &in.CryptoVersion,
 		&in.Blob, &in.Attempt, &in.ExpiresAt, &in.state, &in.newObject, &in.bucket, &in.key, &in.expectedGen, &in.ifMatch, &in.ifNoneMatch,
-		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest)
+		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -417,13 +439,35 @@ func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r Fina
 	objectName := in.Object.String()
 	op := registry.OpPublishVersion
 	checks := []check{{id: "object", role: registry.RoleObject, action: "new-version", ref: objectRef}}
+	plan := opplan.Summary{Action: "new-version", Targets: []opplan.Target{{Role: registry.RoleObject, Type: "storage.object",
+		ID: in.Object.String(), Version: in.LogicalVersion.String()}}, Changes: map[string]string{}}
 	if in.newObject {
 		b := in.bucket.String()
 		objectRef = planned(registry.PlannedObject, in.IntentID.String())
 		objectName = "intent:" + in.IntentID.String()
 		op = registry.OpPublishCreate
 		checks = []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", b)}}
+		plan.Action, plan.Targets = "create-object", []opplan.Target{{Role: registry.RoleBucket, Type: "storage.bucket", ID: b},
+			{Role: registry.RoleObject, Type: "storage.object", ID: in.Object.String(), Version: in.LogicalVersion.String()}}
+		if in.label != "" {
+			op = registry.OpPublishCreateLabeled
+			checks = append(checks, check{id: "label", role: registry.RoleLabel, action: "label", ref: objectRef})
+			plan.Changes["label"] = in.label
+		}
 	}
+	plan.Details = details(map[string]string{"bucket": fmt.Sprint(in.attributes["bucket"]), "key": in.key})
+	switch {
+	case in.ifMatch != "":
+		plan.Preconditions = []string{"if-match " + in.ifMatch}
+	case in.ifNoneMatch:
+		plan.Preconditions = []string{"if-none-match *"}
+	}
+	var recipients []string
+	for _, e := range envs {
+		recipients = append(recipients, e.ctx.Recipient.String())
+	}
+	slices.Sort(recipients)
+	plan.Changes["recipients"] = strings.Join(recipients, ",")
 	for i, e := range envs {
 		fp := e.ctx.Recipient.String()
 		n := strconv.Itoa(i)
@@ -434,7 +478,7 @@ func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r Fina
 			check{id: "recipient-read-" + n, role: registry.RoleRecipientRead, action: "read", ref: objectRef, recipient: fp},
 			check{id: "recipient-key-" + n, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp})
 	}
-	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
+	rec, err := s.decidePlanned(ctx, c, op, checks, plan)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -448,6 +492,13 @@ func (s *Service) CommitPublish(ctx context.Context, p Prepared) (Published, err
 	var result Published
 	mutate := []string{in.Object.String()}
 	err := s.fenced(ctx, rec, mutate, func(ctx context.Context, tx pgx.Tx) error {
+		if in.label != "" {
+			// The label was checked against the order the decision was
+			// made under; it must still be that order (D-06).
+			if err := s.labelOrderHolds(ctx, tx, rec, in.label, in.bucket); err != nil {
+				return err
+			}
+		}
 		var err error
 		result, err = s.publish(ctx, tx, c, in, desc, r, envs)
 		if err != nil {

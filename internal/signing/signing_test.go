@@ -263,11 +263,17 @@ func TestRecordContentRules(t *testing.T) {
 		edit func(*Record)
 		want error
 	}{
-		"obligation":            {func(r *Record) { r.Obligations = []Obligation{{Type: "watermark", Version: 1}} }, ErrObligation},
-		"other mapping":         {func(r *Record) { r.ObligationMappingVersion = "fga.obligations/v9" }, ErrObligation},
-		"business deny":         {func(r *Record) { r.Checks[0].BusinessEffect = "DENY" }, ErrRecord},
-		"ceiling objection":     {func(r *Record) { r.Checks[0].CeilingEffect = "DENY" }, ErrRecord},
-		"unmet prerequisite":    {func(r *Record) { r.Checks[0].Requires = []string{"approval"} }, ErrRecord},
+		"obligation":         {func(r *Record) { r.Obligations = []Obligation{{Type: "watermark", Version: 1}} }, ErrObligation},
+		"other mapping":      {func(r *Record) { r.ObligationMappingVersion = "fga.obligations/v9" }, ErrObligation},
+		"business deny":      {func(r *Record) { r.Checks[0].BusinessEffect = "DENY" }, ErrRecord},
+		"ceiling objection":  {func(r *Record) { r.Checks[0].CeilingEffect = "DENY" }, ErrRecord},
+		"unmet prerequisite": {func(r *Record) { r.Checks[0].Requires = []string{"approval"} }, ErrRecord},
+		"reservation": {func(r *Record) {
+			r.Checks[0].Requires, r.Context.Approval = []string{"approval", "reservation"}, Ref{ID: "a-1", Revision: 2}
+		}, ErrRecord},
+		"bound approval": {func(r *Record) {
+			r.Checks[0].Requires, r.Context.Approval = []string{"approval"}, Ref{ID: "a-1", Revision: 2}
+		}, nil},
 		"recipient w/o binding": {func(r *Record) { r.Checks[0].Kind = "RECIPIENT_ELIGIBILITY" }, ErrRecord},
 		"no checks":             {func(r *Record) { r.Checks = nil }, ErrRecord},
 	} {

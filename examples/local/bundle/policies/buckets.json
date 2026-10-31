@@ -1,3 +1,5 @@
 {"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
   {"id":"members-use-bucket","effect":"allow","actions":["create-object","list"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}

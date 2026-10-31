@@ -5,7 +5,11 @@
 // (MOD-004).
 package opplan
 
-import "encoding/json"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
 
 // Target is one exact resource an operation acts on.
 type Target struct {
@@ -36,4 +40,22 @@ type Summary struct {
 	// Details holds the operation's canonical arguments, if any.
 	Details        json.RawMessage `json:"details,omitempty"`
 	UnverifiedNote string          `json:"unverified_note,omitempty"`
+}
+
+// Digest is the operation digest of a plan: SHA-256 over a domain prefix
+// and the plan's JSON encoding without its digest field and unverified
+// note (encoding/json writes struct fields in declaration order and map
+// keys sorted, so the encoding is canonical). An approval binds this
+// digest, so a plan must exclude identifiers allocated per attempt
+// (APR-001).
+func Digest(s Summary) string {
+	s.OperationDigest, s.UnverifiedNote = "", ""
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic("opplan: a summary always encodes: " + err.Error())
+	}
+	h := sha256.New()
+	h.Write([]byte("fga.opplan/v1\x00"))
+	h.Write(b)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }

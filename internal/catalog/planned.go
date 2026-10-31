@@ -74,15 +74,25 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (registry.Resource, error) {
 	r := registry.Resource{Tenant: tenant, Type: "storage.object"}
 	var attrs []byte
+	var label, floor string
 	err := s.pool.QueryRow(ctx, `
-		SELECT object::text, planned_scope, planned_attributes FROM upload_intents
-		 WHERE tenant = $1 AND id::text = $2 AND new_object AND state IN ('RESERVED', 'STAGED')`, tenant, intent).
-		Scan(&r.ID, &r.Scope, &attrs)
+		SELECT i.object::text, i.planned_scope, i.planned_attributes, i.label, b.default_label
+		  FROM upload_intents i JOIN buckets b ON b.tenant = i.tenant AND b.id = i.bucket
+		 WHERE i.tenant = $1 AND i.id::text = $2 AND i.new_object AND i.state IN ('RESERVED', 'STAGED')`, tenant, intent).
+		Scan(&r.ID, &r.Scope, &attrs, &label, &floor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return registry.Resource{}, registry.ErrUnknownResource
 	}
 	if err != nil {
 		return registry.Resource{}, err
 	}
-	return r, json.Unmarshal(attrs, &r.Attributes)
+	if err := json.Unmarshal(attrs, &r.Attributes); err != nil {
+		return registry.Resource{}, err
+	}
+	// An explicit label is a proposed change like a relabel: policies see
+	// it as new_label beside the collection floor (LAB-002).
+	if label != "" {
+		r.Attributes["new_label"], r.Attributes["floor"] = label, floor
+	}
+	return r, nil
 }

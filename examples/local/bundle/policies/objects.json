@@ -1,5 +1,11 @@
 {"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
-  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+  {"id":"owner-lowers-with-approval","effect":"allow","actions":["relabel"],"roles":["*"],"requires":["approval"],
+   "when":"resource.attributes.owner == principal.id"},
+  {"id":"members-propose-labels","effect":"allow","actions":["propose-label"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"leads-approve-objects","effect":"allow","actions":["approve"],"roles":["lead"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"members-read","effect":"allow","actions":["read","stat","discover"],"roles":["member"],
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"auditors-history","effect":"allow","actions":["read-history","discover-history"],"roles":["auditor"]},

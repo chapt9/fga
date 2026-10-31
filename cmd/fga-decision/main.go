@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/approval"
 	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/decision"
@@ -110,6 +111,11 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	if err := releases.Activate(ctx, bundle); err != nil {
 		return nil, err
 	}
+	// Enforcing roles read the active label order from the catalog to tell
+	// a raise from a lowering; decisions bind its generation (D-06).
+	if err := store.SetLabelOrder(ctx, bundle.Info.LabelGeneration, bundle.Info.LabelOrder); err != nil {
+		return nil, err
+	}
 
 	resolver := registry.NewResolver(store.Resources(), types)
 	g, err := gate.New(gate.Deps{Identities: store.Identities(), Delegations: store.Delegations(), Capabilities: store,
@@ -132,7 +138,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	maxAge, _ := time.ParseDuration(cfg.DecisionMaxAge) // validated by Config.Validate
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience,
-		Operations: registry.R1Operations(types), Authority: store,
+		Operations: registry.R1Operations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
 		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
 }
 

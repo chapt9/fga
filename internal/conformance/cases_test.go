@@ -342,3 +342,50 @@ func canonicalObject(id string) decisionsvc.Alias {
 }
 
 func noop(context.Context, pgx.Tx) error { return nil }
+
+// TestV147 binds propose_label to content.ProposeLabel. The fixture's unit
+// is a storage object until document units exist (step 3 of R1-C); its
+// collection floor is the bucket's default label, and its access revision
+// is our metadata revision, brought to the fixture's 3 by two raises from
+// the bucket default. The proposer is a project member whose policy allows
+// propose-label; its classifier is not registered (no classifier registry
+// exists, D-06), so the proposal can only be advisory.
+func TestV147(t *testing.T) {
+	f := load(t, "V-147")
+	var init struct {
+		Label          string `json:"label"`
+		AccessRevision uint64 `json:"access_revision"`
+		Floor          string `json:"collection_floor"`
+	}
+	if err := json.Unmarshal(f.InitialState, &init); err != nil {
+		t.Fatal(err)
+	}
+	st := r1test.New(t)
+	st.LabeledBucket("objects", "p1", init.Floor)
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("objects", "u1", []byte("unit")); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []string{"confidential", init.Label} {
+		if _, err := st.Content.SetLabel(ctx, alice.Caller, "objects", "u1", l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probe := func() (string, uint64) {
+		var label string
+		var meta uint64
+		_ = st.Pool.QueryRow(ctx, `SELECT r.attributes->>'label', r.metadata_revision FROM objects o
+		                            JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text WHERE o.key = 'u1'`).Scan(&label, &meta)
+		return label, meta
+	}
+	if label, meta := probe(); label != init.Label || meta != init.AccessRevision {
+		t.Fatalf("initial state %s at %d, want %s at %d", label, meta, init.Label, init.AccessRevision)
+	}
+	in := f.input(t, "proposal")
+	p, err := st.Content.ProposeLabel(ctx, alice.Caller, "objects", "u1", in["label"].(string), in["signer"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	label, meta := probe()
+	f.check(t, map[string]any{"unit.label": label, "unit.access_revision": meta, "proposal.authoritative": p.Authoritative})
+}

@@ -1,7 +1,8 @@
 #!/bin/bash
-# Smoke test of the R1-B roles on one host (development profile): builds
-# the binaries, creates a throwaway database, starts fga-decision, fga-keys
-# and fga-storage on loopback, and drives them with fga and fga-admin.
+# Smoke test of the R1-B roles, with R1-C labels and approvals, on one host
+# (development profile): builds the binaries, creates a throwaway database,
+# starts fga-decision, fga-keys and fga-storage on loopback, and drives them
+# with fga and fga-admin.
 #
 #   scripts/smoke.sh WORKDIR
 #
@@ -87,6 +88,27 @@ p=open("plain.bin","rb").read()
 blobs=[open(f,"rb").read() for f in glob.glob("blobs/blobs/*/*/*")]
 assert len(blobs)==1 and all(p[i:i+32] not in blobs[0] for i in range(0,len(p),65536)), "plaintext found in a blob"
 print("the blob holds no 32-byte plaintext sample")'
+
+# Labels and approvals (R1-C): raising is label, lowering is relabel, which
+# the example policy allows only with an approval from a project lead.
+$ADMIN identity put -tenant t-acme -id lena -roles member,lead -attrs '{"projects":["p1"]}'
+$ADMIN grant -tenant t-acme -actor lena -preset storage
+$ADMIN grant -tenant t-acme -actor lena -preset approver
+$B/fga keys init -dir lena > lena.keys
+as alice; check $B/fga label -bucket reports -key q3/report.bin -label confidential
+as alice; if $B/fga label -bucket reports -key q3/report.bin -label internal 2>err.txt; then echo "UNEXPECTED: lowered without approval"; exit 1; fi
+APPROVAL=$(sed -n 's/.*approval required: \([0-9a-f]*\);.*/\1/p' err.txt)
+[ -n "$APPROVAL" ] || { echo "SMOKE FAILED: no approval ID: $(cat err.txt)"; exit 1; }
+echo "lowering needs approval $APPROVAL"
+as bob;   $B/fga approvals > approvals.txt; if grep -q "$APPROVAL" approvals.txt; then echo "UNEXPECTED: bob sees the approval"; exit 1; fi
+as lena;  $B/fga approvals > approvals.txt; check grep -q "$APPROVAL" approvals.txt; cat approvals.txt
+as lena;  check $B/fga approve $APPROVAL
+as alice; check $B/fga label -bucket reports -key q3/report.bin -label internal -approval $APPROVAL
+as alice; check $B/fga label -bucket reports -key q3/report.bin -label confidential
+as alice; if $B/fga label -bucket reports -key q3/report.bin -label internal -approval $APPROVAL 2>err.txt; then echo "UNEXPECTED: approval used twice"; exit 1; fi
+echo "approval used twice: $(cat err.txt)"
+as bob;   check $B/fga propose-label -bucket reports -key q3/report.bin -label public -classifier smoke-classifier
+as bob;   $B/fga get -bucket reports -key q3/report.bin -out bob.out && cmp plain.bin bob.out && echo "bob still reads after the label changes"
 
 
 $ADMIN audit export -dir audit

@@ -30,6 +30,17 @@ const (
 	OpRevokeRecipient   = "crypto.recipient.revoke"
 	OpLookupRecipient   = "crypto.recipient.discover"
 	OpLookupSigner      = "crypto.signing-key.discover"
+	// Labels (LAB-002, LAB-004): a raise or an explicit label at
+	// publication is label, a lowering relabel; a classifier proposal is
+	// advisory.
+	OpLabel                = "storage.object.label"
+	OpRelabel              = "storage.object.relabel"
+	OpProposeLabel         = "storage.object.propose-label"
+	OpPublishCreateLabeled = "storage.object.publish-create-labeled"
+	// Approvals (ruling 6): an approver decides with approve on the
+	// approval's target.
+	OpApproveObject = "storage.object.approve"
+	OpApproveBucket = "storage.bucket.approve"
 )
 
 // Check roles shared by several operations.
@@ -43,6 +54,7 @@ const (
 	RoleShare         = "share"
 	RoleRecipientRead = "recipient-read"
 	RoleRecipientKey  = "recipient-key"
+	RoleLabel         = "label"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -101,6 +113,15 @@ func r1Operations() []Operation {
 		one(OpRevokeRecipient, RoleRecipient, "crypto.recipient", "revoke"),
 		one(OpLookupRecipient, RoleRecipient, "crypto.recipient", "discover"),
 		one(OpLookupSigner, RoleSigner, "crypto.signing-key", "discover"),
+		one(OpLabel, RoleObject, "storage.object", "label"),
+		one(OpRelabel, RoleObject, "storage.object", "relabel"),
+		one(OpProposeLabel, RoleObject, "storage.object", "propose-label"),
+		{Name: OpPublishCreateLabeled, Checks: append([]CheckSpec{
+			{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
+			{Role: RoleLabel, ResourceType: "storage.object", Action: "label"},
+		}, envelopeChecks(true)...)},
+		one(OpApproveObject, RoleObject, "storage.object", "approve"),
+		one(OpApproveBucket, RoleBucket, "storage.bucket", "approve"),
 	}
 }
 

@@ -3,9 +3,12 @@ info:
   title: fga native storage API
   version: "1"
   description: >
-    Contract for the R1-B native storage operations (CNT-009). Rules that the
-    schema cannot express are in native-api.md. Every operation requires a
-    bearer access token for the serving role's audience.
+    Contract for the native storage operations (CNT-009), R1-B plus the R1-C
+    labels and approvals. Rules that the schema cannot express are in
+    native-api.md and labels-and-approvals.md. Every operation requires a
+    bearer access token for the serving role's audience. An operation a
+    policy allows only with an approval answers 202 APPROVAL_REQUIRED; it is
+    repeated with the approval's ID in the Fga-Approval header.
 servers:
   - url: http://127.0.0.1:8441
     description: storage role, development profile
@@ -50,6 +53,7 @@ paths:
         content: { application/json: { schema: { $ref: "#/components/schemas/FinalizeRequest" } } }
       responses:
         "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Published" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/object:
     get:
@@ -61,9 +65,56 @@ paths:
     delete:
       operationId: deleteObject
       description: Without version, writes a delete marker. With version, withdraws that version.
-      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { $ref: "#/components/parameters/approval" }]
       responses:
         "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/DeleteOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/label:
+    put:
+      operationId: setLabel
+      description: Raising (or keeping) the label needs label; lowering it needs relabel. Never outside the label order or below the bucket's floor.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/approval" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LabelRequest" } } }
+      responses:
+        "200": { description: Label set, content: { application/json: { schema: { $ref: "#/components/schemas/LabelOutcome" } } } }
+        "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/label-proposals:
+    post:
+      operationId: proposeLabel
+      description: Records an advisory classifier proposal; never changes the label.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProposalRequest" } } }
+      responses:
+        "201": { description: Recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Proposal" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/approvals:
+    get:
+      operationId: listApprovals
+      description: Pending approvals the caller may decide (approve on the target), excluding its own requests.
+      parameters:
+        - { name: after, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+      responses:
+        "200": { description: Page, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/approvals/{id}:
+    post:
+      operationId: decideApproval
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, maxLength: 64 } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [decision], properties: { decision: { type: string, enum: [approve, reject] } } }
+      responses:
+        "200": { description: Decided, content: { application/json: { schema: { $ref: "#/components/schemas/Approval" } } } }
         default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/object/package:
     get:
@@ -165,7 +216,18 @@ components:
     limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
     continuation: { name: continuation, in: query, schema: { type: string } }
     fingerprint: { name: fingerprint, in: path, required: true, schema: { $ref: "#/components/schemas/Digest" } }
+    approval: { name: Fga-Approval, in: header, description: The approval presented when repeating an operation that needed one, schema: { type: string, maxLength: 64 } }
   responses:
+    ApprovalRequired:
+      description: Every check allows the operation once an approval is given
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [status, approval_id]
+            properties:
+              status: { type: string, enum: [APPROVAL_REQUIRED] }
+              approval_id: { type: string }
     Error:
       description: Redacted error
       content:
@@ -175,7 +237,7 @@ components:
             additionalProperties: false
             required: [error]
             properties:
-              error: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, TOO_LARGE, OVERLOADED, UNAVAILABLE] }
+              error: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, TOO_LARGE, OVERLOADED, UNAVAILABLE, APPROVAL_NOT_USABLE] }
   schemas:
     Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
     Base64: { type: string, contentEncoding: base64 }
@@ -188,6 +250,7 @@ components:
         idempotency_key: { type: string, minLength: 1, maxLength: 128 }
         if_match: { type: string }
         if_none_match: { type: string, enum: ["*"] }
+        label: { type: string, maxLength: 64, description: Explicit label of a new key; needs label on the planned object }
     Intent:
       type: object
       properties:
@@ -329,3 +392,48 @@ components:
         envelope_id: { type: string, format: uuid }
         generation: { type: integer }
         status: { type: string, enum: [ACTIVE, RETIRED] }
+    LabelRequest:
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 64 }
+    LabelOutcome:
+      type: object
+      properties:
+        object_id: { type: string, format: uuid }
+        label: { type: string }
+        previous_label: { type: string }
+        metadata_revision: { type: integer }
+    ProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [label, classifier]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 64 }
+        classifier: { type: string, minLength: 1, maxLength: 128 }
+    Proposal:
+      type: object
+      properties:
+        proposal_id: { type: string, format: uuid }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        label: { type: string }
+        classifier: { type: string }
+        proposer: { type: string }
+        authoritative: { type: boolean, const: false }
+        created_at: { type: string, format: date-time }
+    Approval:
+      type: object
+      properties:
+        approval_id: { type: string }
+        operation: { type: string }
+        plan: { type: object, description: The platform-rendered plan (opplan.Summary) the approval binds }
+        requested_by: { type: string }
+        state: { type: string, enum: [PENDING, APPROVED, REJECTED, CONSUMED] }
+        expires_at: { type: string, format: date-time }
+    ApprovalPage:
+      type: object
+      properties:
+        approvals: { type: array, items: { $ref: "#/components/schemas/Approval" } }
+        next: { type: string }

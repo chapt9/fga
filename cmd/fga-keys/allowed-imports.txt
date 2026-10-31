@@ -3,6 +3,9 @@
 # client decryption, key unwrapping, MCP or executor package belongs here.
 fga/cmd/fga-keys
 fga/internal/admission
+# Reviewed 2026-10-31: approval records (PostgreSQL only), read and opened
+# by the decision role, decided and consumed by enforcing roles.
+fga/internal/approval
 fga/internal/audit
 fga/internal/authn
 fga/internal/catalog
@@ -18,6 +21,10 @@ fga/internal/gate
 fga/internal/identity
 fga/internal/journal
 fga/internal/keysapi
+# Reviewed 2026-10-31: label order arithmetic only (D-06).
+fga/internal/labels
+# Reviewed 2026-10-31: neutral operation plans and their digest (APR-005).
+fga/internal/opplan
 fga/internal/policy
 fga/internal/registry
 fga/internal/release

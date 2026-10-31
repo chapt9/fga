@@ -36,9 +36,11 @@ All fences and all authority changers acquire rows in this order. A transaction 
 | 4 | `delegations`: every link of the chain, sorted by id | `FOR SHARE` | Same revision; not revoked; not expired |
 | 5 | `recipient_keys`: every recipient fingerprint, sorted | `FOR SHARE` | Same revision; status ACTIVE |
 | 6 | `resources`: every bound resource, sorted by (type, id) | `FOR UPDATE` when the operation changes it, otherwise `FOR SHARE` | Same generation and metadata revision |
-| 7 | Operation rows: object heads, then versions, then upload intents, then envelopes, each sorted by id | `FOR UPDATE` | Operation-specific expected state (PUB-003, PUB-007) |
+| 6a | `approvals`: the approval the record binds (`context_revisions.approval`), if any | `FOR UPDATE` in a transition, `FOR SHARE` in a read-only check | State APPROVED, same revision, unexpired (APR-002) |
+| 7 | Operation rows: object heads, then versions, then upload intents, then envelopes, each sorted by id; for a label decision, the active label order (`FOR SHARE`), whose generation must be the record's | `FOR UPDATE` | Operation-specific expected state (PUB-003, PUB-007, D-06) |
+| 7a | `approvals` | update | The bound approval becomes CONSUMED, revision + 1, in the operation's transaction (APR-002, APR-003) |
 | 8 | `consumed_decisions` | insert | The decision ID was not consumed before (DEC-011) |
-| 9 | `audit_outbox` | insert | Capacity (AUD-002); a full outbox rolls the fence back |
+| 9 | `audit_outbox` | insert | Capacity (AUD-002); a full outbox rolls the fence back. The mutation event names the consumed approval |
 
 Authority changers lock one fact row each (an identity, a delegation, a recipient key, the tenant epoch or the authority state), so they cannot deadlock with a fence that takes rows in this order. A fence that loses a deadlock or serialization race is retried by the caller with the same operation identity; it never retries with a different decision.
 
@@ -71,7 +73,7 @@ The fence compares `valid_until` with the enforcing process's clock plus a confi
 
 ## Owning code
 
-- `internal/fence`: the binding type, the lock order and the checks of steps 1 to 6, 8 and the time check, over a `pgx.Tx`.
+- `internal/fence`: the binding type, the lock order and the checks of steps 1 to 6a, 7a, 8 and the time check, over a `pgx.Tx`.
 - `internal/content` and `internal/envelope`: the operation rows of step 7 and the audit event.
 - Authority changers in `internal/catalog` (control functions) and `cmd/fga-admin` advance revisions as listed above.
 

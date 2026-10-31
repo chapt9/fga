@@ -22,6 +22,8 @@ func classify(err error) (int, string, bool) {
 	switch {
 	case errors.Is(err, content.ErrNotFound):
 		return http.StatusNotFound, httpapi.CodeNotFound, true
+	case errors.Is(err, content.ErrApprovalNotUsable):
+		return http.StatusConflict, httpapi.CodeApprovalNotUsable, true
 	case errors.Is(err, content.ErrInvalid):
 		return http.StatusBadRequest, httpapi.CodeInvalid, true
 	case errors.Is(err, content.ErrPrecondition):
@@ -34,6 +36,18 @@ func classify(err error) (int, string, bool) {
 	return 0, "", false
 }
 
+// fail writes err. An operation that needs an approval answers 202 with
+// the pending approval's ID; repeating it with that ID in the Fga-Approval
+// header once the approval is given performs it (APR-001).
+func fail(w http.ResponseWriter, r *http.Request, err error) {
+	var need *content.ApprovalRequired
+	if errors.As(err, &need) {
+		httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: need.ID})
+		return
+	}
+	httpapi.Fail(w, r, err, classify)
+}
+
 // wire types of the storage API.
 type (
 	beginBody struct {
@@ -41,6 +55,25 @@ type (
 		IdempotencyKey string `json:"idempotency_key"`
 		IfMatch        string `json:"if_match,omitempty"`
 		IfNoneMatch    string `json:"if_none_match,omitempty"`
+		Label          string `json:"label,omitempty"`
+	}
+	approvalRequiredBody struct {
+		Status     string `json:"status"`
+		ApprovalID string `json:"approval_id"`
+	}
+	labelBody struct {
+		Label string `json:"label"`
+	}
+	proposalBody struct {
+		Label      string `json:"label"`
+		Classifier string `json:"classifier"`
+	}
+	approvalDecisionBody struct {
+		Decision string `json:"decision"`
+	}
+	approvalsBody struct {
+		Approvals []content.ApprovalView `json:"approvals"`
+		Next      string                 `json:"next,omitempty"`
 	}
 	intentBody struct {
 		IntentID            string `json:"intent_id"`
@@ -102,9 +135,9 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		in, err := svc.Begin(r.Context(), c, content.BeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
-			IdempotencyKey: b.IdempotencyKey, IfMatch: b.IfMatch, IfNoneMatch: b.IfNoneMatch == "*"})
+			IdempotencyKey: b.IdempotencyKey, IfMatch: b.IfMatch, IfNoneMatch: b.IfNoneMatch == "*", Label: b.Label})
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, intentBody{IntentID: in.IntentID.String(), TenantID: in.Tenant.String(), ObjectID: in.Object.String(),
@@ -121,7 +154,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		rec, err := svc.PutCiphertext(r.Context(), c, id, r.ContentLength, sum, http.MaxBytesReader(w, r.Body, r.ContentLength))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, receiptBody{BlobID: rec.Blob.String(), CiphertextLength: rec.Length, CiphertextSHA256: rec.SHA256.String()})
@@ -142,7 +175,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		p, err := svc.Finalize(r.Context(), c, id, req)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, p)
@@ -162,7 +195,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		info, err := svc.Stat(r.Context(), c, b, k, v)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, info)
@@ -181,7 +214,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			out, err = svc.DeleteVersion(r.Context(), c, b, k, v)
 		}
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, out)
@@ -194,7 +227,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		p, err := svc.ReadPackage(r.Context(), c, b, k, v, r.URL.Query().Get("recipient"))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, packageBody{Version: p.Version, Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
@@ -209,7 +242,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		s, err := svc.ReadCiphertext(r.Context(), c, b, k, v)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		defer s.Close()
@@ -228,7 +261,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		page, err := svc.List(r.Context(), c, r.PathValue("bucket"), q.Get("prefix"), limit, q.Get("continuation"))
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, page)
@@ -241,10 +274,78 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		vs, err := svc.ListVersions(r.Context(), c, b, k)
 		if err != nil {
-			httpapi.Fail(w, r, err, classify)
+			fail(w, r, err)
 			return
 		}
 		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"versions": vs})
+	}))
+	mux.HandleFunc("PUT /v1/buckets/{bucket}/object/label", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		var body labelBody
+		if !ok || v != "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		out, err := svc.SetLabel(r.Context(), c, b, k, body.Label)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, out)
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/object/label-proposals", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		var body proposalBody
+		if !ok || v != "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		p, err := svc.ProposeLabel(r.Context(), c, b, k, body.Label, body.Classifier)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusCreated, p)
+	}))
+	mux.HandleFunc("GET /v1/approvals", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		q := r.URL.Query()
+		limit := 100
+		if l := q.Get("limit"); l != "" {
+			n, err := strconv.Atoi(l)
+			if err != nil || n < 1 || n > 100 {
+				httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+				return
+			}
+			limit = n
+		}
+		views, next, err := svc.PendingApprovals(r.Context(), c, q.Get("after"), limit)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, approvalsBody{Approvals: views, Next: next})
+	}))
+	mux.HandleFunc("POST /v1/approvals/{id}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var body approvalDecisionBody
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		if body.Decision != "approve" && body.Decision != "reject" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		v, err := svc.DecideApproval(r.Context(), c, r.PathValue("id"), body.Decision == "approve")
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, v)
 	}))
 	return mux
 }

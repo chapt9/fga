@@ -17,9 +17,9 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 
 | Operation | Method and path | Checks (registered operation) |
 |---|---|---|
-| Begin upload | `POST /v1/buckets/{bucket}/uploads` | New key: bucket `create-object` (`storage.object.begin-create`). Existing key: object `new-version` (`storage.object.begin-version`). An idempotent retry takes the same decision again; it is never answered from the stored intent alone |
+| Begin upload | `POST /v1/buckets/{bucket}/uploads` | An explicit `label` is accepted for a new key only (in the order, not below the floor). New key: bucket `create-object` (`storage.object.begin-create`). Existing key: object `new-version` (`storage.object.begin-version`). An idempotent retry takes the same decision again; it is never answered from the stored intent alone |
 | Upload ciphertext | `PUT /v1/uploads/{intent}/ciphertext` | Owner of the intent (same tenant, subject and actor) and a fresh single-use decision: bucket `create-object` (`storage.object.stage-create`) or object `new-version` (`storage.object.stage-version`), consumed in the fence; an identical retry needs it too. Bytes are staged only. The body streams under a lease that aborts on any change to the bound authority; it is not cut at the decision's `valid_until`, because staged bytes stay invisible until a commit with its own decision |
-| Finalize | `POST /v1/uploads/{intent}/finalize` | Fresh decision: `create-object` or `new-version`, plus per initial envelope: publisher `share` on the object and `create` on the planned envelope, recipient `read` and `receive-key` (`storage.object.publish`) |
+| Finalize | `POST /v1/uploads/{intent}/finalize` | Fresh decision: `create-object` or `new-version`, plus per initial envelope: publisher `share` on the object and `create` on the planned envelope, recipient `read` and `receive-key` (`storage.object.publish-create` or `-version`); with an explicit label also `label` on the planned object (`storage.object.publish-create-labeled`) |
 | Stat | `GET /v1/buckets/{bucket}/object?key=&version=` | `stat`; a non-current version also `discover-history` |
 | Package | `GET /v1/buckets/{bucket}/object/package?key=&version=&recipient=` | Storage: `read` (+ `read-history`). Keys role: `GetRecipientEnvelope` checks (caller `read`, envelope `release`, recipient `read`, `receive-key`) |
 | Ciphertext | `GET /v1/buckets/{bucket}/object/ciphertext?key=&version=` | `read` (+ `read-history`); admission and stream lease |
@@ -31,6 +31,10 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Revoke recipient | `DELETE /v1/recipients/{fp}` | `crypto.recipient` `revoke` |
 | Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). Each key is also a `crypto.signing-key` resource whose only action is `discover`, so a self-service operation fails closed (RES-001) |
 | Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | `crypto.recipient` `discover` (`crypto.recipient.discover`; a PENDING key is decided as its planned resource) or `crypto.signing-key` `discover` (`crypto.signing-key.discover`), with a fence check. Without a rule the lookup is denied (ruling 7). A directory answer is not a trust anchor (RCP-002) |
+| Set a label | `PUT /v1/buckets/{bucket}/object/label?key=` | Object `label` (`storage.object.label`) to raise or keep, `relabel` (`storage.object.relabel`) to lower, on the proposed change `change.label` (labels-and-approvals.md) |
+| Propose a label | `POST /v1/buckets/{bucket}/object/label-proposals?key=` | Object `propose-label` (`storage.object.propose-label`); advisory only |
+| List approvals | `GET /v1/approvals?after=&limit=` | Per pending approval, a fresh `approve` decision on its target (`storage.object.approve` or `storage.bucket.approve`); others are left out |
+| Decide an approval | `POST /v1/approvals/{id}` | Single-use `approve` decision on the target, under the fence; never by the requester or acting agent |
 | Share | `POST /v1/envelopes` | `PublishRecipientEnvelope`: publisher `share`, envelope `create`, recipient `read`, `receive-key` |
 | Retire envelope | `DELETE /v1/envelopes/{id}` | envelope `retire` |
 
@@ -78,3 +82,7 @@ A failure after response headers are sent aborts the connection instead of compl
 ## Listing (CNT-005 to CNT-007)
 
 Listing checks bucket `list`, scans committed heads with a LIVE current version in key order after the cursor, batch-checks `discover` per candidate (50 per decision batch), and returns visible entries until the page is full or the scan budget is used. A short or empty page may carry a continuation. The continuation is sealed with AES-256-GCM under a storage-role key and binds tenant, principal, identity revision, bucket, prefix, policy epoch, recovery incarnation, expiry and the last scanned key; a token presented by anyone else, for another query, after expiry or after an incarnation change is rejected. Delimiters are not supported (CNT-005). Listing has no side effects (CNT-006).
+
+## Approvals on the wire
+
+Finalize, delete, version delete and label changes carry a plan (labels-and-approvals.md). When a policy allows such an operation only with an approval, the answer is `202` with `{"status":"APPROVAL_REQUIRED","approval_id":"…"}`; nothing changes. After an approver approves it, the caller repeats the same request with the header `Fga-Approval: <id>`. A pending approval answers `202` again with the same ID. An approval that does not cover the request (rejected, expired, consumed, another requester, operation, digest, policy epoch or resource state) answers `409 APPROVAL_NOT_USABLE`. A finalize keeps its staged ciphertext, so only the finalize request is repeated.

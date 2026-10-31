@@ -17,6 +17,7 @@ import (
 	"fga/internal/delegation"
 	"fga/internal/gate"
 	"fga/internal/identity"
+	"fga/internal/opplan"
 	"fga/internal/policy/engine"
 	"fga/internal/registry"
 	"fga/internal/release"
@@ -456,5 +457,30 @@ func TestFirstHopEvidence(t *testing.T) {
 	}
 	if p := f.svc.DecidePublic(ctx, "", request("doc://q3#overview")); p.Outcome != "DENY" {
 		t.Errorf("public with a delegation and no token: %+v", p)
+	}
+}
+
+// TestPlanMustMatchItsDigest covers APR-001 and APR-005: a request whose
+// plan is not the one its operation digest names, or names another
+// operation, is refused, so an approver is never shown a plan other than
+// the one the decision binds.
+func TestPlanMustMatchItsDigest(t *testing.T) {
+	f := newFixture(t, 10)
+	ctx := context.Background()
+	plan := opplan.Summary{Operation: "unit.read", Action: "read", Targets: []opplan.Target{{Role: "unit", Type: "document.text_unit", ID: "u-1"}}}
+	r := request("doc://q3#overview")
+	r.Plan, r.OperationDigest = &plan, opplan.Digest(plan)
+	if resp := f.svc.Decide(ctx, "tools-gw-1", r); resp.Outcome != "ALLOW" {
+		t.Fatalf("matching plan = %+v", resp)
+	}
+	r.OperationDigest = "sha256:other"
+	if resp := f.svc.Decide(ctx, "tools-gw-1", r); resp.Outcome != "DENY" || resp.Reason != string(ReasonInvalidRequest) {
+		t.Fatalf("plan with another digest = %+v", resp)
+	}
+	other := plan
+	other.Operation = "unit.share"
+	r.Plan, r.OperationDigest = &other, opplan.Digest(other)
+	if resp := f.svc.Decide(ctx, "tools-gw-1", r); resp.Outcome != "DENY" || resp.Reason != string(ReasonInvalidRequest) {
+		t.Fatalf("plan of another operation = %+v", resp)
 	}
 }

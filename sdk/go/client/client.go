@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"fga/internal/cryptowire"
+	"fga/internal/opplan"
 	"fga/sdk/go/crypto"
 )
 
@@ -31,6 +32,19 @@ type Error struct {
 
 func (e *Error) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Code) }
 
+// ApprovalRequired is returned when the storage role answers 202: the
+// operation needs an approval. Repeat it with Client.Approval set to ID
+// once an approver has approved it. For a put, the upload is kept and only
+// the finalize step is repeated: pass Intent and Finalize to
+// FinalizeUpload.
+type ApprovalRequired struct {
+	ID       string
+	Intent   string
+	Finalize []byte
+}
+
+func (e *ApprovalRequired) Error() string { return "approval required: " + e.ID }
+
 // Client calls one deployment's storage and keys roles as one user.
 type Client struct {
 	StorageURL   string
@@ -38,10 +52,13 @@ type Client struct {
 	HTTP         *http.Client
 	StorageToken string
 	KeysToken    string
-	Recipient    *crypto.RecipientKey
-	KeyVersion   uint64
-	Signer       crypto.SigningKey
-	Trust        crypto.TrustStore
+	// Approval is presented with every storage request when set (the
+	// Fga-Approval header); operations that need one use it.
+	Approval   string
+	Recipient  *crypto.RecipientKey
+	KeyVersion uint64
+	Signer     crypto.SigningKey
+	Trust      crypto.TrustStore
 	// TempDir holds ciphertext while it is uploaded or verified; files are
 	// private (0600) and removed afterwards (CRY-006).
 	TempDir string
@@ -54,6 +71,9 @@ func (c *Client) do(ctx context.Context, method, url, token string, body io.Read
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if c.Approval != "" && token == c.StorageToken {
+		req.Header.Set("Fga-Approval", c.Approval)
+	}
 	if length >= 0 && body != nil {
 		req.ContentLength = length
 	}
@@ -63,6 +83,14 @@ func (c *Client) do(ctx context.Context, method, url, token string, body io.Read
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		defer resp.Body.Close()
+		var a struct {
+			ApprovalID string `json:"approval_id"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&a)
+		return nil, &ApprovalRequired{ID: a.ApprovalID}
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
@@ -108,6 +136,9 @@ type PutOptions struct {
 	IfMatch        string
 	IfNoneMatch    bool
 	IdempotencyKey string
+	// Label is an explicit label for a new key; empty takes the bucket's
+	// default.
+	Label string
 }
 
 type envelopeJSON struct {
@@ -128,6 +159,9 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 	}
 	if opts.IfNoneMatch {
 		begin["if_none_match"] = "*"
+	}
+	if opts.Label != "" {
+		begin["label"] = opts.Label
 	}
 	var in struct {
 		IntentID, TenantID, ObjectID, LogicalVersionID, CryptoVersionID, BlobID, AttemptID string
@@ -177,10 +211,21 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 		envs = append(envs, envelopeJSON{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 	}
 	fin["envelopes"] = envs
+	request, _ := json.Marshal(fin)
+	out, err := c.FinalizeUpload(ctx, in.IntentID, request)
+	var need *ApprovalRequired
+	if errors.As(err, &need) {
+		need.Intent, need.Finalize = in.IntentID, request
+	}
+	return out, err
+}
+
+// FinalizeUpload sends a finalize request for a staged upload, such as one
+// an ApprovalRequired error kept.
+func (c *Client) FinalizeUpload(ctx context.Context, intent string, request []byte) (Published, error) {
 	var out Published
-	body, n = jsonBody(fin)
-	_, err = c.do(ctx, http.MethodPost, c.StorageURL+"/v1/uploads/"+in.IntentID+"/finalize", c.StorageToken, body, n,
-		map[string]string{"Content-Type": "application/json"}, &out)
+	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/uploads/"+url.PathEscape(intent)+"/finalize", c.StorageToken,
+		bytes.NewReader(request), int64(len(request)), map[string]string{"Content-Type": "application/json"}, &out)
 	return out, err
 }
 
@@ -282,6 +327,81 @@ func (c *Client) List(ctx context.Context, bucket, prefix string, limit int, con
 	}
 	_, err := c.do(ctx, http.MethodGet, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/objects?"+q.Encode(), c.StorageToken, nil, -1, nil, &page)
 	return page.Entries, page.Continuation, err
+}
+
+// LabelOutcome reports a label change.
+type LabelOutcome struct {
+	Object           string `json:"object_id"`
+	Label            string `json:"label"`
+	Previous         string `json:"previous_label"`
+	MetadataRevision uint64 `json:"metadata_revision"`
+}
+
+// Label sets a key's label. Lowering it may need an approval.
+func (c *Client) Label(ctx context.Context, bucket, key, label string) (LabelOutcome, error) {
+	var out LabelOutcome
+	body, n := jsonBody(map[string]string{"label": label})
+	_, err := c.do(ctx, http.MethodPut, objectURL(c.StorageURL, bucket, "/label", key, "", nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out, err
+}
+
+// Proposal is an advisory label proposal; it never changes the label.
+type Proposal struct {
+	ID            string `json:"proposal_id"`
+	Label         string `json:"label"`
+	Classifier    string `json:"classifier"`
+	Authoritative bool   `json:"authoritative"`
+}
+
+// ProposeLabel records a classifier's label proposal for a key.
+func (c *Client) ProposeLabel(ctx context.Context, bucket, key, label, classifier string) (Proposal, error) {
+	var out Proposal
+	body, n := jsonBody(map[string]string{"label": label, "classifier": classifier})
+	_, err := c.do(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/label-proposals", key, "", nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out, err
+}
+
+// Approval is a pending approval as an approver sees it: the plan the
+// platform rendered.
+type Approval struct {
+	ID          string         `json:"approval_id"`
+	Operation   string         `json:"operation"`
+	Plan        opplan.Summary `json:"plan"`
+	RequestedBy string         `json:"requested_by"`
+	State       string         `json:"state"`
+	ExpiresAt   time.Time      `json:"expires_at"`
+}
+
+// Approvals lists pending approvals the caller may decide.
+func (c *Client) Approvals(ctx context.Context, after string, limit int) ([]Approval, string, error) {
+	q := url.Values{}
+	if after != "" {
+		q.Set("after", after)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	var page struct {
+		Approvals []Approval `json:"approvals"`
+		Next      string     `json:"next"`
+	}
+	_, err := c.do(ctx, http.MethodGet, c.StorageURL+"/v1/approvals?"+q.Encode(), c.StorageToken, nil, -1, nil, &page)
+	return page.Approvals, page.Next, err
+}
+
+// DecideApproval approves or rejects a pending approval.
+func (c *Client) DecideApproval(ctx context.Context, id string, approve bool) (Approval, error) {
+	decision := "reject"
+	if approve {
+		decision = "approve"
+	}
+	var out Approval
+	body, n := jsonBody(map[string]string{"decision": decision})
+	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/approvals/"+url.PathEscape(id), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out, err
 }
 
 // Delete deletes a key (version "") or withdraws one version.

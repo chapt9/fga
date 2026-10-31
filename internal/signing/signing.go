@@ -309,7 +309,7 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 		return Record{}, ErrBinding
 	}
 	for _, c := range rec.Checks {
-		if c.BusinessEffect != "ALLOW" || c.CeilingEffect != "PASS" || len(c.Requires) != 0 {
+		if c.BusinessEffect != "ALLOW" || c.CeilingEffect != "PASS" || !satisfied(c.Requires, rec.Context.Approval) {
 			return Record{}, fmt.Errorf("%w: check %q is not an unconditional allow", ErrRecord, c.ID)
 		}
 		if (c.Kind == "RECIPIENT_ELIGIBILITY") != (c.PrincipalBinding != "") || (c.Kind != "OPERATION" && c.Kind != "RECIPIENT_ELIGIBILITY") {
@@ -331,4 +331,17 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 		return Record{}, ErrExpired
 	}
 	return rec, nil
+}
+
+// satisfied reports whether a check's prerequisites are met by the record
+// itself: the only prerequisite a record can satisfy is an approval, and
+// only by binding one, which the fence consumes (APR-002). A reservation
+// (R2) is never satisfied here.
+func satisfied(requires []string, approval Ref) bool {
+	for _, r := range requires {
+		if r != "approval" || approval.ID == "" {
+			return false
+		}
+	}
+	return true
 }

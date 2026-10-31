@@ -14,12 +14,14 @@ package content
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"fga/internal/approval"
 	"fga/internal/audit"
 	"fga/internal/blob"
 	"fga/internal/catalog"
@@ -28,6 +30,7 @@ import (
 	"fga/internal/enforce"
 	"fga/internal/envelope"
 	"fga/internal/fence"
+	"fga/internal/opplan"
 	"fga/internal/signing"
 )
 
@@ -40,6 +43,9 @@ var (
 	ErrPrecondition = errors.New("content: precondition failed")
 	ErrTooLarge     = errors.New("content: too large")
 	ErrUnavailable  = enforce.ErrUnavailable
+	// ErrApprovalNotUsable: the presented approval does not cover the
+	// operation.
+	ErrApprovalNotUsable = enforce.ErrApprovalNotUsable
 )
 
 // Shared enforcement types, kept under their content names.
@@ -54,6 +60,9 @@ type (
 	Delivered = envelope.Delivered
 	// EnvelopeIn is one recipient envelope as a client sends it.
 	EnvelopeIn = envelope.EnvelopeIn
+	// ApprovalRequired is returned when an operation needs an approval; it
+	// names the pending approval.
+	ApprovalRequired = enforce.ApprovalRequired
 )
 
 // Authorize is enforce.Authorize.
@@ -103,7 +112,8 @@ type Deps struct {
 
 // Service is the content service.
 type Service struct {
-	d Deps
+	d         Deps
+	approvals *approval.Store
 }
 
 // New returns a Service.
@@ -112,7 +122,7 @@ func New(d Deps) (*Service, error) {
 		len(d.TokenKey) != 32 || d.Now == nil || d.Limits.MaxCiphertext <= 0 {
 		return nil, errors.New("content: every dependency is required")
 	}
-	return &Service{d: d}, nil
+	return &Service{d: d, approvals: approval.New(d.Catalog.Pool(), d.Now)}, nil
 }
 
 // check is one planned check of an operation.
@@ -140,6 +150,24 @@ func (s *Service) decide(ctx context.Context, c Caller, op, audience string, sin
 		out[i] = Check{ID: ch.id, Role: ch.role, Action: ch.action, Resource: ch.ref, Version: ch.version, Recipient: ch.recipient}
 	}
 	return Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, audience, singleUse, out)
+}
+
+// decidePlanned is decide for an operation that may need an approval: the
+// plan is what an approver is shown and what the approval binds, and the
+// caller's presented approval goes with it (APR-001, APR-005).
+func (s *Service) decidePlanned(ctx context.Context, c Caller, op string, checks []check, plan opplan.Summary) (signing.Record, error) {
+	out := make([]Check, len(checks))
+	for i, ch := range checks {
+		out[i] = Check{ID: ch.id, Role: ch.role, Action: ch.action, Resource: ch.ref, Version: ch.version, Recipient: ch.recipient}
+	}
+	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, Audience, true, out, enforce.Options{Plan: &plan})
+	return rec, err
+}
+
+// details encodes a plan's canonical arguments.
+func details(v map[string]string) json.RawMessage {
+	b, _ := json.Marshal(v) // a string map always encodes
+	return b
 }
 
 // fenced runs fn in the authority fence for rec.
@@ -171,7 +199,7 @@ func mapFence(err error) error {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	case errors.Is(err, fence.ErrIncarnation), errors.Is(err, fence.ErrEpoch), errors.Is(err, fence.ErrIdentity),
 		errors.Is(err, fence.ErrDelegation), errors.Is(err, fence.ErrRecipientKey), errors.Is(err, fence.ErrResource),
-		errors.Is(err, fence.ErrExpired), errors.Is(err, fence.ErrReplayed):
+		errors.Is(err, fence.ErrExpired), errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval):
 		return fmt.Errorf("%w: %w", ErrConflict, err)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrPrecondition), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalid),
 		errors.Is(err, audit.ErrFull):
@@ -181,8 +209,13 @@ func mapFence(err error) error {
 	}
 }
 
-// event returns an audit event for an outcome under rec.
+// event returns an audit event for an outcome under rec. An approval the
+// decision relied on, consumed in the same transaction, is a target too
+// (AUD-001, APR-002).
 func (s *Service) event(kind audit.Kind, rec signing.Record, outcome string, targets ...audit.Target) audit.Event {
+	if a := rec.Context.Approval; a.ID != "" {
+		targets = append(targets, audit.Target{Type: "platform.approval", ID: a.ID, Generation: a.Revision})
+	}
 	return audit.Event{ID: cryptowire.NewUUID().String(), Kind: kind, Tenant: rec.Tenant, DecisionID: rec.DecisionID,
 		OperationID: rec.OperationID, Actor: rec.Actor.ID, Outcome: outcome, BundleDigest: rec.BundleDigest,
 		PolicyEpoch: rec.PolicyEpoch, Targets: targets, At: s.d.Now()}

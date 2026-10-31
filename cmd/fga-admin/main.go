@@ -10,7 +10,7 @@
 //	bucket create      -tenant T -name N [-project P] [-label L] [-scope S]
 //	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]
 //	identity disable   -tenant T -id ID                      (journaled)
-//	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage]
+//	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
 //	signing-key add    -tenant T -principal ID -public-key B64
 //	signing-key retire|compromise -tenant T -fingerprint FP  (compromise is journaled)
 //	recipient revoke   -tenant T -fingerprint FP             (journaled)
@@ -61,11 +61,19 @@ func main() {
 
 // StoragePreset is the capability set of an ordinary storage user (DLG-004).
 var StoragePreset = map[string][]string{
-	"storage.bucket":     {"create-object", "list"},
-	"storage.object":     {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share"},
+	"storage.bucket": {"create-object", "list"},
+	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
+		"label", "relabel", "propose-label"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
+}
+
+// ApproverPreset lets an actor decide approvals (ruling 6); policies still
+// say on which resources.
+var ApproverPreset = map[string][]string{
+	"storage.bucket": {"approve"},
+	"storage.object": {"approve"},
 }
 
 type env struct {
@@ -126,7 +134,7 @@ func run(args []string) error {
 	actor := fs.String("actor", "", "actor identity")
 	typ := fs.String("type", "", "resource type")
 	actions := fs.String("actions", "", "comma-separated actions")
-	preset := fs.String("preset", "", "capability preset: storage")
+	preset := fs.String("preset", "", "capability preset: storage or approver")
 	principal := fs.String("principal", "", "principal identity")
 	publicKey := fs.String("public-key", "", "base64 public key")
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
@@ -206,10 +214,12 @@ func run(args []string) error {
 		switch {
 		case *preset == "storage":
 			set = StoragePreset
+		case *preset == "approver":
+			set = ApproverPreset
 		case *typ != "" && *actions != "":
 			set[*typ] = split(*actions)
 		default:
-			return errors.New("grant needs -preset storage or -type and -actions")
+			return errors.New("grant needs -preset storage|approver or -type and -actions")
 		}
 		return e.store.GrantCapabilities(ctx, *tenant, *actor, set)
 	case "signing-key add":

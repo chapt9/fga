@@ -40,11 +40,21 @@ import (
 //	fga keys unprotect [-dir D]          write them back in the clear
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
-//	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match]
+//	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
 //	fga get            -bucket B -key K -out FILE [-version V]
 //	fga ls             -bucket B [-prefix P]
-//	fga rm             -bucket B -key K [-version V]
+//	fga rm             -bucket B -key K [-version V] [-approval A]
 //	fga share          -bucket B -key K -to FP -key-version N [-generation G] [-version V]
+//	fga label          -bucket B -key K -label L [-approval A]
+//	fga propose-label  -bucket B -key K -label L -classifier C
+//	fga approvals                        list approvals the caller may decide
+//	fga approve|reject ID
+//	fga finalize       -intent I -request FILE -approval A   finish a put that needed an approval
+//
+// An operation that needs an approval prints the approval's ID; once an
+// approver has approved it, repeat the command with -approval ID. A put
+// keeps its staged ciphertext and saves its finalize request in the key
+// directory for fga finalize.
 
 type trustFile struct {
 	Recipients map[string]string `json:"recipients"`
@@ -209,6 +219,11 @@ func clientCommand(cmd string, args []string) error {
 	signer := fs.String("signer", "", "base64 signer public key to trust")
 	encrypt := fs.Bool("encrypt", false, "protect the new private keys with a passphrase")
 	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_KEY_PASSPHRASE)")
+	label := fs.String("label", "", "label (put: explicit label of a new key)")
+	classifier := fs.String("classifier", "", "classifier that proposes a label")
+	approvalID := fs.String("approval", "", "approval to present when repeating an operation that needed one")
+	intent := fs.String("intent", "", "upload intent to finalize")
+	request := fs.String("request", "", "file holding a kept finalize request")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -275,6 +290,7 @@ func clientCommand(cmd string, args []string) error {
 	if err != nil {
 		return err
 	}
+	c.Approval = *approvalID
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	switch cmd {
@@ -299,12 +315,73 @@ func clientCommand(cmd string, args []string) error {
 			}
 			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
 		}
-		p, err := c.Put(ctx, *bucket, *key, f, recipients, client.PutOptions{IfNoneMatch: *ifNoneMatch})
+		p, err := c.Put(ctx, *bucket, *key, f, recipients, client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label})
+		var need *client.ApprovalRequired
+		if errors.As(err, &need) {
+			// The ciphertext stays staged; only the finalize request is
+			// repeated with the approval.
+			path := filepath.Join(*dir, "pending-"+need.Intent+".json")
+			if err := os.WriteFile(path, need.Finalize, 0o600); err != nil {
+				return err
+			}
+			fmt.Printf("approval required: %s\nafter approval: fga finalize -intent %s -request %s -approval %s\n", need.ID, need.Intent, path, need.ID)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		fmt.Printf("published %s version %s etag %s\n", *key, p.Version, p.ETag)
 		return nil
+	case "finalize":
+		body, err := os.ReadFile(*request)
+		if err != nil {
+			return err
+		}
+		p, err := c.FinalizeUpload(ctx, *intent, body)
+		if err != nil {
+			return approvalHint(err)
+		}
+		fmt.Printf("published version %s etag %s\n", p.Version, p.ETag)
+		return os.Remove(*request)
+	case "label":
+		o, err := c.Label(ctx, *bucket, *key, *label)
+		if err != nil {
+			return approvalHint(err)
+		}
+		fmt.Printf("label %s (was %s), metadata revision %d\n", o.Label, o.Previous, o.MetadataRevision)
+		return nil
+	case "propose-label":
+		p, err := c.ProposeLabel(ctx, *bucket, *key, *label, *classifier)
+		if err == nil {
+			fmt.Printf("proposal %s recorded (advisory, authoritative=%t)\n", p.ID, p.Authoritative)
+		}
+		return err
+	case "approvals":
+		after := ""
+		for {
+			list, next, err := c.Approvals(ctx, after, 100)
+			if err != nil {
+				return err
+			}
+			for _, a := range list {
+				changes, _ := json.Marshal(a.Plan.Changes)
+				fmt.Printf("%s\t%s\t%s by %s\ttargets %v\tchanges %s\texpires %s\n", a.ID, a.Operation, a.Plan.Action, a.RequestedBy,
+					a.Plan.Targets, changes, a.ExpiresAt.Format(time.RFC3339))
+			}
+			if next == "" {
+				return nil
+			}
+			after = next
+		}
+	case "approve", "reject":
+		if fs.NArg() != 1 {
+			return errors.New(cmd + " needs an approval ID")
+		}
+		a, err := c.DecideApproval(ctx, fs.Arg(0), cmd == "approve")
+		if err == nil {
+			fmt.Printf("%s %s\n", a.ID, a.State)
+		}
+		return err
 	case "get":
 		tmp := *out + ".partial"
 		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -337,7 +414,7 @@ func clientCommand(cmd string, args []string) error {
 			cont = next
 		}
 	case "rm":
-		return c.Delete(ctx, *bucket, *key, *version)
+		return approvalHint(c.Delete(ctx, *bucket, *key, *version))
 	case "share":
 		d, err := cryptowire.ParseDigest(*to)
 		if err != nil {
@@ -350,6 +427,16 @@ func clientCommand(cmd string, args []string) error {
 		return err
 	}
 	return fmt.Errorf("unknown command %q", cmd)
+}
+
+// approvalHint turns a 202 answer into instructions: an approver decides
+// the approval, then the same command is repeated with -approval.
+func approvalHint(err error) error {
+	var need *client.ApprovalRequired
+	if errors.As(err, &need) {
+		return fmt.Errorf("approval required: %s; repeat the command with -approval %s once it is approved", need.ID, need.ID)
+	}
+	return err
 }
 
 func split(s string) []string {

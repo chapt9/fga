@@ -10,7 +10,13 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 
 - **R1-A, shared authority:** built, including the catch-up list of the [handoff](docs/spec/HANDOFF.md) (section 5).
 - **R1-B, client-encrypted object storage:** built and running locally. That covers the storage and keys roles, the client SDK, the native API, backup, restore and reconcile.
-- **R1-C (documents, text units, labels), R2 and R3:** not built.
+- **R1-C:** in progress. Built so far:
+  - default deny for every user action, key lookups included (ruling 7);
+  - labels on storage objects (label order, ranks, label, relabel, advisory proposals);
+  - approvals of storage operations.
+
+  Documents and text units, disclosure, derived outputs, export and metadata search are not built yet.
+- **R2 and R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
 
@@ -26,7 +32,8 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
 | Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006 |
 | Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
-| Approvals | `internal/approval` with a neutral operation plan (`internal/opplan`); not yet used by any storage operation | APR-001 to APR-005 |
+| Labels | `internal/labels` (order arithmetic); ranks in `internal/decision`; the label order published to the catalog on activation; label, relabel and proposals in `internal/content` ([labels-and-approvals.md](docs/design/labels-and-approvals.md)) | LAB-001 to LAB-005, FLW-004 (storage objects so far) |
+| Approvals | `internal/approval` with neutral operation plans (`internal/opplan`). The decision role opens and verifies approvals, the fence consumes them, and finalize, delete, version delete and label changes use them | APR-001 to APR-005 |
 
 Executor (built for specification 2.2, parked as the optional R2 feature `executor`): `internal/tools`, `internal/toolstore` (its tables are applied only by `toolstore.Migrate`), `internal/tools/connector`, `internal/invocation`, `internal/reservation`. No R1 role links it. It will be connected into the overall system after object storage and fine-grained access control are done, together with MCP.
 
@@ -39,9 +46,10 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 | Case | Result |
 |---|---|
 | V-001, V-142, V-144, V-146, V-149 | Pass |
+| V-147 | Pass, bound to a storage object until document units exist |
 | V-143 | Passes with fence clock margin 0. One host clock in the local profile. With the default one-second margin, the admission one second before the cutoff is refused (more restrictive than the fixture). |
 | V-141 | Unbound. Its decision carries a `metadata_projection` obligation. R1 maps no obligations (POL-011 not built), so verifiers reject every obligation. |
-| V-145, V-147, V-148 | Not applicable: R1-C |
+| V-145, V-148 | Not built yet (R1-C derived outputs) |
 
 ### Known gaps (not done or not verified)
 
@@ -51,8 +59,8 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Audit export** goes to local files only. There is no external collector and no signing or hash-chaining of export files. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
 - **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).
 - **Catalog encryption at rest (DAT-006)** is left to the volume.
-- **Content-signing keys** are provisioned by the administrator. The registry has no resource type for self-service enrollment.
-- **Storage approvals (APR)** are not wired into storage operations: the spec's resource table has no `approve` action for storage objects, which needs an owner ruling.
+- **Content-signing keys** are provisioned by the administrator. Their resource type allows only `discover`, so self-service enrollment fails closed.
+- **Approvals on keys-role operations** are not wired: such an operation sends no plan, so `NEEDS_APPROVAL` there stays a denial. There is no registry of trusted label classifiers (D-06), so every label proposal is advisory.
 - **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).
 
 ## Checks
@@ -77,7 +85,7 @@ make spec
 
 ## Run the storage roles locally
 
-`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing, listing and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing. It covers a label raise, a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), a label proposal, and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke

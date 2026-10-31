@@ -71,14 +71,18 @@ func NewTypes(defs []TypeDef) (*Types, error) {
 // "Resources, actions and canonical identity"). Types of later phases are
 // registered only when their service is enabled.
 var r1TypeDefs = []TypeDef{
-	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage"}},
+	// approve is the approver's authority on a resource (ruling 6); label
+	// raises or sets a label, relabel lowers it (LAB-004); propose-label
+	// stores an advisory classifier proposal (LAB-002), which under default
+	// deny is an action like any other (ruling 7).
+	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve"}},
 	{Name: "storage.object", Actions: []string{"read", "stat", "discover", "read-history", "discover-history",
-		"new-version", "delete", "delete-version", "share"},
+		"new-version", "delete", "delete-version", "share", "label", "relabel", "propose-label", "approve"},
 		ActionAliases: map[string]string{"storage.object.read": "read"}},
-	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export"}},
-	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key"}},
+	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
+	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},
 	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
-	{Name: "document.derived", Actions: []string{"deliver", "declassify", "relabel"}},
+	{Name: "document.derived", Actions: []string{"deliver", "declassify", "label", "relabel", "approve"}},
 	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke", "discover"}},
 	// Content-signing keys are looked up for verification; under default
 	// deny (ruling 7) the lookup is a registered, policy-decided action.
@@ -183,6 +187,23 @@ type Planner interface {
 	Planned(ctx context.Context, tenant string, alias Alias) (Resource, error)
 }
 
+// ChangePrefix starts the namespaces of proposed changes to an existing
+// resource. The resource resolves with its current binding (generation and
+// metadata revision) and attributes, plus attributes describing the change
+// that policies may condition on; the change itself is an argument of the
+// operation, the rest is authoritative state.
+const ChangePrefix = "change."
+
+// ChangeLabel: "<resource ID>|<new label>". The resource gains new_label
+// and floor (its collection's default label); the decision role adds the
+// ranks (D-06).
+const ChangeLabel = "change.label"
+
+// Changer resolves proposed changes from authoritative state.
+type Changer interface {
+	Changed(ctx context.Context, tenant string, alias Alias) (Resource, error)
+}
+
 // Resolver resolves aliases to canonical resources.
 type Resolver struct {
 	catalog Catalog
@@ -208,6 +229,20 @@ func (r *Resolver) Resolve(ctx context.Context, tenant string, alias Alias) (Res
 		}
 		if res.Generation != 0 || !r.types.HasResourceType(res.Type) {
 			return Resource{}, fmt.Errorf("%w: planned %s", ErrUnknownType, res.Type)
+		}
+		return res, nil
+	}
+	if strings.HasPrefix(alias.Namespace, ChangePrefix) {
+		c, ok := r.catalog.(Changer)
+		if !ok {
+			return Resource{}, ErrUnknownAlias
+		}
+		res, err := c.Changed(ctx, tenant, alias)
+		if err != nil {
+			return Resource{}, err
+		}
+		if res.Generation == 0 || !r.types.HasResourceType(res.Type) {
+			return Resource{}, fmt.Errorf("%w: changed %s", ErrUnknownType, res.Type)
 		}
 		return res, nil
 	}

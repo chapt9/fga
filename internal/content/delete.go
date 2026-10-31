@@ -8,6 +8,7 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/cryptowire"
+	"fga/internal/opplan"
 	"fga/internal/registry"
 )
 
@@ -30,8 +31,10 @@ func (s *Service) DeleteKey(ctx context.Context, c Caller, bucketName, key strin
 	if err != nil || o.Current == nil {
 		return DeleteOutcome{}, ErrNotFound
 	}
-	_, rec, err := s.decide(ctx, c, registry.OpDelete, Audience, true,
-		[]check{{id: "object", role: registry.RoleObject, action: "delete", ref: canonical("storage.object", o.ID.String())}})
+	rec, err := s.decidePlanned(ctx, c, registry.OpDelete,
+		[]check{{id: "object", role: registry.RoleObject, action: "delete", ref: canonical("storage.object", o.ID.String())}},
+		opplan.Summary{Action: "delete", Targets: []opplan.Target{{Role: registry.RoleObject, Type: "storage.object", ID: o.ID.String()}},
+			Details: details(map[string]string{"bucket": bucketName, "key": key})})
 	if err != nil {
 		return DeleteOutcome{}, err
 	}
@@ -88,8 +91,10 @@ func (s *Service) DeleteVersion(ctx context.Context, c Caller, bucketName, key, 
 	if err != nil || versionSel == "" {
 		return DeleteOutcome{}, ErrNotFound
 	}
-	_, rec, err := s.decide(ctx, c, registry.OpDeleteVersion, Audience, true, []check{{id: "object", role: registry.RoleObject,
-		action: "delete-version", ref: canonical("storage.object", o.ID.String()), version: v.ID.String()}})
+	rec, err := s.decidePlanned(ctx, c, registry.OpDeleteVersion, []check{{id: "object", role: registry.RoleObject,
+		action: "delete-version", ref: canonical("storage.object", o.ID.String()), version: v.ID.String()}},
+		opplan.Summary{Action: "delete-version", Targets: []opplan.Target{{Role: registry.RoleObject, Type: "storage.object", ID: o.ID.String(), Version: v.ID.String()}},
+			Details: details(map[string]string{"bucket": bucketName, "key": key})})
 	if err != nil {
 		return DeleteOutcome{}, err
 	}
