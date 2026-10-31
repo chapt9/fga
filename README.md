@@ -38,7 +38,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Share grants | `internal/content/grants.go`, `internal/catalog/grants.go`; `shared_with` and grant-bounded validity in `internal/decisionsvc`; removals journaled ([share-grants.md](docs/design/share-grants.md)) | SHR-001 to SHR-003 |
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
 | Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile against the KEK ring, reclaim with data-key destruction), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006, SSE-006 |
-| Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
+| Operations | `internal/auditexport` (outbox to a signed chain of durable files, collector), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
 | Fault isolation | One process per role; `internal/guard` keeps a panic inside its request or goroutine ([fault-isolation.md](docs/design/fault-isolation.md)) | MOD-002, AVL-006 |
 | MCP | `internal/mcpsvc`, `cmd/fga-mcp` on the official MCP Go SDK: resources, read tools and export over the native API, decisions per call through the gateway hop; `internal/mcpwire`, the encrypted-package profile; `internal/mcpbridge` and `fga mcp-bridge`, the local bridge ([mcp-role.md](docs/design/mcp-role.md), [mcp-gateway.md](docs/design/mcp-gateway.md), [mcp-bridge.md](docs/design/mcp-bridge.md)) | MCP-001 to MCP-008 |
 | Labels | `internal/labels` (order arithmetic); ranks in `internal/decision`; the label order published to the catalog on activation; label, relabel and proposals in `internal/content` ([labels-and-approvals.md](docs/design/labels-and-approvals.md)) | LAB-001 to LAB-005, FLW-004 (storage objects so far) |
@@ -74,7 +74,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
 - **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.
 - **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.
-- **Audit export** goes to local files only. There is no external collector and no signing or hash-chaining of export files. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
+- **Audit export** writes local files as a hash chain signed with a separate export key. The catalog keeps the chain head, `fga-admin audit verify` checks the chain (offline with the public key alone), files can also go to an HTTP collector, and `audit status` raises a capacity alarm. Retention is the operator's. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
 - **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).
 - **Catalog encryption at rest (DAT-006)** is left to the volume.
 - **Content-signing keys** are provisioned by the administrator, or enrolled by their own principal with a possession proof and retired for rotation; compromise stays the administrator's, journaled.
@@ -113,7 +113,7 @@ make spec
 - reclaim retiring a withdrawn server-mode version and destroying its data key;
 - deletion.
 
-It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles (refused without the KEK ring, then checking every server-mode data key against it) and checks the result. The database is dropped at the end.
+It then exports the audit outbox as a signed chain, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles (refused without the KEK ring, then checking every server-mode data key against it) and checks the result, including that the audit chain continues across the restore. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke

@@ -44,12 +44,14 @@ import (
 // optional executor's own tables are not part of an R1 backup; the
 // registered tool operations, which the decision role reads, are. kek_versions holds which
 // server-mode KEK versions exist, never a key: the keys live in the keys
-// role's ring and are recovered apart from backups (SSE-006).
+// role's ring and are recovered apart from backups (SSE-006). The audit
+// export chain's head is, so a restored catalog continues the chain the
+// export directory holds past it.
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases", "share_grants",
 	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "objects", "object_versions", "document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
-	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox",
+	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox", "audit_export_state",
 	"label_orders", "label_order_active", "label_proposals", "journal_state",
 }
 

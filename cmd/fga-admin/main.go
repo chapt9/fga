@@ -40,11 +40,24 @@
 //	                   -kek-file is needed when the catalog holds server-mode
 //	                   data keys: each must open under the ring, or its version is quarantined (SSE-006)
 //	reclaim                                          retire withdrawn versions; destroys their server-mode data keys
-//	audit export       -dir D [-follow]             drain the audit outbox into D
+//	audit-key generate -out FILE [-encrypt]         create the audit export signing key; prints its public key
+//	audit export       -dir D -key FILE [-trusted B64,...] [-collector URL] [-reset] [-follow]
+//	                   drain the audit outbox into D as a signed hash chain (docs/design/audit-export.md);
+//	                   -trusted: earlier export keys whose links D still holds; -collector: also send each file
+//	                   there (token from $FGA_AUDIT_COLLECTOR_TOKEN); -reset: continue although D no longer holds
+//	                   the catalog's chain head, recorded in the next link
+//	audit verify       -dir D -public-key B64[,B64...]   check D's chain; without -db offline, with it also
+//	                   against the catalog's head, which shows a truncated directory
+//	audit status       [-capacity N [-warn 0.8]]    the outbox backlog and chain head; fails at the alarm level
+//
+// A protected audit export key is opened with -passphrase-file or
+// $FGA_AUDIT_KEY_PASSPHRASE.
 package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -68,6 +81,7 @@ import (
 	"fga/internal/keyfile"
 	"fga/internal/recovery"
 	"fga/internal/registry"
+	"fga/internal/roleconfig"
 )
 
 func main() {
@@ -124,6 +138,10 @@ func run(args []string) error {
 		return err
 	}
 	rest := global.Args()
+	if len(rest) > 1 && rest[0] == "audit" && rest[1] == "verify" && *db == "" {
+		// Offline, with the public keys alone: an auditor's check.
+		return auditVerify(rest[2:], "")
+	}
 	if len(rest) == 0 || *db == "" {
 		return errors.New("usage: fga-admin -db URL [-journal DIR] [-blobs DIR] COMMAND [flags]; see the package documentation")
 	}
@@ -184,6 +202,12 @@ func run(args []string) error {
 	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_BACKUP_KEY_PASSPHRASE)")
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
+	auditKeyFile := fs.String("key", "", "audit export: the export signing key file")
+	trusted := fs.String("trusted", "", "audit export: earlier export keys' base64 public keys, comma-separated")
+	collector := fs.String("collector", "", "audit export: the collector URL to send export files to")
+	reset := fs.Bool("reset", false, "audit export: continue although the directory no longer holds the catalog's chain head")
+	capacity := fs.Int("capacity", 0, "audit status: the roles' outbox_capacity")
+	warn := fs.Float64("warn", 0.8, "audit status: the alarm level, as a fraction of -capacity")
 	from := fs.String("from", "", "backup directory to restore")
 	kekFile := fs.String("kek-file", "", "reconcile: the KEK ring to check server-mode data keys against")
 	journalComplete := fs.Bool("journal-complete", false,
@@ -543,11 +567,58 @@ func run(args []string) error {
 		fmt.Printf("replayed %d journal entries, checked %d server-mode data keys, quarantined %d versions; admission is open\n",
 			rep.Replayed, rep.KeysChecked, rep.Quarantined)
 		return nil
-	case "audit export":
-		if err := need(*dir); err != nil {
+	case "audit-key generate":
+		if err := need(*out); err != nil {
 			return err
 		}
-		x, err := auditexport.New(pool, *dir, 1000)
+		if _, err := os.Stat(*out); err == nil {
+			return fmt.Errorf("%s already exists", *out)
+		}
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return err
+		}
+		raw := []byte(base64.StdEncoding.EncodeToString(key))
+		defer clear(raw)
+		if *encrypt {
+			p, err := keyfile.Passphrase("FGA_AUDIT_KEY_PASSPHRASE", *passphraseFile)
+			if err != nil {
+				return err
+			}
+			if raw, err = keyfile.Seal(raw, p); err != nil {
+				return err
+			}
+		}
+		if err := keyfile.Write(*out, raw); err != nil {
+			return err
+		}
+		fmt.Printf("audit export key %s\npublic key (for audit verify): %s\n", auditexport.KeyID(pub), base64.StdEncoding.EncodeToString(pub))
+		return nil
+	case "audit export":
+		if err := need(*dir, *auditKeyFile); err != nil {
+			return err
+		}
+		raw, err := keyfile.Read(*auditKeyFile, func() ([]byte, error) { return keyfile.Passphrase("FGA_AUDIT_KEY_PASSPHRASE", *passphraseFile) })
+		if err != nil {
+			return err
+		}
+		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+		clear(raw)
+		if err != nil || len(key) != ed25519.PrivateKeySize {
+			return errors.New("-key must hold a base64 Ed25519 private key (audit-key generate)")
+		}
+		o := auditexport.Options{Batch: 1000, Key: key, Reset: *reset}
+		for _, k := range split(*trusted) {
+			p, err := roleconfig.PublicKey(k)
+			if err != nil {
+				return fmt.Errorf("-trusted: %w", err)
+			}
+			o.Trusted = append(o.Trusted, p)
+		}
+		if *collector != "" {
+			o.Collector = &auditexport.Collector{URL: *collector, Token: os.Getenv("FGA_AUDIT_COLLECTOR_TOKEN")}
+		}
+		x, err := auditexport.New(pool, *dir, o)
 		if err != nil {
 			return err
 		}
@@ -557,11 +628,54 @@ func run(args []string) error {
 				return err
 			}
 			fmt.Printf("exported %d audit events to %s\n", n, *dir)
+			// A collector outage never holds up the export; the files
+			// wait in the directory for the next pass.
+			if sent, err := x.Ship(ctx); err != nil {
+				if !*follow {
+					return fmt.Errorf("the export is complete, but shipping stopped: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "fga-admin: shipping stopped: %v; the next pass sends the rest\n", err)
+			} else if sent > 0 {
+				fmt.Printf("sent %d export files to the collector\n", sent)
+			}
 			if !*follow {
 				return nil
 			}
 			time.Sleep(5 * time.Second)
 		}
+	case "audit verify":
+		st, err := auditexport.Head(ctx, pool)
+		if err != nil {
+			return err
+		}
+		return auditVerify(sub, st.Head)
+	case "audit status":
+		n, err := auditexport.Backlog(ctx, pool)
+		if err != nil {
+			return err
+		}
+		st, err := auditexport.Head(ctx, pool)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("audit outbox: %d events waiting for export\n", n)
+		if st.Head == "" {
+			fmt.Println("export chain: nothing exported yet")
+		} else {
+			fmt.Printf("export chain head: %s (%s, %s)\n", st.Head, st.File, st.UpdatedAt.UTC().Format(time.RFC3339))
+		}
+		if *capacity <= 0 {
+			return nil
+		}
+		if *warn <= 0 || *warn > 1 {
+			return errors.New("-warn must be in (0, 1]")
+		}
+		fmt.Printf("%.0f%% of an outbox capacity of %d\n", 100*float64(n)/float64(*capacity), *capacity)
+		if float64(n) >= *warn*float64(*capacity) {
+			return fmt.Errorf("the audit outbox holds %d of %d events (alarm at %.0f%%): export it, or the roles refuse operations once it is full",
+				n, *capacity, 100**warn)
+		}
+		return nil
 	case "reclaim":
 		blobs, err := e.blobs()
 		if err != nil {
@@ -579,6 +693,40 @@ func run(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q", cmd)
+}
+
+// auditVerify checks an export directory's chain; head is the catalog's
+// chain head, empty offline.
+func auditVerify(args []string, head string) error {
+	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
+	dir := fs.String("dir", "", "audit export directory")
+	keys := fs.String("public-key", "", "the export keys' base64 public keys, comma-separated")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dir == "" || *keys == "" {
+		return errors.New("audit verify needs -dir and -public-key")
+	}
+	var pubs []ed25519.PublicKey
+	for _, k := range split(*keys) {
+		p, err := roleconfig.PublicKey(k)
+		if err != nil {
+			return fmt.Errorf("-public-key: %w", err)
+		}
+		pubs = append(pubs, p)
+	}
+	rep, err := auditexport.Verify(*dir, head, pubs...)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("verified %d export files holding %d events; chain head %s\n", rep.Files, rep.Events, rep.Head)
+	for _, f := range rep.Resets {
+		fmt.Printf("reset: %s continues after a head the directory no longer held (an operator's decision)\n", f)
+	}
+	if head == "" {
+		fmt.Println("not compared with a catalog's head; with -db a truncated directory shows too")
+	}
+	return nil
 }
 
 func split(s string) []string {

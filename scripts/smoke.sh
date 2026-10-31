@@ -446,12 +446,15 @@ RECLAIM_OUT=$($ADMIN reclaim) || { echo "SMOKE FAILED: reclaim"; exit 1; }; echo
 echo "$RECLAIM_OUT" | grep -q "destroyed 1 server-mode data keys" || { echo "SMOKE FAILED: reclaim destroyed no data key"; exit 1; }
 
 
-$ADMIN audit export -dir audit
+# Audit export as a signed hash chain (AUD-002, AUD-003): the export key
+# signs each file's link, the catalog keeps the chain head.
+AUDITPUB=$($ADMIN audit-key generate -out audit.key | awk '/^public key/ {print $NF}')
+check $ADMIN audit export -dir audit -key audit.key
 $ADMIN backup -backup-key backup.key -out backup1
 as alice; $B/fga rm -bucket reports -key q3/report.bin
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>/dev/null; then echo "UNEXPECTED: read after delete"; exit 1; fi; echo "deleted"
 $ADMIN recipient revoke -tenant t-acme -fingerprint $BOBFP
-$ADMIN audit export -dir audit
+check $ADMIN audit export -dir audit -key audit.key
 $ADMIN restore -backup-key backup.key -from backup1
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: read while admission closed"; exit 1; fi; echo "while closed: $(cat err.txt)"
 # The restored catalog holds server-mode data keys: reconcile checks them
@@ -464,6 +467,11 @@ as bob;   check $B/fga get -bucket shared -key q4/plan.bin -out bob-restored.out
 echo "restored server-mode object readable by bob"
 as bob;   if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>err.txt; then echo "UNEXPECTED: revoked bob read"; exit 1; fi; echo "bob after restore (key revoked after backup): $(cat err.txt)"
 psql -h localhost -d $DB -Atc "select kind, count(*) from audit_outbox group by kind order by kind"
-$ADMIN audit export -dir audit
+check $ADMIN audit export -dir audit -key audit.key
 echo "audit events exported: $(cat audit/*.jsonl | wc -l | tr -d ' ') lines, $(cat audit/*.jsonl | python3 -I -c 'import sys,json;print(len({json.loads(l)["id"] for l in sys.stdin}))') unique"
+# The chain continues across the restore: checked against the catalog's
+# head, and offline with the public key alone.
+check $ADMIN audit verify -dir audit -public-key "$AUDITPUB"
+check env -u FGA_DATABASE_URL $B/fga-admin audit verify -dir audit -public-key "$AUDITPUB"
+check $ADMIN audit status -capacity 100000
 echo SMOKE PASSED
