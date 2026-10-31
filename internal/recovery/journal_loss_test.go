@@ -176,3 +176,52 @@ func TestJournalHistoryContinuity(t *testing.T) {
 		t.Fatalf("a refused restore changed the catalog: %d revoked keys, %v", revoked, err)
 	}
 }
+
+// TestRestoreWithoutCatalogRecord is the regression test of review v3 F02
+// (specification 2.6.2, AVL-008, V-179): restored without the catalog's
+// own record of the journal, as onto an empty catalog, the backup's record
+// was trusted, so a journal copy missing a revocation made after the
+// backup passed, and reconcile gave the revoked access back. Reconcile now
+// keeps admission closed until an operator states, audited, that the
+// journal is complete (or accepts its loss).
+func TestRestoreWithoutCatalogRecord(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("payroll")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	older := filepath.Join(t.TempDir(), "older")
+	copyDir(t, st.JournalDir, older)
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+		t.Fatal(err)
+	}
+	// The catalog's record of the journal is lost with it.
+	if _, err := st.Pool.Exec(ctx, `DELETE FROM journal_state`); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := journal.Open(older, func() time.Time { return *st.Clock })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, stale, dir, backupKey(t)); err != nil {
+		t.Fatalf("restore with only the backup's record: %v", err)
+	}
+	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, stale); !errors.Is(err, recovery.ErrJournalUnproven) {
+		t.Fatalf("reconcile without an operator statement: %v", err)
+	}
+	if _, err := alice.Get("reports", "doc", ""); !errors.Is(err, content.ErrUnavailable) {
+		t.Fatalf("a read while admission stays closed: %v", err)
+	}
+	if _, err := recovery.ReconcileWith(ctx, st.Catalog, st.Blobs, stale, recovery.Options{JournalComplete: true}); err != nil {
+		t.Fatalf("reconcile with the operator's statement: %v", err)
+	}
+	var n int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_outbox WHERE event->>'outcome' = 'JOURNAL_COMPLETENESS_STATED'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("audited statements: %d, %v", n, err)
+	}
+}

@@ -29,7 +29,10 @@
 //	                   cannot be read, unless -allow-missing lists it in the manifest as missing
 //	journal init                          create the security journal once, at setup
 //	restore            -backup-key FILE -from DIR [-accept-journal-loss]
-//	reconcile          [-accept-journal-loss] [-kek-file FILE]   -kek-file is needed when the catalog holds server-mode
+//	reconcile          [-accept-journal-loss | -journal-complete] [-kek-file FILE]
+//	                   -journal-complete: after a restore without the catalog's record of the journal (onto an empty
+//	                   catalog), the operator states, audited, that the journal holds every change since the backup
+//	                   -kek-file is needed when the catalog holds server-mode
 //	                   data keys: each must open under the ring, or its version is quarantined (SSE-006)
 //	reclaim                                          retire withdrawn versions; destroys their server-mode data keys
 //	audit export       -dir D [-follow]             drain the audit outbox into D
@@ -164,6 +167,8 @@ func run(args []string) error {
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
 	from := fs.String("from", "", "backup directory to restore")
 	kekFile := fs.String("kek-file", "", "reconcile: the KEK ring to check server-mode data keys against")
+	journalComplete := fs.Bool("journal-complete", false,
+		"reconcile: state that the journal holds every change since the backup (needed after a restore onto an empty catalog; audited)")
 	allowMissing := fs.Bool("allow-missing", false, "backup: complete although blobs of live versions cannot be read, listing them as missing")
 	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
 		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
@@ -459,7 +464,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		opts := recovery.Options{AcceptJournalLoss: *acceptJournalLoss}
+		opts := recovery.Options{AcceptJournalLoss: *acceptJournalLoss, JournalComplete: *journalComplete}
 		if *kekFile != "" {
 			if opts.KEKs, err = kek.ReadRing(*kekFile, kekPassphrase); err != nil {
 				return err

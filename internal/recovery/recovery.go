@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/audit"
 	"fga/internal/blob"
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
@@ -80,12 +81,24 @@ type Options struct {
 	// after the backup may be lost. Only an operator who has restored
 	// those changes by other means may set it.
 	AcceptJournalLoss bool
+	// JournalComplete is the operator's statement that the journal holds
+	// every change made after the backup, which a restore without the
+	// catalog's own record of the journal needs before admission reopens
+	// (specification 2.6.2, AVL-008). It is audited.
+	JournalComplete bool
 	// KEKs is the keys role's KEK ring, recovered apart from backups
 	// (SSE-006). Reconcile needs it when the catalog holds server-mode
 	// data keys, and quarantines every version whose key does not open
 	// under it.
 	KEKs *kek.Ring
 }
+
+// ErrJournalUnproven means the restore had no catalog record of the
+// security journal to compare with, so the journal cannot be shown to hold
+// every change made after the backup. Admission stays closed until an
+// operator states that it is complete (Options.JournalComplete) or accepts
+// its loss.
+var ErrJournalUnproven = errors.New("recovery: restored without the catalog's record of the security journal; its completeness after the backup cannot be shown, admission stays closed")
 
 // ErrNoKEKs means the catalog holds server-mode data keys and no KEK ring
 // was given to check them. Admission stays closed.
@@ -459,6 +472,9 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 	if err != nil {
 		return 0, err
 	}
+	// Without the catalog's own record, only the backup's is left: it shows
+	// the journal complete up to the backup, not after it (AVL-008).
+	unproven := !ok
 	if !ok {
 		id, recorded, head, ok = m.JournalID, m.JournalEntries, m.JournalHead, m.JournalID != ""
 	}
@@ -513,7 +529,8 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 				return fmt.Errorf("recovery: restore %s: %w", f.Name, err)
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE authority_state SET admission_open = false, incarnation = $1, changed_at = now() WHERE id = 1`, next); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE authority_state SET admission_open = false, incarnation = $1, journal_unproven = $2, changed_at = now()
+		                            WHERE id = 1`, next, unproven && !opts.AcceptJournalLoss); err != nil {
 			return err
 		}
 		// A backup holds no staged ciphertext, so uploads in flight at the
@@ -599,6 +616,29 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 		}
 		if sealedKeys {
 			return rep, ErrNoKEKs
+		}
+	}
+	// A restore without the catalog's record of the journal reopens only on
+	// an operator's audited statement that the journal is complete, or an
+	// accepted loss (specification 2.6.2, AVL-008, review v3 F02).
+	var unproven bool
+	if err := pool.QueryRow(ctx, `SELECT journal_unproven FROM authority_state WHERE id = 1`).Scan(&unproven); err != nil {
+		return rep, err
+	}
+	if unproven && !opts.JournalComplete && !opts.AcceptJournalLoss {
+		return rep, ErrJournalUnproven
+	}
+	if unproven || opts.AcceptJournalLoss {
+		outcome := "JOURNAL_LOSS_ACCEPTED"
+		if !opts.AcceptJournalLoss {
+			outcome = "JOURNAL_COMPLETENESS_STATED"
+		}
+		if err := store.Append(ctx, audit.Event{ID: cryptowire.NewUUID().String(), Kind: audit.KindMutation, Actor: "operator",
+			Outcome: outcome, Targets: []audit.Target{{Type: "platform.journal", ID: js.ID}}, At: time.Now().UTC()}); err != nil {
+			return rep, err
+		}
+		if _, err := pool.Exec(ctx, `UPDATE authority_state SET journal_unproven = false WHERE id = 1`); err != nil {
+			return rep, err
 		}
 	}
 	if opts.AcceptJournalLoss {
