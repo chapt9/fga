@@ -34,7 +34,7 @@ Every current route is a client-mode route. After the caller is authorized, it a
 | Upload begin: objects, derived outputs, documents and collections | The bucket is in client mode |
 | Staging, finalize, document finalize | The intent is in client mode |
 | Unit reuse | Only client-mode unit versions can be reused |
-| Ciphertext streams; package, original, derived and export envelope delivery | The version is in client mode |
+| Ciphertext streams; package, original, derived and export envelope delivery | The version is in client mode. A package route checks it after the caller's read checks and before it looks up the recipient's envelope, which a server-mode version never has |
 | Keys role: envelope publication | The version is in client mode (`409 ENCRYPTION_MODE`) |
 | Keys role: envelope delivery | The envelope's version is in client mode, else the decision does not authorize the delivery |
 
@@ -46,6 +46,7 @@ Stat, listing, search, labels, deletion and approvals do not depend on the mode.
 |---|---|
 | `internal/content/encryption_test.go` `TestEncryptionModeRefusals` | V-155 on all upload routes; `NOT_FOUND` for unauthorized callers; nothing reserved |
 | `TestVersionModeGuards` | ENC-002 at the read, delivery and envelope-publication points |
+| `TestServerModePackages` | The object, unit, original and derived package routes answer `ENCRYPTION_MODE` for a server-mode version to a caller who may read it, and `NOT_FOUND` to one who may not |
 | `TestSetBucketEncryption` | ENC-001, V-159, attributes and revisions, `manage` required |
 | `TestEncryptionCeiling` | V-158: a ceiling that requires client mode for a label |
 | `internal/catalog/encryption_test.go` | ENC-003: migration of existing data |

@@ -490,6 +490,19 @@ func (s *Service) DerivedPackage(ctx context.Context, c Caller, bucketName, key,
 	if err != nil {
 		return Package{}, err
 	}
+	deliver := check{id: "output", role: registry.RoleOutput, action: "deliver", ref: canonical("document.derived", output.String()), version: v.ID.String()}
+	if v.Encryption != "client" {
+		// A server-mode output has no envelopes; a caller who may deliver
+		// it is told its mode rather than that none exists (ENC-002).
+		_, rec, err := s.decide(ctx, c, registry.OpDerivedDeliver, Audience, false, []check{deliver})
+		if err != nil {
+			return Package{}, err
+		}
+		if err := s.checked(ctx, rec); err != nil {
+			return Package{}, err
+		}
+		return Package{}, ErrEncryptionMode
+	}
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
 	                                         AND document_version IS NULL AND status = 'ACTIVE'`, c.Tenant, v.ID, recipient).Scan(&envelopeID)
@@ -500,13 +513,10 @@ func (s *Service) DerivedPackage(ctx context.Context, c Caller, bucketName, key,
 		return Package{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	signed, _, err := s.decide(ctx, c, registry.OpDerivedGetEnvelope, KeysAudience, true, []check{
-		{id: "output", role: registry.RoleOutput, action: "deliver", ref: canonical("document.derived", output.String()), version: v.ID.String()},
+		deliver,
 		{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: v.ID.String()},
 		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient}})
 	if err != nil {
-		return Package{}, err
-	}
-	if err := clientMode(v.Encryption); err != nil {
 		return Package{}, err
 	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, path...)

@@ -317,3 +317,56 @@ func blobPath(t *testing.T, st *r1test.Stack, version string) string {
 	}
 	return found
 }
+
+// TestServerModePackages covers ENC-002 for the client-mode package routes:
+// a server-mode object, unit, original or derived output has no envelopes,
+// and a caller allowed to read it is told its mode (ENCRYPTION_MODE) rather
+// than that nothing exists; a caller without access still finds nothing.
+func TestServerModePackages(t *testing.T) {
+	st := r1test.New(t)
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	eve := st.Client("eve", []string{"member"}, "p2")
+	obj, err := putPlain(st, alice.Caller, "vault", "a.txt", "", []byte("object"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "doc.md", IdempotencyKey: "doc",
+		Original: strings.NewReader("original")}, []byte("One.\n\nTwo.")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.Content.ListUnits(ctx, alice.Caller, "vault", "doc.md", "", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.PutDerivedPlain(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "out.txt", IdempotencyKey: "out"},
+		[]cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: obj.Object, Version: obj.Version}}, -1, strings.NewReader("derived")); err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]func(c *r1test.Client) error{
+		"object": func(c *r1test.Client) error {
+			_, err := st.Content.ReadPackage(ctx, c.Caller, "vault", "a.txt", "", c.Recipient.Fingerprint().String())
+			return err
+		},
+		"unit": func(c *r1test.Client) error {
+			_, err := st.Content.UnitPackage(ctx, c.Caller, "vault", "doc.md", "", page.Units[0].Unit, c.Recipient.Fingerprint().String())
+			return err
+		},
+		"original": func(c *r1test.Client) error {
+			_, err := st.Content.OriginalPackage(ctx, c.Caller, "vault", "doc.md", "", c.Recipient.Fingerprint().String())
+			return err
+		},
+		"derived": func(c *r1test.Client) error {
+			_, err := st.Content.DerivedPackage(ctx, c.Caller, "vault", "out.txt", "", c.Recipient.Fingerprint().String())
+			return err
+		},
+	}
+	for name, route := range routes {
+		if err := route(alice); !errors.Is(err, content.ErrEncryptionMode) {
+			t.Errorf("%s package for the owner: %v", name, err)
+		}
+		if err := route(eve); !errors.Is(err, content.ErrNotFound) {
+			t.Errorf("%s package for another project: %v", name, err)
+		}
+	}
+}

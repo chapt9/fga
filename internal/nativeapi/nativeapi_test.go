@@ -333,7 +333,7 @@ func TestServerDocumentsHTTP(t *testing.T) {
 // TestServerDerivedHTTP covers the server-mode derived routes and SDK (S4b):
 // a multi-segment output streamed with its lineage, read by another member
 // through her own reader path; a repeated finalize by sources; malformed
-// uploads; the upload route refuses a client-mode bucket.
+// uploads; each mode's route refuses the other mode.
 func TestServerDerivedHTTP(t *testing.T) {
 	d := deploy(t)
 	ctx := context.Background()
@@ -407,5 +407,8 @@ func TestServerDerivedHTTP(t *testing.T) {
 
 	if _, err := alice.PutPlain(ctx, "reports", "s.txt", strings.NewReader("x"), -1, client.PutOptions{Lineage: lineage}); !errors.As(err, &apiErr) || apiErr.Code != "ENCRYPTION_MODE" {
 		t.Fatalf("a server-mode output to a client-mode bucket: %v", err)
+	}
+	if _, err := alice.GetDerived(ctx, "vault", "summary.txt", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Code != "ENCRYPTION_MODE" {
+		t.Fatalf("a server-mode output through the client route: %v", err)
 	}
 }

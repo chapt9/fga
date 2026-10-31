@@ -341,6 +341,16 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err := s.checked(ctx, rec); err != nil {
 		return UnitPackageOut{}, err
 	}
+	// A server-mode unit has no envelopes; the authorized caller is told
+	// its mode rather than that none exists (ENC-002).
+	versionID, _ := cryptowire.ParseUUID(m.entry.UnitVersion)
+	uv, err := s.versionByID(ctx, s.d.Catalog.Pool(), c.Tenant, versionID, false)
+	if err != nil {
+		return UnitPackageOut{}, err
+	}
+	if err := clientMode(uv.Encryption); err != nil {
+		return UnitPackageOut{}, err
+	}
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version::text = $2 AND recipient = $3
 	                                         AND document_version = $4 AND status = 'ACTIVE'`, c.Tenant, m.entry.UnitVersion, recipient, d.id).Scan(&envelopeID)
@@ -504,6 +514,9 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 	if err != nil {
 		return Package{}, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return Package{}, err
+	}
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
 	                                         AND document_version = $4 AND status = 'ACTIVE'`, c.Tenant, v.ID, recipient, d.id).Scan(&envelopeID)
@@ -521,9 +534,6 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient},
 	})
 	if err != nil {
-		return Package{}, err
-	}
-	if err := clientMode(v.Encryption); err != nil {
 		return Package{}, err
 	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, complete...)

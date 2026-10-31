@@ -108,6 +108,11 @@ func (s *Service) ReadPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err := s.headHolds(ctx, s.d.Catalog.Pool(), c.Tenant, o, v, current, rec, false); err != nil {
 		return Package{}, err
 	}
+	// A server-mode version has no envelopes; the authorized caller is
+	// told its mode rather than that none exists (ENC-002).
+	if err := clientMode(v.Encryption); err != nil {
+		return Package{}, err
+	}
 
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx,
@@ -132,9 +137,6 @@ func (s *Service) ReadPackage(ctx context.Context, c Caller, bucketName, key, ve
 		check{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient})
 	signed, _, err := s.decide(ctx, c, envOp, KeysAudience, true, envChecks)
 	if err != nil {
-		return Package{}, err
-	}
-	if err := clientMode(v.Encryption); err != nil {
 		return Package{}, err
 	}
 	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
