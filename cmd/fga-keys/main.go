@@ -19,11 +19,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/catalog"
-	"fga/internal/content"
+	"fga/internal/enforce"
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/journal"
-	"fga/internal/nativeapi"
+	"fga/internal/keysapi"
 	"fga/internal/roleconfig"
 	"fga/internal/rpc"
 )
@@ -81,7 +81,7 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	verifier, err := cfg.Verifier(content.KeysAudience)
+	verifier, err := cfg.Verifier(enforce.KeysAudience)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	server.Handler = nativeapi.Keys(svc, tokens, adapterOf, cfg.StorageAdapter, ready)
+	server.Handler = keysapi.Keys(svc, tokens, adapterOf, cfg.StorageAdapter, ready)
 	slog.Info("fga-keys listening", "addr", cfg.Listen, "profile", cfg.Profile)
 	return cfg.Serve(ctx, server)
 }

@@ -15,9 +15,9 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/catalog"
-	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/decisionsvc"
+	"fga/internal/enforce"
 	"fga/internal/fence"
 	"fga/internal/registry"
 	"fga/internal/signing"
@@ -53,9 +53,9 @@ type KeyRecord struct {
 	Revision    uint64 `json:"revision"`
 }
 
-func (s *Service) authorize(ctx context.Context, c content.Caller, op string, checks []content.Check) (signing.Record, error) {
-	_, rec, err := content.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, content.KeysAudience, true, checks)
-	if errors.Is(err, content.ErrNotFound) {
+func (s *Service) authorize(ctx context.Context, c enforce.Caller, op string, checks []enforce.Check) (signing.Record, error) {
+	_, rec, err := enforce.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, enforce.KeysAudience, true, checks)
+	if errors.Is(err, enforce.ErrNotFound) {
 		return rec, ErrNotFound
 	}
 	if err != nil {
@@ -86,21 +86,21 @@ func (s *Service) audit(rec signing.Record, outcome string, t audit.Target) audi
 		Targets: []audit.Target{t}, At: s.d.Now()}
 }
 
-func plannedRecipient(principal, fp string) content.Check {
-	return content.Check{ID: "recipient", Role: registry.RoleRecipient, Action: "", Resource: alias(registry.PlannedRecipient, principal+"|"+fp)}
+func plannedRecipient(principal, fp string) enforce.Check {
+	return enforce.Check{ID: "recipient", Role: registry.RoleRecipient, Action: "", Resource: alias(registry.PlannedRecipient, principal+"|"+fp)}
 }
 
 // EnrollRecipient records the caller's new recipient public key as PENDING
 // and returns a one-use possession challenge (RCP-002). It needs enroll on
 // the planned key.
-func (s *Service) EnrollRecipient(ctx context.Context, c content.Caller, public []byte) (Challenge, error) {
+func (s *Service) EnrollRecipient(ctx context.Context, c enforce.Caller, public []byte) (Challenge, error) {
 	if !cryptowire.ValidX25519PublicKey(public) {
 		return Challenge{}, ErrInvalid
 	}
 	fp := cryptowire.RecipientFingerprint(cryptowire.Suite1, public).String()
 	check := plannedRecipient(c.Principal, fp)
 	check.Action = "enroll"
-	rec, err := s.authorize(ctx, c, registry.OpEnrollRecipient, []content.Check{check})
+	rec, err := s.authorize(ctx, c, registry.OpEnrollRecipient, []enforce.Check{check})
 	if err != nil {
 		return Challenge{}, err
 	}
@@ -136,7 +136,7 @@ func (s *Service) EnrollRecipient(ctx context.Context, c content.Caller, public 
 // ActivateRecipient checks the possession proof for a challenge of the
 // caller's PENDING key, deletes the challenge and activates the key
 // (RCP-002). A wrong, reused or expired proof leaves the key PENDING.
-func (s *Service) ActivateRecipient(ctx context.Context, c content.Caller, fp, challengeID string, proof []byte) (KeyRecord, error) {
+func (s *Service) ActivateRecipient(ctx context.Context, c enforce.Caller, fp, challengeID string, proof []byte) (KeyRecord, error) {
 	var principal, chFP string
 	var nonce, ephPriv, public []byte
 	var expires time.Time
@@ -174,7 +174,7 @@ func (s *Service) ActivateRecipient(ctx context.Context, c content.Caller, fp, c
 	}
 	check := plannedRecipient(c.Principal, fp)
 	check.Action = "activate"
-	rec, err := s.authorize(ctx, c, registry.OpActivateRecipient, []content.Check{check})
+	rec, err := s.authorize(ctx, c, registry.OpActivateRecipient, []enforce.Check{check})
 	if err != nil {
 		return KeyRecord{}, err
 	}
@@ -200,8 +200,8 @@ func (s *Service) ActivateRecipient(ctx context.Context, c content.Caller, fp, c
 // RevokeRecipient revokes one of the caller's keys: future deliveries and
 // sharing to it stop at the fence (KEY-008, KEY-010). The change is
 // journaled before it is committed.
-func (s *Service) RevokeRecipient(ctx context.Context, c content.Caller, fp string) error {
-	rec, err := s.authorize(ctx, c, registry.OpRevokeRecipient, []content.Check{{ID: "recipient", Role: registry.RoleRecipient,
+func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp string) error {
+	rec, err := s.authorize(ctx, c, registry.OpRevokeRecipient, []enforce.Check{{ID: "recipient", Role: registry.RoleRecipient,
 		Action: "revoke", Resource: canonical("crypto.recipient", fp)}})
 	if err != nil {
 		return err
@@ -226,7 +226,7 @@ func (s *Service) RevokeRecipient(ctx context.Context, c content.Caller, fp stri
 }
 
 // Recipient looks up a recipient key in the caller's tenant directory.
-func (s *Service) Recipient(ctx context.Context, c content.Caller, fp string) (KeyRecord, error) {
+func (s *Service) Recipient(ctx context.Context, c enforce.Caller, fp string) (KeyRecord, error) {
 	k := KeyRecord{Fingerprint: fp}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal, public_key, key_version, status, revision FROM recipient_keys
 	                                          WHERE tenant = $1 AND fingerprint = $2`, c.Tenant, fp).
@@ -239,7 +239,7 @@ func (s *Service) Recipient(ctx context.Context, c content.Caller, fp string) (K
 
 // SigningKey returns a content-signing key's verification record,
 // including retired and compromised ones (RCP-011).
-func (s *Service) SigningKey(ctx context.Context, c content.Caller, fp string) (KeyRecord, error) {
+func (s *Service) SigningKey(ctx context.Context, c enforce.Caller, fp string) (KeyRecord, error) {
 	k := KeyRecord{Fingerprint: fp}
 	err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal, public_key, status, revision FROM signing_keys
 	                                          WHERE tenant = $1 AND fingerprint = $2`, c.Tenant, fp).
@@ -264,7 +264,7 @@ type EnvelopeRef struct {
 // next envelope generation, and obtains the share, create, recipient read
 // and receive-key checks; the previous active envelope of that recipient
 // is retired in the same transaction.
-func (s *Service) Publish(ctx context.Context, c content.Caller, bucketName, key, versionID string, e content.EnvelopeIn) (EnvelopeRef, error) {
+func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key, versionID string, e EnvelopeIn) (EnvelopeRef, error) {
 	ctxv, err := cryptowire.ParseEnvelopeContext(e.Context)
 	if err != nil || len(e.Ciphertext) == 0 || len(e.Ciphertext) > cryptowire.MaxHPKECiphertext {
 		return EnvelopeRef{}, ErrInvalid
@@ -317,7 +317,7 @@ func (s *Service) Publish(ctx context.Context, c content.Caller, bucketName, key
 	}
 	id := cryptowire.NewUUID()
 	obj := canonical("storage.object", objectID.String())
-	rec, err := s.authorize(ctx, c, registry.OpPublishEnvelope, []content.Check{
+	rec, err := s.authorize(ctx, c, registry.OpPublishEnvelope, []enforce.Check{
 		{ID: "share", Role: registry.RoleShare, Action: "share", Resource: obj, Version: versionID},
 		{ID: "envelope", Role: registry.RoleEnvelope, Action: "create", Resource: alias(registry.PlannedEnvelope, objectID.String()+"|"+fp+"|"+id.String())},
 		{ID: "recipient-read", Role: registry.RoleRecipientRead, Action: "read", Resource: obj, Version: versionID, Recipient: fp},
@@ -347,7 +347,7 @@ func (s *Service) Publish(ctx context.Context, c content.Caller, bucketName, key
 			c.Tenant, versionID, fp); err != nil {
 			return err
 		}
-		if err := content.InsertEnvelope(ctx, tx, c.Tenant, scope, attrs, id, objectID, ctxv.LogicalVersion, ctxv, keyVersion, e, digest, s.d.Now()); err != nil {
+		if err := InsertEnvelope(ctx, tx, c.Tenant, scope, attrs, id, objectID, ctxv.LogicalVersion, ctxv, keyVersion, e, digest, s.d.Now()); err != nil {
 			return err
 		}
 		return s.d.Catalog.AppendTx(ctx, tx, s.audit(rec, "ENVELOPE_PUBLISHED", audit.Target{Type: "crypto.envelope", ID: objectID.String(),
@@ -361,12 +361,12 @@ func (s *Service) Publish(ctx context.Context, c content.Caller, bucketName, key
 
 // Retire withdraws an envelope from future delivery (RetireEnvelope). It
 // does not erase copies a client already holds (KEY-010).
-func (s *Service) Retire(ctx context.Context, c content.Caller, envelopeID string) (EnvelopeRef, error) {
+func (s *Service) Retire(ctx context.Context, c enforce.Caller, envelopeID string) (EnvelopeRef, error) {
 	id, err := cryptowire.ParseUUID(envelopeID)
 	if err != nil {
 		return EnvelopeRef{}, ErrInvalid
 	}
-	rec, err := s.authorize(ctx, c, registry.OpRetireEnvelope, []content.Check{{ID: "envelope", Role: registry.RoleEnvelope, Action: "retire",
+	rec, err := s.authorize(ctx, c, registry.OpRetireEnvelope, []enforce.Check{{ID: "envelope", Role: registry.RoleEnvelope, Action: "retire",
 		Resource: canonical("crypto.envelope", envelopeID)}})
 	if err != nil {
 		return EnvelopeRef{}, err

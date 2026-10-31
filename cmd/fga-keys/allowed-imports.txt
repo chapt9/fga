@@ -4,22 +4,19 @@
 fga/cmd/fga-keys
 fga/internal/audit
 fga/internal/authn
-# Reviewed 2026-10-31: linked through internal/content's shared types; the keys
-# role configures no blob directory and opens no blob. Splitting the shared
-# types out of internal/content would remove it.
-fga/internal/blob
 fga/internal/catalog
-fga/internal/content
 fga/internal/cryptowire
 fga/internal/decision
 fga/internal/decisionsvc
 fga/internal/delegation
+fga/internal/enforce
 fga/internal/envelope
 fga/internal/fence
+fga/internal/httpapi
 fga/internal/gate
 fga/internal/identity
 fga/internal/journal
-fga/internal/nativeapi
+fga/internal/keysapi
 fga/internal/policy
 fga/internal/registry
 fga/internal/release

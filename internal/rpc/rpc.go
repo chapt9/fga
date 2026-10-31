@@ -13,9 +13,10 @@ import (
 	"io"
 	"net/http"
 
-	"fga/internal/content"
 	"fga/internal/decisionsvc"
-	"fga/internal/nativeapi"
+	"fga/internal/enforce"
+	"fga/internal/envelope"
+	"fga/internal/keysapi"
 	"fga/internal/signing"
 	"fga/internal/strictjson"
 )
@@ -24,15 +25,15 @@ import (
 const MaxResponse = 1 << 20
 
 // DecisionClient calls the decision role's adapter facade. It implements
-// content.Decider.
+// enforce.Decider.
 type DecisionClient struct {
 	BaseURL string
 	HTTP    *http.Client
 }
 
-var _ content.Decider = DecisionClient{}
+var _ enforce.Decider = DecisionClient{}
 
-// Decide implements content.Decider.
+// Decide implements enforce.Decider.
 func (c DecisionClient) Decide(ctx context.Context, req decisionsvc.Request) (decisionsvc.Response, error) {
 	var resp decisionsvc.Response
 	err := post(ctx, c.HTTP, c.BaseURL+"/v1/decide-batch", req, &resp)
@@ -46,23 +47,21 @@ type KeysClient struct {
 	HTTP    *http.Client
 }
 
-var _ content.EnvelopeDelivery = KeysClient{}
-
 // ErrDelivery is returned when the keys role refuses a delivery.
 var ErrDelivery = errors.New("rpc: the keys role refused the delivery")
 
 // Deliver implements content.EnvelopeDelivery.
-func (c KeysClient) Deliver(ctx context.Context, d signing.Signed, envelopeID string) (content.Delivered, error) {
-	var out nativeapi.DeliveredBody
-	err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/deliver", nativeapi.DeliverBody{Payload: d.Payload, JWS: d.JWS, EnvelopeID: envelopeID}, &out)
+func (c KeysClient) Deliver(ctx context.Context, d signing.Signed, envelopeID string) (envelope.Delivered, error) {
+	var out keysapi.DeliveredBody
+	err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/deliver", keysapi.DeliverBody{Payload: d.Payload, JWS: d.JWS, EnvelopeID: envelopeID}, &out)
 	var se statusError
 	if errors.As(err, &se) && se == http.StatusNotFound {
-		return content.Delivered{}, content.ErrNotFound
+		return envelope.Delivered{}, enforce.ErrNotFound
 	}
 	if err != nil {
-		return content.Delivered{}, err
+		return envelope.Delivered{}, err
 	}
-	return content.Delivered{EnvelopeID: out.EnvelopeID, Context: out.Envelope.Context, Ciphertext: out.Envelope.Ciphertext,
+	return envelope.Delivered{EnvelopeID: out.EnvelopeID, Context: out.Envelope.Context, Ciphertext: out.Envelope.Ciphertext,
 		Signature: out.Envelope.Signature, Receipt: out.Receipt, ReceiptSignature: out.ReceiptSignature}, nil
 }
 

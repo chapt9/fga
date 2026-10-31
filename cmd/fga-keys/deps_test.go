@@ -13,3 +13,14 @@ func TestImportAllowlist(t *testing.T) {
 	depcheck.Check(t)
 	depcheck.CheckForbidden(t)
 }
+
+// TestNoStorageCode: the keys role links neither the blob store nor the
+// content service; it has no blob directory and serves no object bytes
+// (MOD-002).
+func TestNoStorageCode(t *testing.T) {
+	for _, dep := range depcheck.Deps(t) {
+		if dep == "fga/internal/blob" || dep == "fga/internal/content" {
+			t.Errorf("the keys role links %s", dep)
+		}
+	}
+}

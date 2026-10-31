@@ -18,8 +18,8 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/catalog"
-	"fga/internal/content"
 	"fga/internal/cryptowire"
+	"fga/internal/enforce"
 	"fga/internal/fence"
 	"fga/internal/registry"
 	"fga/internal/signing"
@@ -41,7 +41,7 @@ type Deps struct {
 	Fence   *fence.Fence
 	// Decider obtains decisions for the keys role's own client-facing
 	// operations; Verifier verifies decisions for audience fga-keys.
-	Decider  content.Decider
+	Decider  enforce.Decider
 	Verifier *signing.Verifier
 	// ReceiptKey signs delivery receipts; it is used for nothing else
 	// (RCP-001).
@@ -67,7 +67,55 @@ func New(d Deps) (*Service, error) {
 	return &Service{d: d, ops: registry.R1Operations(registry.R1Types())}, nil
 }
 
-var _ content.EnvelopeDelivery = (*Service)(nil)
+// Delivered is an envelope released by the keys role, with its signed
+// delivery receipt.
+type Delivered struct {
+	EnvelopeID       string
+	Context          []byte
+	Ciphertext       []byte
+	Signature        string
+	Receipt          []byte
+	ReceiptSignature string
+}
+
+// EnvelopeIn is one recipient envelope as a client sends it.
+type EnvelopeIn struct {
+	Context    []byte
+	Ciphertext []byte
+	Signature  string
+}
+
+// InsertEnvelope stores an envelope and its crypto.envelope resource. The
+// publication transaction of the content service and the keys role's
+// PublishRecipientEnvelope both use it, inside their fences.
+func InsertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
+	ctxv cryptowire.EnvelopeContext, keyVersion uint64, e EnvelopeIn, digest cryptowire.Digest, now time.Time) error {
+	var principal string
+	if err := tx.QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`, tenant, ctxv.Recipient.String()).Scan(&principal); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO envelopes (tenant, id, object, version, recipient, key_version, generation, context, ciphertext, signature, signer, digest,
+		                       status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE', $13)`,
+		tenant, id, object, version, ctxv.Recipient.String(), int64(keyVersion), int64(ctxv.Generation), e.Context, e.Ciphertext, e.Signature,
+		ctxv.Sharer.String(), digest.String(), now); err != nil {
+		if isUnique(err) {
+			return fmt.Errorf("%w: an active envelope exists for this recipient", ErrConflict)
+		}
+		return err
+	}
+	attrs := map[string]any{"object": object.String(), "version": version.String(), "recipient": ctxv.Recipient.String(),
+		"recipient_principal": principal, "status": "ACTIVE"}
+	for _, k := range []string{"owner", "project", "label", "bucket"} {
+		if v, ok := objectAttrs[k]; ok {
+			attrs[k] = v
+		}
+	}
+	b, _ := json.Marshal(attrs)
+	_, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.envelope', $3, 1, 1, 1, $4)`, tenant, id.String(), scope, b)
+	return err
+}
 
 // exactly reports whether rec's checks are exactly those of the registered
 // operation: the same resource types, actions and kinds, each as often as
@@ -123,18 +171,18 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // ACTIVE, and records the delivery. It returns the exact stored envelope
 // with a signed receipt; it never selects another recipient or creates an
 // envelope (RCP-005, KEY-015).
-func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (content.Delivered, error) {
+func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
 	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld) || !s.exactly(rec) {
-		return content.Delivered{}, ErrDecision
+		return Delivered{}, ErrDecision
 	}
 	id, err := cryptowire.ParseUUID(envelopeID)
 	if err != nil {
-		return content.Delivered{}, ErrInvalid
+		return Delivered{}, ErrInvalid
 	}
 	e, err := s.envelope(ctx, s.d.Catalog.Pool(), rec.Tenant, id, "")
 	if err != nil {
-		return content.Delivered{}, err
+		return Delivered{}, err
 	}
 	for _, c := range rec.Checks {
 		var ok bool
@@ -148,12 +196,12 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			ok = c.ResourceID == e.Recipient && c.PrincipalBinding == e.Recipient
 		}
 		if !ok {
-			return content.Delivered{}, ErrDecision
+			return Delivered{}, ErrDecision
 		}
 	}
 	b, err := fence.FromRecord(rec)
 	if err != nil {
-		return content.Delivered{}, ErrDecision
+		return Delivered{}, ErrDecision
 	}
 	var tenantID cryptowire.UUID
 	var recipientPrincipal string
@@ -182,21 +230,21 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	})
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return content.Delivered{}, ErrNotFound
+			return Delivered{}, ErrNotFound
 		}
-		return content.Delivered{}, fmt.Errorf("%w: %v", ErrDecision, err)
+		return Delivered{}, fmt.Errorf("%w: %v", ErrDecision, err)
 	}
 	receipt, err := json.Marshal(cryptowire.Receipt{Version: cryptowire.ReceiptVersion, EnvelopeID: e.ID.String(), EnvelopeDigest: e.Digest,
 		TenantID: tenantID.String(), ObjectID: e.Object.String(), LogicalVersionID: e.Version.String(), Recipient: e.Recipient,
 		Audience: recipientPrincipal, DecisionID: rec.DecisionID, OperationID: rec.OperationID, RecoveryIncarnation: rec.RecoveryIncarnation,
 		IssuedAt: s.d.Now().UTC(), ValidUntil: rec.ValidUntil.UTC()})
 	if err != nil {
-		return content.Delivered{}, err
+		return Delivered{}, err
 	}
 	sig, err := cryptowire.Sign(cryptowire.TypeReceipt, s.d.ReceiptKeyID, s.d.ReceiptKey, receipt)
 	if err != nil {
-		return content.Delivered{}, err
+		return Delivered{}, err
 	}
-	return content.Delivered{EnvelopeID: e.ID.String(), Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature,
+	return Delivered{EnvelopeID: e.ID.String(), Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature,
 		Receipt: receipt, ReceiptSignature: sig}, nil
 }

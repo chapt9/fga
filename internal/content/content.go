@@ -14,9 +14,6 @@ package content
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -28,8 +25,9 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/decisionsvc"
+	"fga/internal/enforce"
+	"fga/internal/envelope"
 	"fga/internal/fence"
-	"fga/internal/registry"
 	"fga/internal/signing"
 )
 
@@ -37,38 +35,29 @@ import (
 // adapter maps them to its own redacted errors (CNT-004, DEC-010).
 var (
 	ErrInvalid      = errors.New("content: invalid request")
-	ErrNotFound     = errors.New("content: not found")
+	ErrNotFound     = enforce.ErrNotFound
 	ErrConflict     = errors.New("content: conflict")
 	ErrPrecondition = errors.New("content: precondition failed")
 	ErrTooLarge     = errors.New("content: too large")
-	ErrUnavailable  = errors.New("content: a dependency is unavailable")
+	ErrUnavailable  = enforce.ErrUnavailable
 )
 
-// Caller is an authenticated user of the native API: the subject of a
-// verified access token, acting for itself (TB1).
-type Caller struct {
-	Tenant    string
-	Principal string
-	// Token is the user's access token, passed to the decision role as
-	// first-hop evidence (TRU-003).
-	Token string
-}
+// Shared enforcement types, kept under their content names.
+type (
+	// Caller is an authenticated user of the native API.
+	Caller = enforce.Caller
+	// Decider obtains decisions from the decision role.
+	Decider = enforce.Decider
+	// Check is one check of a registered operation.
+	Check = enforce.Check
+	// Delivered is an envelope released by the keys role.
+	Delivered = envelope.Delivered
+	// EnvelopeIn is one recipient envelope as a client sends it.
+	EnvelopeIn = envelope.EnvelopeIn
+)
 
-// Decider obtains decisions from the decision role.
-type Decider interface {
-	Decide(ctx context.Context, req decisionsvc.Request) (decisionsvc.Response, error)
-}
-
-// Delivered is an envelope released by the keys role, with its signed
-// delivery receipt.
-type Delivered struct {
-	EnvelopeID       string
-	Context          []byte
-	Ciphertext       []byte
-	Signature        string
-	Receipt          []byte
-	ReceiptSignature string
-}
+// Authorize is enforce.Authorize.
+var Authorize = enforce.Authorize
 
 // EnvelopeDelivery is the keys role's internal delivery endpoint (TB3,
 // TRU-005).
@@ -92,12 +81,11 @@ type Limits struct {
 var DefaultLimits = Limits{MaxCiphertext: 256 << 20, MaxEnvelopes: 16, IntentLifetime: time.Hour, ListPageMax: 1000,
 	ListScanBudget: 5000, TokenLifetime: 15 * time.Minute, LeaseCheckEvery: 5 * time.Second}
 
-// Audience is the audience of decisions the storage role enforces, and the
-// token audience of its users.
-const Audience = "fga-storage"
-
-// KeysAudience is the audience of decisions the keys role enforces.
-const KeysAudience = "fga-keys"
+// Audiences of the storage and keys roles.
+const (
+	Audience     = enforce.Audience
+	KeysAudience = enforce.KeysAudience
+)
 
 // Deps are the service's collaborators. Every field is required.
 type Deps struct {
@@ -152,91 +140,6 @@ func (s *Service) decide(ctx context.Context, c Caller, op, audience string, sin
 		out[i] = Check{ID: ch.id, Role: ch.role, Action: ch.action, Resource: ch.ref, Version: ch.version, Recipient: ch.recipient}
 	}
 	return Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, op, audience, singleUse, out)
-}
-
-// Check is one check of a registered operation, as an enforcing role plans
-// it.
-type Check struct {
-	ID       string
-	Role     string
-	Action   string
-	Resource decisionsvc.Alias
-	Version  string
-	// Recipient is the key fingerprint of a recipient-eligibility check.
-	Recipient string
-}
-
-// Authorize asks the decision role for a decision for operation op with
-// checks, as caller, for audience, and returns the verified signed record.
-// Only an ALLOW whose record is bound to exactly this operation counts
-// (DEC-002); everything else is ErrNotFound, or ErrUnavailable for a
-// failure. verifier verifies decisions for the enforcing role's own
-// audience; a decision for another audience is only checked for integrity
-// here and verified by that role.
-func Authorize(ctx context.Context, d Decider, verifier *signing.Verifier, cat *catalog.Store, c Caller, op, audience string,
-	singleUse bool, checks []Check) (signing.Signed, signing.Record, error) {
-	id, err := cat.GetIdentity(ctx, c.Tenant, c.Principal)
-	if err != nil {
-		return signing.Signed{}, signing.Record{}, ErrNotFound
-	}
-	req := decisionsvc.Request{RequestID: cryptowire.NewUUID().String(), Tenant: c.Tenant, Operation: op,
-		OperationID: cryptowire.NewUUID().String(), Audience: audience, SingleUse: singleUse,
-		Actor: decisionsvc.Ref{ID: c.Principal, Revision: id.Revision}, Evidence: c.Token}
-	h := sha256.New()
-	fmt.Fprintf(h, "fga.storage-operation/v1\n%s\n%s\n", op, c.Tenant)
-	for _, ch := range checks {
-		dc := decisionsvc.Check{ID: ch.ID, Role: ch.Role, Action: ch.Action, Resource: ch.Resource, Version: ch.Version}
-		if ch.Recipient != "" {
-			dc.Kind, dc.PrincipalBinding = string(registry.KindRecipientEligibility), ch.Recipient
-		}
-		req.Checks = append(req.Checks, dc)
-		fmt.Fprintf(h, "%s %s %s %s/%s/%s/%s %s %s\n", ch.ID, ch.Role, ch.Action, ch.Resource.Namespace, ch.Resource.Name,
-			ch.Resource.Type, ch.Resource.ID, ch.Version, ch.Recipient)
-	}
-	req.OperationDigest = "sha256:" + hex.EncodeToString(h.Sum(nil))
-
-	resp, err := d.Decide(ctx, req)
-	switch {
-	case err != nil:
-		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision: %v", ErrUnavailable, err)
-	case resp.Outcome == "ERROR":
-		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision %s", ErrUnavailable, resp.Reason)
-	case resp.Outcome != "ALLOW" || resp.Signed == nil:
-		// Absent and denied look the same to the caller (DEC-010).
-		return signing.Signed{}, signing.Record{}, ErrNotFound
-	}
-	payload, err := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	if err != nil {
-		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: malformed decision", ErrUnavailable)
-	}
-	signed := signing.Signed{Payload: payload, JWS: resp.Signed.JWS}
-	var rec signing.Record
-	if verifier.Audience() == audience {
-		rec, err = verifier.Check(signed)
-	} else {
-		rec, err = verifier.Inspect(signed)
-	}
-	if err != nil || !bound(rec, req) {
-		return signing.Signed{}, signing.Record{}, fmt.Errorf("%w: decision does not verify", ErrUnavailable)
-	}
-	return signed, rec, nil
-}
-
-// bound reports whether rec is the decision for exactly req: tenant,
-// actor, operation, digest and every check's role, action and version.
-func bound(rec signing.Record, req decisionsvc.Request) bool {
-	if rec.Tenant != req.Tenant || rec.Actor.ID != req.Actor.ID || rec.Operation != req.Operation ||
-		rec.OperationDigest != req.OperationDigest || rec.SingleUse != req.SingleUse || len(rec.Checks) != len(req.Checks) {
-		return false
-	}
-	for i, c := range req.Checks {
-		r := rec.Checks[i]
-		if r.ID != c.ID || r.Version != c.Version || r.PrincipalBinding != c.PrincipalBinding ||
-			(c.Resource.ID != "" && r.ResourceID != c.Resource.ID) || (c.Resource.Type != "" && r.ResourceType != c.Resource.Type) {
-			return false
-		}
-	}
-	return true
 }
 
 // fenced runs fn in the authority fence for rec.

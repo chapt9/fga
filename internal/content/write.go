@@ -20,6 +20,7 @@ import (
 	"fga/internal/audit"
 	"fga/internal/blob"
 	"fga/internal/cryptowire"
+	"fga/internal/envelope"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -260,13 +261,6 @@ func (s *Service) PutCiphertext(ctx context.Context, c Caller, intentID cryptowi
 		return Receipt{}, ErrConflict
 	}
 	return Receipt{Blob: in.Blob, Length: length, SHA256: sum}, nil
-}
-
-// EnvelopeIn is one initial recipient envelope of an upload.
-type EnvelopeIn struct {
-	Context    []byte
-	Ciphertext []byte
-	Signature  string
 }
 
 // FinalizeRequest carries the signed descriptor and initial envelopes.
@@ -560,7 +554,7 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		return Published{}, err
 	}
 	for _, e := range envs {
-		if err := InsertEnvelope(ctx, tx, c.Tenant, in.scope, in.attributes, e.id, in.Object, in.LogicalVersion, e.ctx, e.keyVersion,
+		if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, in.scope, in.attributes, e.id, in.Object, in.LogicalVersion, e.ctx, e.keyVersion,
 			e.EnvelopeIn, e.digest, now); err != nil {
 			return Published{}, err
 		}
@@ -572,38 +566,6 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		return Published{}, err
 	}
 	return result, nil
-}
-
-// InsertEnvelope stores an envelope and its crypto.envelope resource. The
-// publication transaction of the content service and the keys role's
-// PublishRecipientEnvelope both use it, inside their fences.
-func InsertEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, objectAttrs map[string]any, id, object, version cryptowire.UUID,
-	ctxv cryptowire.EnvelopeContext, keyVersion uint64, e EnvelopeIn, digest cryptowire.Digest, now time.Time) error {
-	var principal string
-	if err := tx.QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`, tenant, ctxv.Recipient.String()).Scan(&principal); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO envelopes (tenant, id, object, version, recipient, key_version, generation, context, ciphertext, signature, signer, digest,
-		                       status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE', $13)`,
-		tenant, id, object, version, ctxv.Recipient.String(), int64(keyVersion), int64(ctxv.Generation), e.Context, e.Ciphertext, e.Signature,
-		ctxv.Sharer.String(), digest.String(), now); err != nil {
-		if isUnique(err) {
-			return fmt.Errorf("%w: an active envelope exists for this recipient", ErrConflict)
-		}
-		return err
-	}
-	attrs := map[string]any{"object": object.String(), "version": version.String(), "recipient": ctxv.Recipient.String(),
-		"recipient_principal": principal, "status": "ACTIVE"}
-	for _, k := range []string{"owner", "project", "label", "bucket"} {
-		if v, ok := objectAttrs[k]; ok {
-			attrs[k] = v
-		}
-	}
-	b, _ := json.Marshal(attrs)
-	_, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.envelope', $3, 1, 1, 1, $4)`, tenant, id.String(), scope, b)
-	return err
 }
 
 // preconditions applies If-Match and If-None-Match to the committed head

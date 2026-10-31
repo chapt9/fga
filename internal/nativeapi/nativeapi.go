@@ -1,128 +1,36 @@
-// Package nativeapi is the native HTTP API of the storage and keys roles
-// (specification 2.5, CNT-009, ADP-001, TB1, TB3;
-// docs/design/native-api.md). It authenticates the caller, validates the
-// request and delegates to the shared services; it never decides access
-// itself (CNT-002). Errors are redacted to a code.
+// Package nativeapi is the storage role's native HTTP API (specification
+// 2.5, CNT-009, ADP-001, TB1; docs/design/native-api.md). It authenticates
+// the caller, validates the request and delegates to the content service;
+// it never decides access itself (CNT-002). Errors are redacted to a code.
 package nativeapi
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
-	"fga/internal/authn"
 	"fga/internal/content"
 	"fga/internal/cryptowire"
-	"fga/internal/envelope"
-	"fga/internal/signing"
-	"fga/internal/strictjson"
+	"fga/internal/httpapi"
 )
 
-// MaxJSONBody bounds JSON request bodies.
-const MaxJSONBody = 1 << 20
-
-// Error codes of the native API.
-const (
-	CodeInvalid      = "INVALID_REQUEST"
-	CodeUnauth       = "UNAUTHENTICATED"
-	CodeNotFound     = "NOT_FOUND"
-	CodeConflict     = "CONFLICT"
-	CodePrecondition = "PRECONDITION_FAILED"
-	CodeTooLarge     = "TOO_LARGE"
-	CodeUnavailable  = "UNAVAILABLE"
-)
-
-// TokenVerifier verifies access tokens; authn.Verifier implements it.
-type TokenVerifier interface {
-	Verify(token, audience string) (authn.Claims, error)
-}
-
-func writeError(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// fail maps a service error to a redacted response. The cause goes to the
-// operational log with no object key, token or payload.
-func fail(w http.ResponseWriter, r *http.Request, err error) {
+// classify maps content service errors to redacted responses. Absent and
+// denied targets are both NOT_FOUND (CNT-004, DEC-010).
+func classify(err error) (int, string, bool) {
 	switch {
-	case errors.Is(err, content.ErrNotFound), errors.Is(err, envelope.ErrNotFound):
-		writeError(w, http.StatusNotFound, CodeNotFound)
-	case errors.Is(err, content.ErrInvalid), errors.Is(err, envelope.ErrInvalid):
-		writeError(w, http.StatusBadRequest, CodeInvalid)
+	case errors.Is(err, content.ErrNotFound):
+		return http.StatusNotFound, httpapi.CodeNotFound, true
+	case errors.Is(err, content.ErrInvalid):
+		return http.StatusBadRequest, httpapi.CodeInvalid, true
 	case errors.Is(err, content.ErrPrecondition):
-		writeError(w, http.StatusPreconditionFailed, CodePrecondition)
-	case errors.Is(err, content.ErrConflict), errors.Is(err, envelope.ErrConflict):
-		writeError(w, http.StatusConflict, CodeConflict)
+		return http.StatusPreconditionFailed, httpapi.CodePrecondition, true
+	case errors.Is(err, content.ErrConflict):
+		return http.StatusConflict, httpapi.CodeConflict, true
 	case errors.Is(err, content.ErrTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
-	case errors.Is(err, envelope.ErrDecision):
-		writeError(w, http.StatusForbidden, CodeInvalid)
-	default:
-		slog.Warn("request failed", "method", r.Method, "route", r.Pattern, "error", err.Error())
-		writeError(w, http.StatusServiceUnavailable, CodeUnavailable)
+		return http.StatusRequestEntityTooLarge, httpapi.CodeTooLarge, true
 	}
-}
-
-// authenticate verifies the bearer token for audience and returns the
-// caller (TB1, ADP-001).
-func authenticate(tokens TokenVerifier, audience string, r *http.Request) (content.Caller, bool) {
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
-		return content.Caller{}, false
-	}
-	c, err := tokens.Verify(token, audience)
-	if err != nil {
-		return content.Caller{}, false
-	}
-	return content.Caller{Tenant: c.Tenant, Principal: c.Subject, Token: token}, true
-}
-
-func authed(tokens TokenVerifier, audience string, h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		c, ok := authenticate(tokens, audience, r)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, CodeUnauth)
-			return
-		}
-		h(w, r, c)
-	}
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxJSONBody))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, CodeTooLarge)
-		return false
-	}
-	if err := strictjson.Decode(body, v); err != nil {
-		writeError(w, http.StatusBadRequest, CodeInvalid)
-		return false
-	}
-	return true
-}
-
-func health(mux *http.ServeMux, ready func() bool) {
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !ready() {
-			writeError(w, http.StatusServiceUnavailable, CodeUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+	return 0, "", false
 }
 
 // wire types of the storage API.
@@ -146,16 +54,16 @@ type (
 		MaxCiphertextLength int64  `json:"max_ciphertext_length"`
 		ExpiresAt           string `json:"expires_at"`
 	}
-	// EnvelopeBody is an envelope on the wire.
+	// httpapi.EnvelopeBody is an envelope on the wire.
 	EnvelopeBody struct {
 		Context    []byte `json:"context"`
 		Ciphertext []byte `json:"ciphertext"`
 		Signature  string `json:"signature"`
 	}
 	finalizeBody struct {
-		Descriptor          []byte         `json:"descriptor"`
-		DescriptorSignature string         `json:"descriptor_signature"`
-		Envelopes           []EnvelopeBody `json:"envelopes"`
+		Descriptor          []byte                 `json:"descriptor"`
+		DescriptorSignature string                 `json:"descriptor_signature"`
+		Envelopes           []httpapi.EnvelopeBody `json:"envelopes"`
 	}
 	receiptBody struct {
 		BlobID           string `json:"blob_id"`
@@ -163,39 +71,39 @@ type (
 		CiphertextSHA256 string `json:"ciphertext_sha256"`
 	}
 	packageBody struct {
-		Version             content.VersionInfo `json:"version"`
-		Descriptor          []byte              `json:"descriptor"`
-		DescriptorSignature string              `json:"descriptor_signature"`
-		EnvelopeID          string              `json:"envelope_id"`
-		Envelope            EnvelopeBody        `json:"envelope"`
-		Receipt             []byte              `json:"receipt"`
-		ReceiptSignature    string              `json:"receipt_signature"`
+		Version             content.VersionInfo  `json:"version"`
+		Descriptor          []byte               `json:"descriptor"`
+		DescriptorSignature string               `json:"descriptor_signature"`
+		EnvelopeID          string               `json:"envelope_id"`
+		Envelope            httpapi.EnvelopeBody `json:"envelope"`
+		Receipt             []byte               `json:"receipt"`
+		ReceiptSignature    string               `json:"receipt_signature"`
 	}
 )
 
 // Storage returns the storage role's handler.
-func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http.Handler {
+func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bool) http.Handler {
 	mux := http.NewServeMux()
-	health(mux, ready)
+	httpapi.Health(mux, ready)
 	auth := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-		return authed(tokens, content.Audience, h)
+		return httpapi.Authed(tokens, content.Audience, h)
 	}
 	mux.HandleFunc("POST /v1/buckets/{bucket}/uploads", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		var b beginBody
-		if !decodeJSON(w, r, &b) {
+		if !httpapi.DecodeJSON(w, r, &b) {
 			return
 		}
 		if b.IfNoneMatch != "" && b.IfNoneMatch != "*" {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		in, err := svc.Begin(r.Context(), c, content.BeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
 			IdempotencyKey: b.IdempotencyKey, IfMatch: b.IfMatch, IfNoneMatch: b.IfNoneMatch == "*"})
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusCreated, intentBody{IntentID: in.IntentID.String(), TenantID: in.Tenant.String(), ObjectID: in.Object.String(),
+		httpapi.WriteJSON(w, http.StatusCreated, intentBody{IntentID: in.IntentID.String(), TenantID: in.Tenant.String(), ObjectID: in.Object.String(),
 			LogicalVersionID: in.LogicalVersion.String(), CryptoVersionID: in.CryptoVersion.String(), BlobID: in.Blob.String(),
 			AttemptID: in.Attempt.String(), Suite: in.Suite, Format: in.Format, MaxCiphertextLength: in.MaxCiphertext,
 			ExpiresAt: in.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")})
@@ -204,24 +112,24 @@ func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http
 		id, err := cryptowire.ParseUUID(r.PathValue("intent"))
 		sum, err2 := cryptowire.ParseDigest(r.Header.Get("Fga-Ciphertext-Sha256"))
 		if err != nil || err2 != nil || r.ContentLength <= 0 {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		rec, err := svc.PutCiphertext(r.Context(), c, id, r.ContentLength, sum, http.MaxBytesReader(w, r.Body, r.ContentLength))
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, receiptBody{BlobID: rec.Blob.String(), CiphertextLength: rec.Length, CiphertextSHA256: rec.SHA256.String()})
+		httpapi.WriteJSON(w, http.StatusOK, receiptBody{BlobID: rec.Blob.String(), CiphertextLength: rec.Length, CiphertextSHA256: rec.SHA256.String()})
 	}))
 	mux.HandleFunc("POST /v1/uploads/{intent}/finalize", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		id, err := cryptowire.ParseUUID(r.PathValue("intent"))
 		var b finalizeBody
 		if err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
-		if !decodeJSON(w, r, &b) {
+		if !httpapi.DecodeJSON(w, r, &b) {
 			return
 		}
 		req := content.FinalizeRequest{Descriptor: b.Descriptor, DescriptorSignature: b.DescriptorSignature}
@@ -230,10 +138,10 @@ func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http
 		}
 		p, err := svc.Finalize(r.Context(), c, id, req)
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, p)
+		httpapi.WriteJSON(w, http.StatusOK, p)
 	}))
 	object := func(r *http.Request) (bucket, key, version string, ok bool) {
 		q := r.URL.Query()
@@ -245,20 +153,20 @@ func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http
 	mux.HandleFunc("GET /v1/buckets/{bucket}/object", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		info, err := svc.Stat(r.Context(), c, b, k, v)
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, info)
+		httpapi.WriteJSON(w, http.StatusOK, info)
 	}))
 	mux.HandleFunc("DELETE /v1/buckets/{bucket}/object", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		var out content.DeleteOutcome
@@ -269,35 +177,35 @@ func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http
 			out, err = svc.DeleteVersion(r.Context(), c, b, k, v)
 		}
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, out)
+		httpapi.WriteJSON(w, http.StatusOK, out)
 	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/object/package", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok || len(r.URL.Query()["recipient"]) != 1 {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		p, err := svc.ReadPackage(r.Context(), c, b, k, v, r.URL.Query().Get("recipient"))
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, packageBody{Version: p.Version, Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
-			EnvelopeID: p.Envelope.EnvelopeID, Envelope: EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext,
+		httpapi.WriteJSON(w, http.StatusOK, packageBody{Version: p.Version, Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
+			EnvelopeID: p.Envelope.EnvelopeID, Envelope: httpapi.EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext,
 				Signature: p.Envelope.Signature}, Receipt: p.Envelope.Receipt, ReceiptSignature: p.Envelope.ReceiptSignature})
 	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/object/ciphertext", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		s, err := svc.ReadCiphertext(r.Context(), c, b, k, v)
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
 		defer s.Close()
@@ -316,159 +224,23 @@ func Storage(svc *content.Service, tokens TokenVerifier, ready func() bool) http
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		page, err := svc.List(r.Context(), c, r.PathValue("bucket"), q.Get("prefix"), limit, q.Get("continuation"))
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, page)
+		httpapi.WriteJSON(w, http.StatusOK, page)
 	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/object/versions", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, _, ok := object(r)
 		if !ok {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
 		vs, err := svc.ListVersions(r.Context(), c, b, k)
 		if err != nil {
-			fail(w, r, err)
+			httpapi.Fail(w, r, err, classify)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"versions": vs})
+		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"versions": vs})
 	}))
 	return mux
-}
-
-// wire types of the keys API.
-type (
-	enrollBody struct {
-		PublicKey []byte `json:"public_key"`
-	}
-	proofBody struct {
-		ChallengeID string `json:"challenge_id"`
-		Proof       string `json:"proof"`
-	}
-	shareBody struct {
-		Bucket   string       `json:"bucket"`
-		Key      string       `json:"key"`
-		Version  string       `json:"version"`
-		Envelope EnvelopeBody `json:"envelope"`
-	}
-	// DeliverBody is the storage role's internal delivery request (TB3).
-	DeliverBody struct {
-		Payload    []byte `json:"payload"`
-		JWS        string `json:"jws"`
-		EnvelopeID string `json:"envelope_id"`
-	}
-	// DeliveredBody is the internal delivery response.
-	DeliveredBody struct {
-		EnvelopeID       string       `json:"envelope_id"`
-		Envelope         EnvelopeBody `json:"envelope"`
-		Receipt          []byte       `json:"receipt"`
-		ReceiptSignature string       `json:"receipt_signature"`
-	}
-)
-
-// Keys returns the keys role's handler. adapterOf identifies the workload
-// calling the internal delivery endpoint, which only storage may call
-// (TB3); its decision is verified as well (TRU-005).
-func Keys(svc *envelope.Service, tokens TokenVerifier, adapterOf func(*http.Request) (string, error), storageAdapter string, ready func() bool) http.Handler {
-	mux := http.NewServeMux()
-	health(mux, ready)
-	auth := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-		return authed(tokens, content.KeysAudience, h)
-	}
-	mux.HandleFunc("POST /v1/recipients", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		var b enrollBody
-		if !decodeJSON(w, r, &b) {
-			return
-		}
-		ch, err := svc.EnrollRecipient(r.Context(), c, b.PublicKey)
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusCreated, ch)
-	}))
-	mux.HandleFunc("POST /v1/recipients/{fp}/activate", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		var b proofBody
-		if !decodeJSON(w, r, &b) {
-			return
-		}
-		proof, err := base64.StdEncoding.DecodeString(b.Proof)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalid)
-			return
-		}
-		rec, err := svc.ActivateRecipient(r.Context(), c, r.PathValue("fp"), b.ChallengeID, proof)
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, rec)
-	}))
-	mux.HandleFunc("GET /v1/recipients/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		rec, err := svc.Recipient(r.Context(), c, r.PathValue("fp"))
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, rec)
-	}))
-	mux.HandleFunc("DELETE /v1/recipients/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		if err := svc.RevokeRecipient(r.Context(), c, r.PathValue("fp")); err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"fingerprint": r.PathValue("fp"), "status": "REVOKED"})
-	}))
-	mux.HandleFunc("GET /v1/signing-keys/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		rec, err := svc.SigningKey(r.Context(), c, r.PathValue("fp"))
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, rec)
-	}))
-	mux.HandleFunc("POST /v1/envelopes", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		var b shareBody
-		if !decodeJSON(w, r, &b) {
-			return
-		}
-		ref, err := svc.Publish(r.Context(), c, b.Bucket, b.Key, b.Version,
-			content.EnvelopeIn{Context: b.Envelope.Context, Ciphertext: b.Envelope.Ciphertext, Signature: b.Envelope.Signature})
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusCreated, ref)
-	}))
-	mux.HandleFunc("DELETE /v1/envelopes/{id}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
-		ref, err := svc.Retire(r.Context(), c, r.PathValue("id"))
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, ref)
-	}))
-	mux.HandleFunc("POST /internal/v1/deliver", func(w http.ResponseWriter, r *http.Request) {
-		if a, err := adapterOf(r); err != nil || a != storageAdapter {
-			writeError(w, http.StatusUnauthorized, CodeUnauth)
-			return
-		}
-		var b DeliverBody
-		if !decodeJSON(w, r, &b) {
-			return
-		}
-		d, err := svc.Deliver(r.Context(), signingSigned(b), b.EnvelopeID)
-		if err != nil {
-			fail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, DeliveredBody{EnvelopeID: d.EnvelopeID, Envelope: EnvelopeBody{Context: d.Context,
-			Ciphertext: d.Ciphertext, Signature: d.Signature}, Receipt: d.Receipt, ReceiptSignature: d.ReceiptSignature})
-	})
-	return mux
-}
-
-func signingSigned(b DeliverBody) signing.Signed {
-	return signing.Signed{Payload: b.Payload, JWS: b.JWS}
 }

@@ -11,10 +11,13 @@ fga/internal/cryptowire
 fga/internal/decision
 fga/internal/decisionsvc
 fga/internal/delegation
+fga/internal/enforce
 fga/internal/envelope
 fga/internal/fence
+fga/internal/httpapi
 fga/internal/gate
 fga/internal/identity
+fga/internal/keysapi
 fga/internal/nativeapi
 fga/internal/policy
 fga/internal/registry

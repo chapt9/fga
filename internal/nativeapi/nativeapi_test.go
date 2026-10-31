@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
 	"fga/internal/r1test"
 	"fga/internal/rpc"
@@ -27,7 +28,7 @@ type deployment struct {
 func deploy(t *testing.T) *deployment {
 	t.Helper()
 	st := r1test.New(t)
-	keys := httptest.NewServer(nativeapi.Keys(st.Envelopes, st.Tokens, func(r *http.Request) (string, error) {
+	keys := httptest.NewServer(keysapi.Keys(st.Envelopes, st.Tokens, func(r *http.Request) (string, error) {
 		return r.Header.Get("X-Test-Workload"), nil
 	}, r1test.StorageAdapter, func() bool { return true }))
 	t.Cleanup(keys.Close)
