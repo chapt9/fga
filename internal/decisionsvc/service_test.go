@@ -105,7 +105,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 	recipients := gate.MemoryRecipients{
 		{"t-acme", "sha256:77"}:  {Fingerprint: "sha256:77", Principal: "user-77", KeyVersion: 1, Revision: 3, Active: true},
 		{"t-acme", "sha256:90"}:  {Fingerprint: "sha256:90", Principal: "user-90", KeyVersion: 1, Revision: 1, Active: true},
-		{"t-acme", "sha256:old"}: {Fingerprint: "sha256:old", Principal: "user-77", KeyVersion: 0, Revision: 9, Active: false},
+		{"t-acme", "sha256:old"}: {Fingerprint: "sha256:old", Principal: "user-77", KeyVersion: 0, Revision: 9, Revoked: true},
 	}
 	g, err := gate.New(gate.Deps{Recipients: recipients, Identities: ids, Delegations: dels, Resources: resolver, Epochs: ep, Now: clock,
 		Capabilities: capabilities{{"agent-7", "document.text_unit read"}: true, {"user-42", "document.text_unit share"}: true}})
@@ -209,7 +209,7 @@ func TestRecipientChecks(t *testing.T) {
 		reason string
 	}{
 		"unknown fingerprint":       {shareRequest("sha256:nobody"), "RECIPIENT_UNKNOWN"},
-		"revoked key":               {shareRequest("sha256:old"), "RECIPIENT_INACTIVE"},
+		"revoked key":               {shareRequest("sha256:old"), "RECIPIENT_REVOKED"},
 		"recipient may not read":    {shareRequest("sha256:77", "sha256:90"), "BUSINESS_DENY"},
 		"no recipient check":        {shareRequest(), "OPERATION_MISMATCH"},
 		"unregistered operation":    {func() Request { r := shareRequest("sha256:77"); r.Operation = "unit.delete"; return r }(), "UNKNOWN_OPERATION"},

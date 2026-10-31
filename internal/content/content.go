@@ -265,11 +265,11 @@ func mapFence(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, fence.ErrAdmissionClosed):
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	case errors.Is(err, fence.ErrIncarnation), errors.Is(err, fence.ErrEpoch), errors.Is(err, fence.ErrIdentity),
 		errors.Is(err, fence.ErrDelegation), errors.Is(err, fence.ErrRecipientKey), errors.Is(err, fence.ErrResource),
 		errors.Is(err, fence.ErrExpired), errors.Is(err, fence.ErrReplayed):
-		return fmt.Errorf("%w: %v", ErrConflict, err)
+		return fmt.Errorf("%w: %w", ErrConflict, err)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrPrecondition), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalid),
 		errors.Is(err, audit.ErrFull):
 		return err

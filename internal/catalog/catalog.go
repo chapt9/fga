@@ -222,7 +222,7 @@ func (s *Store) Recipient(ctx context.Context, tenant, fingerprint string) (gate
 	if errors.Is(err, pgx.ErrNoRows) {
 		return gate.RecipientKey{}, gate.ErrUnknownRecipient
 	}
-	k.Active = status == "ACTIVE"
+	k.Active, k.Revoked = status == "ACTIVE", status == "REVOKED"
 	return k, err
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,12 +125,37 @@ func (f deliveryFunc) Deliver(ctx context.Context, d signing.Signed, id string) 
 	return f(ctx, d, id)
 }
 
+// Options change the fixture.
+type Options struct {
+	// Policies replaces the policy release; nil keeps Policies. A document
+	// named ceiling*.json is in the ceiling set.
+	Policies map[string]string
+	// Start is the fixture clock's start; zero means Now.
+	Start time.Time
+	// FenceMargin is the fence's clock margin; nil means one second.
+	FenceMargin *time.Duration
+}
+
 // New builds the stack.
-func New(t testing.TB) *Stack {
+func New(t testing.TB) *Stack { return NewWith(t, Options{}) }
+
+// NewWith builds the stack with options.
+func NewWith(t testing.TB, opts Options) *Stack {
 	t.Helper()
 	pool := pgtest.Pool(t, catalog.Migrate)
 	ctx := context.Background()
 	clock := Now
+	if !opts.Start.IsZero() {
+		clock = opts.Start
+	}
+	policies := Policies
+	if opts.Policies != nil {
+		policies = opts.Policies
+	}
+	margin := time.Second
+	if opts.FenceMargin != nil {
+		margin = *opts.FenceMargin
+	}
 	st := &Stack{T: t, Pool: pool, Catalog: catalog.New(pool, 10_000), Clock: &clock}
 	now := func() time.Time { return *st.Clock }
 
@@ -140,9 +166,9 @@ func New(t testing.TB) *Stack {
 	info := release.Info{Audience: release.AudienceDecision, CostLimit: engine.DefaultOptions.CostLimit, TestEvidence: "r1test"}
 	env.Stamp(&info)
 	b := release.Bundle{Epoch: 1, Info: info, Documents: map[string][]byte{}, CeilingDeclared: true, KeyID: "pub-1"}
-	for name, doc := range Policies {
+	for name, doc := range policies {
 		b.Documents[name] = []byte(doc)
-		if name == "ceiling.json" {
+		if strings.HasPrefix(name, "ceiling") {
 			b.Ceiling = append(b.Ceiling, name)
 		} else {
 			b.Info.Business = append(b.Info.Business, name)
@@ -187,7 +213,7 @@ func New(t testing.TB) *Stack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.Fence = fence.New(pool, time.Second, now)
+	st.Fence = fence.New(pool, margin, now)
 	st.BlobDir, st.JournalDir = t.TempDir(), t.TempDir()
 	if st.Blobs, err = blob.Open(st.BlobDir); err != nil {
 		t.Fatal(err)
@@ -219,7 +245,7 @@ func New(t testing.TB) *Stack {
 // Verifier returns a decision verifier for audience.
 func (st *Stack) Verifier(audience string) *signing.Verifier {
 	keys := func() map[string]signing.Key {
-		return map[string]signing.Key{"dec-1": {Public: st.DecisionPK, NotBefore: Now.Add(-time.Hour), NotAfter: Now.Add(24 * time.Hour)}}
+		return map[string]signing.Key{"dec-1": {Public: st.DecisionPK, NotAfter: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	}
 	return signing.NewVerifier(audience, keys, signing.NewMemoryConsumption(), func() time.Time { return *st.Clock })
 }

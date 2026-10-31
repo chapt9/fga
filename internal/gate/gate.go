@@ -40,6 +40,7 @@ const (
 	ReasonPolicyEpochSuperseded decision.Reason = "POLICY_EPOCH_SUPERSEDED"
 	ReasonRecipientUnknown      decision.Reason = "RECIPIENT_UNKNOWN"
 	ReasonRecipientInactive     decision.Reason = "RECIPIENT_INACTIVE"
+	ReasonRecipientRevoked      decision.Reason = "RECIPIENT_REVOKED"
 )
 
 // ErrUnknownRecipient is returned for a fingerprint with no recipient key in
@@ -55,6 +56,8 @@ type RecipientKey struct {
 	KeyVersion  uint64
 	Revision    uint64
 	Active      bool
+	// Revoked distinguishes a revoked key from one not yet activated.
+	Revoked bool
 }
 
 // Recipients resolves recipient-key fingerprints (RES-009).
@@ -187,6 +190,8 @@ func (g *Gate) recipient(ctx context.Context, tenant, fingerprint string) (decis
 		return decision.Recipient{}, reject(ReasonRecipientUnknown)
 	case err != nil:
 		return decision.Recipient{}, fmt.Errorf("gate: recipient: %w", err)
+	case key.Revoked:
+		return decision.Recipient{}, reject(ReasonRecipientRevoked)
 	case !key.Active:
 		return decision.Recipient{}, reject(ReasonRecipientInactive)
 	}

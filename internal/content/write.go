@@ -21,6 +21,7 @@ import (
 	"fga/internal/blob"
 	"fga/internal/cryptowire"
 	"fga/internal/registry"
+	"fga/internal/signing"
 )
 
 // BeginRequest asks to upload a new version of a key.
@@ -323,19 +324,53 @@ func (s *Service) Finalize(ctx context.Context, c Caller, intentID cryptowire.UU
 		}
 		return p, nil
 	}
+	p, err := s.prepare(ctx, c, in, r)
+	if err != nil {
+		return Published{}, err
+	}
+	return s.CommitPublish(ctx, p)
+}
+
+// Prepared is a publication whose descriptor and envelopes are validated
+// and whose decision is issued, ready for its fenced commit.
+type Prepared struct {
+	c    Caller
+	in   storedIntent
+	desc cryptowire.Descriptor
+	req  FinalizeRequest
+	envs []checkedEnvelope
+	rec  signing.Record
+}
+
+// Decision is the signed record the commit will enforce.
+func (p Prepared) Decision() signing.Record { return p.rec }
+
+// PreparePublish is the first half of Finalize: it validates the
+// descriptor and initial envelopes and obtains the publication decision,
+// without committing. CommitPublish completes it. An authority change in
+// between makes the commit fail at the fence (V-142).
+func (s *Service) PreparePublish(ctx context.Context, c Caller, intentID cryptowire.UUID, r FinalizeRequest) (Prepared, error) {
+	in, err := s.intent(ctx, s.d.Catalog.Pool(), c, intentID, false)
+	if err != nil {
+		return Prepared{}, err
+	}
+	return s.prepare(ctx, c, in, r)
+}
+
+func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r FinalizeRequest) (Prepared, error) {
 	if in.state != "STAGED" {
-		return Published{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
+		return Prepared{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
 	}
 	if len(r.Envelopes) == 0 || len(r.Envelopes) > s.d.Limits.MaxEnvelopes {
-		return Published{}, ErrInvalid
+		return Prepared{}, ErrInvalid
 	}
 	desc, signer, err := s.checkDescriptor(ctx, c, in, r)
 	if err != nil {
-		return Published{}, err
+		return Prepared{}, err
 	}
 	envs, err := s.checkEnvelopes(ctx, c, in, desc, signer, r.Envelopes)
 	if err != nil {
-		return Published{}, err
+		return Prepared{}, err
 	}
 
 	objectRef := canonical("storage.object", in.Object.String())
@@ -361,11 +396,18 @@ func (s *Service) Finalize(ctx context.Context, c Caller, intentID cryptowire.UU
 	}
 	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
-		return Published{}, err
+		return Prepared{}, err
 	}
+	return Prepared{c: c, in: in, desc: desc, req: r, envs: envs, rec: rec}, nil
+}
+
+// CommitPublish commits a prepared publication under the authority fence
+// (PUB-003).
+func (s *Service) CommitPublish(ctx context.Context, p Prepared) (Published, error) {
+	c, in, desc, r, envs, rec := p.c, p.in, p.desc, p.req, p.envs, p.rec
 	var result Published
 	mutate := []string{in.Object.String()}
-	err = s.fenced(ctx, rec, mutate, func(ctx context.Context, tx pgx.Tx) error {
+	err := s.fenced(ctx, rec, mutate, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		result, err = s.publish(ctx, tx, c, in, desc, r, envs)
 		if err != nil {

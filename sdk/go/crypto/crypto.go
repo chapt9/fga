@@ -573,3 +573,22 @@ func Reshare(pkg Package, key *RecipientKey, trust TrustStore, target Recipient,
 	next.Sharer, next.CreatedAt = signer.Fingerprint, now
 	return wrap(next, targetPub, keyPackage, signer)
 }
+
+// StatusTrust narrows a TrustStore by each signer's current status
+// (RCP-011): a COMPROMISED signer, or one whose status cannot be obtained,
+// is not trusted, so its historical signatures fail closed; a RETIRED
+// signer keeps verifying historical content. Status must come from an
+// authenticated trust update; a status answer can only remove trust.
+type StatusTrust struct {
+	TrustStore
+	Status func(fingerprint cryptowire.Digest) (string, error)
+}
+
+// Signer implements TrustStore.
+func (t StatusTrust) Signer(fp cryptowire.Digest) (ed25519.PublicKey, bool) {
+	status, err := t.Status(fp)
+	if err != nil || (status != "ACTIVE" && status != "RETIRED") {
+		return nil, false
+	}
+	return t.TrustStore.Signer(fp)
+}

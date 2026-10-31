@@ -159,6 +159,20 @@ func (c *Client) Get(bucket, key, version string) ([]byte, error) {
 // bucket/key and its envelope for recipient. op and audience can be
 // overridden to build decisions a keys role must refuse.
 func (c *Client) DeliveryDecision(bucket, key, recipient, op, audience string) (signing.Signed, string, error) {
+	resp, envelopeID, err := c.DeliveryResponse(bucket, key, recipient, op, audience)
+	if err != nil {
+		return signing.Signed{}, "", err
+	}
+	if resp.Outcome != "ALLOW" {
+		return signing.Signed{}, "", fmt.Errorf("decision %s %s", resp.Outcome, resp.Reason)
+	}
+	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	return signing.Signed{Payload: payload, JWS: resp.Signed.JWS}, envelopeID, nil
+}
+
+// DeliveryResponse is DeliveryDecision's raw decision response, whatever
+// its outcome.
+func (c *Client) DeliveryResponse(bucket, key, recipient, op, audience string) (decisionsvc.Response, string, error) {
 	ctx := context.Background()
 	var objectID, versionID, envelopeID string
 	err := c.st.Pool.QueryRow(ctx, `
@@ -167,11 +181,11 @@ func (c *Client) DeliveryDecision(bucket, key, recipient, op, audience string) (
 		  JOIN envelopes e ON e.tenant = o.tenant AND e.version = o.current_version AND e.recipient = $3 AND e.status = 'ACTIVE'
 		 WHERE o.tenant = $4 AND b.name = $1 AND o.key = $2`, bucket, key, recipient, Tenant).Scan(&objectID, &versionID, &envelopeID)
 	if err != nil {
-		return signing.Signed{}, "", err
+		return decisionsvc.Response{}, "", err
 	}
 	id, err := c.st.Catalog.GetIdentity(ctx, Tenant, c.Caller.Principal)
 	if err != nil {
-		return signing.Signed{}, "", err
+		return decisionsvc.Response{}, "", err
 	}
 	obj := decisionsvc.Alias{Type: "storage.object", ID: objectID}
 	req := decisionsvc.Request{RequestID: "r", Tenant: Tenant, Operation: op, OperationID: cryptowire.NewUUID().String(), OperationDigest: "sha256:t",
@@ -186,12 +200,7 @@ func (c *Client) DeliveryDecision(bucket, key, recipient, op, audience string) (
 	if op == "storage.object.read" {
 		req.Checks = req.Checks[:1]
 	}
-	resp := c.st.Decisions.Decide(ctx, StorageAdapter, req)
-	if resp.Outcome != "ALLOW" {
-		return signing.Signed{}, "", fmt.Errorf("decision %s %s", resp.Outcome, resp.Reason)
-	}
-	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	return signing.Signed{Payload: payload, JWS: resp.Signed.JWS}, envelopeID, nil
+	return c.st.Decisions.Decide(ctx, StorageAdapter, req), envelopeID, nil
 }
 
 // Share publishes a new envelope for to on the given version (the current

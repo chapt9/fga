@@ -223,8 +223,8 @@ func (c *Client) pkg(ctx context.Context, bucket, key, version string) (packageJ
 // Get downloads, verifies and decrypts a version (the current one when
 // version is "") into dst. The complete ciphertext is stored in a private
 // temporary file and checked against the signed descriptor before any
-// plaintext is written (CRY-006). On error, what dst received must be
-// discarded.
+// plaintext is written (CRY-006), and a signer reported compromised is not
+// trusted (RCP-011). On error, what dst received must be discarded.
 func (c *Client) Get(ctx context.Context, bucket, key, version string, dst io.Writer) (VersionInfo, error) {
 	p, err := c.pkg(ctx, bucket, key, version)
 	if err != nil {
@@ -245,10 +245,21 @@ func (c *Client) Get(ctx context.Context, bucket, key, version string, dst io.Wr
 	if err != nil || n != p.Version.CiphertextLength {
 		return VersionInfo{}, fmt.Errorf("fga: incomplete ciphertext transfer: %v", err)
 	}
+	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
 	err = crypto.Decrypt(dst, tmp, crypto.Package{Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
 		Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
-		c.Recipient, c.Trust)
+		c.Recipient, trust)
 	return p.Version, err
+}
+
+// SignerStatus asks the keys role for a content signer's current status.
+// The client uses it only to withdraw trust (RCP-011).
+func (c *Client) SignerStatus(ctx context.Context, fp cryptowire.Digest) (string, error) {
+	var rec struct {
+		Status string `json:"status"`
+	}
+	_, err := c.do(ctx, http.MethodGet, c.KeysURL+"/v1/signing-keys/"+url.PathEscape(fp.String()), c.KeysToken, nil, -1, nil, &rec)
+	return rec.Status, err
 }
 
 // Entry is one listed object.
