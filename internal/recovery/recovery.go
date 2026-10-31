@@ -401,6 +401,14 @@ func RestoreWith(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, j *
 		if _, err := tx.Exec(ctx, `UPDATE authority_state SET admission_open = false, incarnation = $1, changed_at = now() WHERE id = 1`, next); err != nil {
 			return err
 		}
+		// A backup holds no staged ciphertext, so uploads in flight at the
+		// backup are aborted; clients start them again (review finding 5).
+		if _, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'ABORTED' WHERE state IN ('RESERVED', 'STAGED')`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE document_intents SET state = 'ABORTED' WHERE state = 'RESERVED'`); err != nil {
+			return err
+		}
 		// The restored catalog is bound to the journal it was restored
 		// with, including the incarnation entry just appended.
 		return catalog.SetJournal(ctx, tx, js.ID, js.Entries+1)

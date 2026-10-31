@@ -3,6 +3,9 @@ package content_test
 import (
 	"errors"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -169,4 +172,31 @@ func TestCompromisedSignerCannotCommit(t *testing.T) {
 			t.Fatal("a share committed after its signer was compromised")
 		}
 	})
+}
+
+// TestFinalizeVerifiesStagedBlob covers the second half of review finding
+// 5: a staged upload whose ciphertext is gone from the blob store is not
+// published.
+func TestFinalizeVerifiesStagedBlob(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	u, err := alice.Prepare(content.BeginRequest{Bucket: "reports", Key: "doc", IdempotencyKey: "k1"}, []byte("x"), alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := 0
+	_ = filepath.WalkDir(filepath.Join(st.BlobDir, "blobs"), func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(d.Name(), u.Intent.Blob.String()) {
+			removed++
+			return os.Remove(path)
+		}
+		return nil
+	})
+	if removed != 1 {
+		t.Fatalf("removed %d blob files", removed)
+	}
+	if _, err := alice.Finalize(u); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("finalize without the staged ciphertext: %v", err)
+	}
 }

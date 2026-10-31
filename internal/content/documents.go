@@ -473,6 +473,9 @@ func (s *Service) checkUnits(ctx context.Context, c Caller, in storedDocIntent, 
 			if st.state != "STAGED" {
 				return nil, fmt.Errorf("%w: unit %d is %s", ErrConflict, i, st.state)
 			}
+			if err := s.stagedBlob(st); err != nil {
+				return nil, err
+			}
 			cu.staged, sum, length = st, st.ciphertextSHA256, st.ciphertextLength
 		}
 		if _, err := cryptowire.Verify(cryptowire.TypeUnitDescriptor, f.DescriptorSignature, f.Descriptor, keyFor); err != nil {
@@ -798,6 +801,9 @@ func (s *Service) checkOriginal(ctx context.Context, c Caller, in storedDocInten
 	}
 	if st.state != "STAGED" {
 		return nil, fmt.Errorf("%w: the original is %s", ErrConflict, st.state)
+	}
+	if err := s.stagedBlob(st); err != nil {
+		return nil, err
 	}
 	m, _ := cryptowire.ParseManifest(r.Manifest)
 	if mo := m.Original; mo.ObjectID != o.Unit || mo.VersionID != o.UnitVersion || mo.CiphertextSHA256 != st.ciphertextSHA256 ||

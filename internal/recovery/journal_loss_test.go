@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fga/internal/backupcrypt"
+	"fga/internal/content"
 	"fga/internal/journal"
 	"fga/internal/r1test"
 	"fga/internal/recovery"
@@ -86,5 +87,52 @@ func copyDir(t *testing.T, from, to string) {
 		if err := os.WriteFile(filepath.Join(to, d.Name()), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestStagedUploadDoesNotSurviveRestore is the regression test of review
+// finding 5: a backup kept upload intents but only published ciphertext,
+// so after a restore onto an empty blob directory a staged upload could
+// be finalized into a LIVE version whose ciphertext was missing. Restore
+// now aborts uploads in flight, and finalize verifies the staged blob.
+func TestStagedUploadDoesNotSurviveRestore(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "kept", []byte("published")); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := alice.Prepare(content.BeginRequest{Bucket: "reports", Key: "in-flight", IdempotencyKey: "k1"}, []byte("staged"), alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	// The blob directory is lost; restore brings back what the backup has.
+	stored := filepath.Join(st.BlobDir, "blobs")
+	if err := os.RemoveAll(stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(stored, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Finalize(staged); err == nil {
+		t.Fatal("a staged upload without its ciphertext was published after the restore")
+	}
+	var versions int
+	_ = st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_versions v JOIN objects o ON o.id = v.object WHERE o.key = 'in-flight'`).Scan(&versions)
+	if versions != 0 {
+		t.Fatalf("versions of the in-flight key = %d", versions)
+	}
+	if got, err := alice.Get("reports", "kept", ""); err != nil || string(got) != "published" {
+		t.Fatalf("published object after restore: %q, %v", got, err)
 	}
 }

@@ -449,6 +449,9 @@ func (s *Service) prepare(ctx context.Context, c Caller, in storedIntent, r Fina
 	if len(r.Envelopes) == 0 || len(r.Envelopes) > s.d.Limits.MaxEnvelopes {
 		return Prepared{}, ErrInvalid
 	}
+	if err := s.stagedBlob(in); err != nil {
+		return Prepared{}, err
+	}
 	desc, signer, err := s.checkDescriptor(ctx, c, in, r)
 	if err != nil {
 		return Prepared{}, err
@@ -715,4 +718,18 @@ func (s *Service) preconditions(ctx context.Context, tx pgx.Tx, tenant string, c
 func isUnique(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+// stagedBlob verifies that a staged intent's ciphertext is in the blob
+// store with the receipt's length and digest, so a version is never
+// published without its ciphertext (review finding 5, BKD-001).
+func (s *Service) stagedBlob(in storedIntent) error {
+	sum, err := cryptowire.ParseDigest(in.ciphertextSHA256)
+	if err != nil {
+		return fmt.Errorf("%w: staged receipt", ErrConflict)
+	}
+	if err := s.d.Blobs.Verify(blob.Receipt{Ref: blob.Ref{Tenant: in.Tenant, Blob: in.Blob}, Length: in.ciphertextLength, SHA256: sum}); err != nil {
+		return fmt.Errorf("%w: the staged ciphertext is missing or altered", ErrConflict)
+	}
+	return nil
 }
