@@ -5,6 +5,8 @@
 package nativeapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -164,6 +166,8 @@ type (
 		// Lineage and LineageSignature finalize a derived output.
 		Lineage          []byte `json:"lineage,omitempty"`
 		LineageSignature string `json:"lineage_signature,omitempty"`
+		// Sources finalize a staged server-mode derived output.
+		Sources []cryptowire.LineageSource `json:"sources,omitempty"`
 	}
 	receiptBody struct {
 		BlobID           string `json:"blob_id"`
@@ -240,9 +244,15 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			req.Envelopes = append(req.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 		}
 		var p content.Published
-		if b.Lineage != nil {
+		switch {
+		case b.Sources != nil && (b.Lineage != nil || b.Descriptor != nil || b.Envelopes != nil):
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		case b.Sources != nil:
+			p, err = svc.FinalizeDerivedPlain(r.Context(), c, id, b.Sources)
+		case b.Lineage != nil:
 			p, err = svc.FinalizeDerived(r.Context(), c, id, req, b.Lineage, b.LineageSignature)
-		} else {
+		default:
 			p, err = svc.Finalize(r.Context(), c, id, req)
 		}
 		if err != nil {
@@ -761,6 +771,54 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		defer st.Close()
 		streamBody(w, r, st)
 	}))
+	// Server-mode derived outputs (D-12, S4b): the lineage is declared in
+	// the request; a reader reads under deliver and her own reader path.
+	mux.HandleFunc("POST /v1/buckets/{bucket}/derived/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, _, ok := derived(r)
+		h := r.Header
+		ifNoneMatch := h.Get("If-None-Match")
+		if !ok || v != "" || ifNoneMatch != "" && ifNoneMatch != "*" || len(h.Get("Idempotency-Key")) > 128 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		sources, body, ok := derivedBody(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		idem := h.Get("Idempotency-Key")
+		if idem == "" {
+			idem = cryptowire.NewUUID().String()
+		}
+		p, err := svc.PutDerivedPlain(r.Context(), c, content.BeginRequest{Bucket: b, Key: k, IdempotencyKey: idem, IfMatch: h.Get("If-Match"),
+			IfNoneMatch: ifNoneMatch == "*", Label: h.Get("Fga-Label")}, sources, -1, body)
+		var staged *content.StagedApproval
+		if errors.As(err, &staged) {
+			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,
+				IntentID: staged.Intent})
+			return
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		w.Header().Set("ETag", p.ETag)
+		httpapi.WriteJSON(w, http.StatusOK, p)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/derived/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, fp, ok := derived(r)
+		if !ok || fp != "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadDerivedPlain(r.Context(), c, b, k, v)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		plainBody(w, st)
+	}))
 	mux.HandleFunc("POST /v1/buckets/{bucket}/derived/envelopes", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, _, ok := derived(r)
 		var e httpapi.EnvelopeBody
@@ -932,6 +990,40 @@ func textBody(w http.ResponseWriter, r *http.Request, req *content.TextRequest) 
 		req.Original = part
 	}
 	return text, true
+}
+
+// derivedBody reads a server-mode derived upload: multipart/form-data with
+// a "lineage" part, {"sources": [...]}, followed by a "content" part the
+// upload streams from.
+func derivedBody(r *http.Request) ([]cryptowire.LineageSource, io.Reader, bool) {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return nil, nil, false
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, nil, false
+	}
+	part, err := mr.NextPart()
+	if err != nil || part.FormName() != "lineage" {
+		return nil, nil, false
+	}
+	raw, err := io.ReadAll(io.LimitReader(part, cryptowire.MaxLineageBytes+1))
+	if err != nil || len(raw) > cryptowire.MaxLineageBytes {
+		return nil, nil, false
+	}
+	var l struct {
+		Sources []cryptowire.LineageSource `json:"sources"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&l); err != nil || dec.More() {
+		return nil, nil, false
+	}
+	part, err = mr.NextPart()
+	if err != nil || part.FormName() != "content" {
+		return nil, nil, false
+	}
+	return l.Sources, part, true
 }
 
 // plainBody writes an admitted server-mode plaintext stream. A failed

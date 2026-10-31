@@ -1,4 +1,4 @@
-# Server-mode documents and text collections (D-12, stretch S4a)
+# Server-mode documents, text collections and derived outputs (D-12, stretches S4a and S4b)
 
 In a server-mode bucket, the client sends UTF-8 text and reads units as plaintext. The storage role does what the client SDK does in client mode:
 
@@ -55,9 +55,28 @@ The unit listing (`/document/units`) now names the document version it lists, so
 
 **Exports.** `POST .../document/export/content` with `{"units": [...]}` (SDK `ExportUnitsPlain`) needs `export` and `read-units` on the version and `read` and `export-key` on every unit, all allowed or none (`document.export`). The admission is recorded. Each unit's key is then released under its read checks, and the plaintext returns as JSON, bounded like client exports (32 MiB). Text entries cannot be exported.
 
-## Not yet
+## Derived outputs (S4b)
 
-- Server-mode derived outputs (the second part of S4b).
+**Upload.** `POST /v1/buckets/{b}/derived/content?key=` takes `multipart/form-data`: a `lineage` part, `{"sources": [{"type", "id", "version"}, ...]}`, then a `content` part streamed straight into encryption with no length known in advance. `Idempotency-Key`, `If-Match`, `If-None-Match` and `Fga-Label` (a proposal that can only raise the label the lineage gives) work as for objects. The SDK call is `PutPlain` with `PutOptions.Lineage`; `fga put -sources` follows the bucket's mode.
+
+1. **Begin and seal.** The derived begin (`create-object` on the bucket, or `new-version` on the output). The keys role seals the version's data key (`storage.key.seal-create` or `seal-derived-version`), and the content is encrypted like an object payload.
+2. **Lineage.** The storage role records the declared lineage with the version in the client lineage's shape (`cryptowire.Lineage.MarshalServer`), unsigned. The lineage is bound to the caller's publication decision instead, whose plan names its digest. It is dated when the upload began, so a publication repeated with an approval presents the plan that was approved. The client-mode checks apply:
+   - every source exists in the tenant and is LIVE;
+   - the bounds hold and there is no cycle;
+   - the caller may read every direct source (deliver for a derived source).
+
+   The label is the lineage maximum (DRV-007).
+3. **Publish.** `derived.publish-server` or `derived.publish-server-version`: the client-mode checks without envelopes.
+
+**Approval.** `202` with `approval_id` and `intent_id`. Finalize with `POST /v1/uploads/{intent}/finalize` and body `{"sources": [...]}`, the same lineage. The CLI saves that request in the key directory for `fga finalize -request`. Another lineage is another plan, which the approval does not cover.
+
+**Read.** `GET .../derived/content?key=&version=` (SDK `GetDerivedPlain`). `fga get-derived` tries this route first and falls back to the client route on `ENCRYPTION_MODE`. There is no recipient key. The reader needs `deliver` on the output and a reader path of their own (DRV-002), either of:
+- read (deliver for derived sources) on every source of the transitive lineage;
+- failing that, `derived.declassify-reader`: `deliver` and `declassify` on this output version.
+
+The storage role admits the read with those decisions. The keys role then releases the data key against `storage.key.release-derived`, with a second reader path decided for it. `internal/keycheck` (`ReaderPath`) checks that this path covers exactly the transitive lineage, or is a declassification of this very version, and the keys role admits it in the fence of the release. A source change while the output's own authority holds ends the stream (V-145), as in client mode.
+
+So in server mode a member who may read every source reads the output with no sharing step. A member who loses a source loses the output (DRV-009) unless it is declassified for them.
 
 ## Tests
 
@@ -69,4 +88,8 @@ The unit listing (`/document/units`) now names the document version it lists, so
 | `TestServerOriginal` | Original upload and read, a member without `raw-read`, V-163, exports |
 | `internal/datakeys` `TestReleaseOriginal` | A release without every unit, or with a unit named twice, is refused |
 | `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end, including a multipart upload with an original and an export |
-| `scripts/smoke.sh` | A server-mode document and an appended collection read by another member; an original the owner reads and another member may not |
+| `TestServerDerived` | Lineage recorded unsigned; the label from the lineage; a member reads by their own path and loses it when a source is restricted; a lead reads by declassification; a retry; mode refusals |
+| `TestServerDerivedApproval` | An approved publication finalized with its lineage; another lineage is not covered |
+| `internal/datakeys` `TestReleaseDerived` | A path over another source, no path, or another output's declassification releases no key |
+| `internal/nativeapi` `TestServerDerivedHTTP` | A multi-segment output streamed with its lineage and read by another member; a repeated finalize by sources; malformed uploads |
+| `scripts/smoke.sh` | A server-mode document and an appended collection read by another member; an original the owner reads and another member may not; a derived output another member reads through their own read of the source |

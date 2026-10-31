@@ -3,9 +3,11 @@ package nativeapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"fga/internal/admission"
+	"fga/internal/cryptowire"
 	"fga/internal/datakeysapi"
 	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
@@ -324,5 +327,85 @@ func TestServerDocumentsHTTP(t *testing.T) {
 	x, err := alice.ExportUnitsPlain(ctx, "vault", "q3/report.md", "", []string{units[1].Unit})
 	if err != nil || len(x) != 1 || x[0].Text != "Text." {
 		t.Fatalf("export: %+v %v", x, err)
+	}
+}
+
+// TestServerDerivedHTTP covers the server-mode derived routes and SDK (S4b):
+// a multi-segment output streamed with its lineage, read by another member
+// through her own reader path; a repeated finalize by sources; malformed
+// uploads; the upload route refuses a client-mode bucket.
+func TestServerDerivedHTTP(t *testing.T) {
+	d := deploy(t)
+	ctx := context.Background()
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	d.st.Bucket("reports", "p1")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	b := d.st.Client("bob", []string{"member"}, "p1")
+	alice, bob := d.client(t, a), d.client(t, b)
+	src, err := alice.PutPlain(ctx, "vault", "data.csv", strings.NewReader("a,b\n1,2\n"), 8, client.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := []cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}
+	summary := bytes.Repeat([]byte("derived "), 300_000)
+	p, err := alice.PutPlain(ctx, "vault", "summary.txt", bytes.NewReader(summary), -1, client.PutOptions{IdempotencyKey: "s1", Lineage: lineage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if v, err := bob.GetDerivedPlain(ctx, "vault", "summary.txt", "", &out); err != nil || v != p.Version || !bytes.Equal(out.Bytes(), summary) {
+		t.Fatalf("bob reads the output: %q %d bytes, %v", v, out.Len(), err)
+	}
+	var intent string
+	if err := d.st.Pool.QueryRow(ctx, `SELECT id::text FROM upload_intents WHERE idempotency_key = 's1'`).Scan(&intent); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := json.Marshal(map[string]any{"sources": lineage})
+	if again, err := alice.FinalizeUpload(ctx, intent, request); err != nil || again.Version != p.Version {
+		t.Fatalf("a repeated finalize: %+v %v", again, err)
+	}
+	var apiErr *client.Error
+	mixed, _ := json.Marshal(map[string]any{"sources": lineage, "lineage": []byte("{}")})
+	if _, err := alice.FinalizeUpload(ctx, intent, mixed); !errors.As(err, &apiErr) || apiErr.Status != 400 {
+		t.Fatalf("a finalize with sources and a signed lineage: %v", err)
+	}
+
+	// Malformed uploads: no lineage part, or content first.
+	post := func(parts ...string) int {
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		for i := 0; i+1 < len(parts); i += 2 {
+			w, _ := mw.CreateFormField(parts[i])
+			w.Write([]byte(parts[i+1]))
+		}
+		mw.Close()
+		req, _ := http.NewRequest(http.MethodPost, d.storage.URL+"/v1/buckets/vault/derived/content?key=bad.txt", &body)
+		req.Header.Set("Authorization", "Bearer "+a.Caller.Token)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	good, _ := json.Marshal(map[string]any{"sources": lineage})
+	for name, parts := range map[string][]string{
+		"no lineage":       {"content", "x"},
+		"content first":    {"content", "x", "lineage", string(good)},
+		"unknown field":    {"lineage", `{"sources":[],"signer":"x"}`, "content", "x"},
+		"no content":       {"lineage", string(good)},
+		"lineage as array": {"lineage", "[]", "content", "x"},
+	} {
+		if code := post(parts...); code != 400 {
+			t.Errorf("%s: %d", name, code)
+		}
+	}
+	if code := post("lineage", string(good), "content", "x"); code != 200 {
+		t.Fatalf("a well-formed upload: %d", code)
+	}
+
+	if _, err := alice.PutPlain(ctx, "reports", "s.txt", strings.NewReader("x"), -1, client.PutOptions{Lineage: lineage}); !errors.As(err, &apiErr) || apiErr.Code != "ENCRYPTION_MODE" {
+		t.Fatalf("a server-mode output to a client-mode bucket: %v", err)
 	}
 }

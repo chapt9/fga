@@ -70,6 +70,19 @@ const (
 	// raw-read on its document version; the release also needs the
 	// complete-content decisions (CNT-003, internal/keycheck).
 	OpKeyReleaseOriginal = "storage.key.release-original"
+	// Server-mode derived outputs (S4b). A new version's data key is sealed
+	// under new-version on the output; a version's key is released under
+	// deliver on it, with the reader path: the caller's own read (deliver
+	// for derived sources) on every source of the transitive lineage
+	// (derived.sources), or a declassification for the caller
+	// (derived.declassify-reader). A server-mode reader has no recipient key.
+	OpKeySealDerivedVersion   = "storage.key.seal-derived-version"
+	OpKeyReleaseDerived       = "storage.key.release-derived"
+	OpDerivedDeclassifyReader = "derived.declassify-reader"
+	// Server-mode derived publication: the write's checks and an explicit
+	// label, without envelopes.
+	OpDerivedPublishServer        = "derived.publish-server"
+	OpDerivedPublishServerVersion = "derived.publish-server-version"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -167,6 +180,7 @@ const (
 	RoleSourceUnit       = "source-unit"
 	RoleSourceDerived    = "source-derived"
 	RoleRecipientDeclass = "recipient-declassify"
+	RoleDeclassify       = "declassify"
 	// Export roles.
 	RoleVersionRead = "version-read"
 	RoleUnitExport  = "unit-export"
@@ -199,7 +213,7 @@ var preparatory = map[string]bool{
 	OpBeginCreate: true, OpBeginVersion: true, OpStageCreate: true, OpStageVersion: true,
 	OpDocBeginCreate: true, OpDocBeginVersion: true,
 	OpDerivedBegin: true, OpDerivedBeginVersion: true, OpDerivedStageVersion: true,
-	OpKeySealCreate: true, OpKeySealVersion: true, OpKeySealDocCreate: true, OpKeySealDocVersion: true,
+	OpKeySealCreate: true, OpKeySealVersion: true, OpKeySealDocCreate: true, OpKeySealDocVersion: true, OpKeySealDerivedVersion: true,
 }
 
 // entryTwins are the text-entry forms of the unit operations (DOC-005):
@@ -297,6 +311,14 @@ func baseOperations() []Operation {
 		one(OpKeySealDocCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpKeySealDocVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpKeyReleaseOriginal, RoleVersion, "document.version", "raw-read"),
+		one(OpKeySealDerivedVersion, RoleOutput, "document.derived", "new-version"),
+		one(OpKeyReleaseDerived, RoleOutput, "document.derived", "deliver"),
+		{Name: OpDerivedPublishServer, Checks: []CheckSpec{{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
+			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true}}},
+		{Name: OpDerivedPublishServerVersion, Checks: []CheckSpec{{Role: RoleOutput, ResourceType: "document.derived", Action: "new-version"},
+			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true}}},
+		{Name: OpDerivedDeclassifyReader, Checks: []CheckSpec{{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
+			{Role: RoleDeclassify, ResourceType: "document.derived", Action: "declassify"}}},
 		{Name: OpKeyReleaseUnit, Checks: []CheckSpec{{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"}}},
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),

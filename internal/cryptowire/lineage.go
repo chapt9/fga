@@ -61,6 +61,35 @@ func (l Lineage) Marshal() ([]byte, error) {
 
 // ParseLineage parses strictly: known source types, UUID identifiers,
 // distinct sources, between 1 and MaxLineageSources of them.
+// MarshalServer encodes a server-mode lineage (D-12, S4b): the storage
+// role's record of the sources an uploader declared in its authenticated
+// request, bound to the caller's decision instead of a signature. It has
+// no signer, and ParseLineage, which verifies client lineage, refuses it.
+func (l Lineage) MarshalServer() ([]byte, error) {
+	l.Version = LineageVersion
+	if l.Signer != "" || len(l.Sources) == 0 || len(l.Sources) > MaxLineageSources || l.CreatedAt.IsZero() {
+		return nil, formatErr("server lineage")
+	}
+	if err := uuids(l.TenantID, l.ObjectID, l.VersionID); err != nil {
+		return nil, err
+	}
+	seen := map[LineageSource]bool{}
+	for _, s := range l.Sources {
+		if s.Type != SourceObject && s.Type != SourceUnit && s.Type != SourceDerived || seen[s] {
+			return nil, formatErr("server lineage source")
+		}
+		if err := uuids(s.ID, s.Version); err != nil {
+			return nil, err
+		}
+		seen[s] = true
+	}
+	b, err := json.Marshal(l)
+	if err != nil || len(b) > MaxLineageBytes {
+		return nil, formatErr("server lineage")
+	}
+	return b, nil
+}
+
 func ParseLineage(b []byte) (Lineage, error) {
 	var l Lineage
 	if len(b) > MaxLineageBytes {

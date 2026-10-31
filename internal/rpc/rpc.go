@@ -113,6 +113,21 @@ func (c KeysClient) ReleaseOriginalKey(ctx context.Context, d signing.Signed, ex
 	return out.Key, nil
 }
 
+// ReleaseDerivedKey asks the keys role for a server-mode derived output's
+// data key, against a decision for storage.key.release-derived and the
+// reader path extra (DRV-002, SSE-003).
+func (c KeysClient) ReleaseDerivedKey(ctx context.Context, d signing.Signed, extra []signing.Signed, versionID string) ([]byte, error) {
+	body := keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, VersionID: versionID}
+	for _, x := range extra {
+		body.Extra = append(body.Extra, keysapi.SignedBody{Payload: x.Payload, JWS: x.JWS})
+	}
+	var out keysapi.DataKeyBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/release-derived", body, &out); err != nil {
+		return nil, keysError(err)
+	}
+	return out.Key, nil
+}
+
 // keysError maps the keys role's not-found to the shared one, so a denied
 // and an absent target look the same to the caller (CNT-004).
 func keysError(err error) error {

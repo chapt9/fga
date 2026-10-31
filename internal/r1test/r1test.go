@@ -402,6 +402,17 @@ func (d dataKeys) ReleaseOriginalKey(ctx context.Context, decision signing.Signe
 	return k, err
 }
 
+func (d dataKeys) ReleaseDerivedKey(ctx context.Context, decision signing.Signed, extra []signing.Signed, versionID string) ([]byte, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.ReleaseDerivedKey(ctx, decision, extra, versionID)
+	}
+	k, err := d.st.DataKeys.ReleaseDerived(ctx, decision, extra, versionID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return nil, content.ErrNotFound
+	}
+	return k, err
+}
+
 func (d dataKeys) ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error) {
 	if d.st.DataKeysVia != nil {
 		return d.st.DataKeysVia.ReleaseDataKey(ctx, decision, versionID)

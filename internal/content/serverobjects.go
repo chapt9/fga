@@ -103,6 +103,10 @@ func (s *Service) stageServer(ctx context.Context, c Caller, in storedIntent, le
 		return fmt.Errorf("%w: intent expired", ErrConflict)
 	}
 	sealOp, sealChecks := s.intentChecks(in, registry.OpKeySealCreate, registry.OpKeySealVersion)
+	if in.kind == "derived" && !in.newObject {
+		sealOp, sealChecks = registry.OpKeySealDerivedVersion,
+			[]check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", in.Object.String())}}
+	}
 	signed, _, err := s.decide(ctx, c, sealOp, KeysAudience, true, sealChecks)
 	if err != nil {
 		return err

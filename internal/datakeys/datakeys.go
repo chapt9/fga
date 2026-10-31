@@ -119,7 +119,7 @@ func contains(list []string, s string) bool {
 // identity and the sealed form is stored on the intent, once. The caller
 // receives the data key itself to encrypt with.
 func (s *Service) Seal(ctx context.Context, decision signing.Signed, intentID string) (DataKey, error) {
-	rec, err := s.verify(decision, registry.OpKeySealCreate, registry.OpKeySealVersion)
+	rec, err := s.verify(decision, registry.OpKeySealCreate, registry.OpKeySealVersion, registry.OpKeySealDerivedVersion)
 	if err != nil {
 		return DataKey{}, err
 	}
@@ -151,12 +151,17 @@ func (s *Service) Seal(ctx context.Context, decision signing.Signed, intentID st
 	}
 	// The decision is about this intent: its principal, and the bucket of
 	// a new key or the object of a new version.
+	// An object's or a derived output's upload: the bucket of a new key,
+	// new-version on an existing object, or on an existing output.
 	c := rec.Checks[0]
-	bound := in.principal == rec.Actor.ID && in.kind == "object" && in.encryption == "server"
-	if rec.Operation == registry.OpKeySealCreate {
+	bound := in.principal == rec.Actor.ID && (in.kind == "object" || in.kind == "derived") && in.encryption == "server"
+	switch rec.Operation {
+	case registry.OpKeySealCreate:
 		bound = bound && in.newObject && c.ResourceID == in.bucket.String()
-	} else {
-		bound = bound && !in.newObject && c.ResourceID == in.binding.Object.String()
+	case registry.OpKeySealVersion:
+		bound = bound && in.kind == "object" && !in.newObject && c.ResourceID == in.binding.Object.String()
+	default:
+		bound = bound && in.kind == "derived" && !in.newObject && c.ResourceID == in.binding.Object.String()
 	}
 	if !bound {
 		return DataKey{}, ErrDecision
@@ -551,6 +556,75 @@ func (s *Service) ReleaseOriginal(ctx context.Context, decision signing.Signed, 
 		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
 		ev.Targets[0].Type = "document.original"
 		ev.Targets = append(ev.Targets, audit.Target{Type: "document.version", ID: documentVersionID})
+		return s.d.Catalog.AppendTx(ctx, tx, ev)
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	key, err := s.d.KEKs.Open(rec.Tenant, uint32(kekVersion), sealed, bnd)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return key, nil
+}
+
+// ReleaseDerived opens the data key of a LIVE server-mode derived output's
+// version for its reader, the caller (DRV-002, SSE-003). The decision is
+// for storage.key.release-derived with deliver on that output version;
+// extra is the reader path (internal/keycheck): the caller's read on every
+// source of the transitive lineage, or a declassification for the caller.
+// All are admitted in one fence with the release, so a source change in
+// between yields no key (DRV-009). The release is audited.
+func (s *Service) ReleaseDerived(ctx context.Context, decision signing.Signed, extra []signing.Signed, versionID string) ([]byte, error) {
+	rec, err := s.verify(decision, registry.OpKeyReleaseDerived)
+	if err != nil {
+		return nil, err
+	}
+	id, err := cryptowire.ParseUUID(versionID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var bnd kek.Binding
+	var mode, kind string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `
+		SELECT t.id, v.object, v.id, coalesce(v.crypto_version, '00000000-0000-0000-0000-000000000000'),
+		       coalesce(v.blob, '00000000-0000-0000-0000-000000000000'), coalesce(v.encryption, ''), o.kind
+		  FROM object_versions v JOIN objects o ON o.tenant = v.tenant AND o.id = v.object JOIN tenants t ON t.name = v.tenant
+		 WHERE v.tenant = $1 AND v.id = $2`, rec.Tenant, id).
+		Scan(&bnd.Tenant, &bnd.Object, &bnd.Version, &bnd.CryptoVersion, &bnd.Blob, &mode, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if mode != "server" || kind != "derived" || rec.Checks[0].ResourceID != bnd.Object.String() || rec.Checks[0].Version != versionID {
+		return nil, ErrDecision
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		return nil, ErrDecision
+	}
+	more, err := keycheck.ReaderPath(ctx, s.d.Catalog.Pool(), s.d.Verifier, rec, bnd.Object, id, extra)
+	if errors.Is(err, keycheck.ErrDecision) {
+		return nil, ErrDecision
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	var sealed []byte
+	var kekVersion int64
+	err = s.d.Fence.RunAll(ctx, append([]fence.Binding{b}, more...), nil, func(ctx context.Context, tx pgx.Tx) error {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state, sealed_key, kek_version FROM object_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,
+			rec.Tenant, id).Scan(&state, &sealed, &kekVersion); err != nil {
+			return err
+		}
+		if state != "LIVE" {
+			return ErrNotFound
+		}
+		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
+		ev.Targets[0].Type = "document.derived"
 		return s.d.Catalog.AppendTx(ctx, tx, ev)
 	})
 	if err != nil {

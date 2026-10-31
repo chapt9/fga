@@ -189,7 +189,7 @@ echo "after the lead switched the bucket to client mode, both versions read thro
 # key, envelope or sharing step. No blob holds plaintext.
 $ADMIN bucket create -tenant t-acme -name shared -project p1 >/dev/null
 head -c 2500000 /dev/urandom > shared.bin
-as alice; check $B/fga put -bucket shared -key q4/plan.bin -in shared.bin
+as alice; SHARED_OUT=$($B/fga put -bucket shared -key q4/plan.bin -in shared.bin) || { echo "SMOKE FAILED: server-mode put"; exit 1; }; echo "$SHARED_OUT"
 as bob;   check $B/fga get -bucket shared -key q4/plan.bin -out bob-shared.out; check cmp shared.bin bob-shared.out
 echo "server mode: bob reads alice's object by policy alone"
 python3 -I -c '
@@ -214,6 +214,13 @@ as alice; check $B/fga put-document -bucket shared -key q4/report.md -in notes.t
 as alice; check $B/fga get-original -bucket shared -key q4/report.md -out shared-original.out; check cmp shared.bin shared-original.out
 as bob;   if $B/fga get-original -bucket shared -key q4/report.md -out x.out 2>err.txt; then echo "UNEXPECTED: bob read the original"; exit 1; fi
 echo "server-mode original: owner reads it; bob without raw-read: $(cat err.txt)"
+# Server-mode derived outputs (S4b): the lineage is declared with the
+# upload; bob, who may read the source, reads the output by policy alone,
+# with no envelope or sharing step (compare the client-mode output above).
+SHARED_SRC=$(echo "$SHARED_OUT" | awk '{print "storage.object:" $4 ":" $6}')
+as alice; check $B/fga put -bucket shared -key q4/plan-summary.txt -in summary.txt -sources $SHARED_SRC
+as bob;   check $B/fga get-derived -bucket shared -key q4/plan-summary.txt -out bob-summary.out; check cmp summary.txt bob-summary.out
+echo "server-mode derived output: bob reads it through his own read of the source"
 
 
 $ADMIN audit export -dir audit

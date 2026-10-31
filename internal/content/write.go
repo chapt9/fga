@@ -296,6 +296,7 @@ func (s *Service) intentChecks(in storedIntent, create, version string) (string,
 type storedIntent struct {
 	Intent
 	requestDigest string
+	createdAt     time.Time
 }
 
 func (s *Service) intentByIdempotency(ctx context.Context, c Caller, key string) (storedIntent, error) {
@@ -324,7 +325,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	               i.key, i.expected_generation, i.if_match, i.if_none_match, i.planned_scope, i.planned_attributes, i.principal,
 	               i.ciphertext_length, i.ciphertext_sha256, coalesce(i.result::text, ''), i.request_digest, i.label,
 	               i.kind, i.document_intent, coalesce(d.new_document, false), coalesce(d.document, i.object), i.encryption,
-	               i.sealed_key IS NOT NULL, coalesce(i.plaintext_length, 0)
+	               i.sealed_key IS NOT NULL, coalesce(i.plaintext_length, 0), i.created_at
 	          FROM upload_intents i JOIN tenants t ON t.name = i.tenant
 	          LEFT JOIN document_intents d ON d.tenant = i.tenant AND d.id = i.document_intent
 	         WHERE i.tenant = $1 AND i.id = $2 AND i.principal = $3`
@@ -335,7 +336,7 @@ func (s *Service) intent(ctx context.Context, q interface {
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Object, &in.LogicalVersion, &in.CryptoVersion,
 		&in.Blob, &in.Attempt, &in.ExpiresAt, &in.state, &in.newObject, &in.bucket, &in.key, &in.expectedGen, &in.ifMatch, &in.ifNoneMatch,
 		&in.scope, &attrs, &in.principal, &length, &sum, &result, &in.requestDigest, &in.label,
-		&in.kind, &in.docIntent, &in.docNew, &in.docObject, &in.encryption, &in.sealed, &in.plaintextLength)
+		&in.kind, &in.docIntent, &in.docNew, &in.docObject, &in.encryption, &in.sealed, &in.plaintextLength, &in.createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}

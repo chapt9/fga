@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -162,8 +163,10 @@ type PutOptions struct {
 	// the label its lineage gives.
 	Label string
 	// Lineage, when set, publishes a derived output (DRV-001): the exact
-	// sources the content was derived from, signed with the client's key.
-	// A derived output is encrypted only for the client itself.
+	// sources the content was derived from. In client mode it is signed
+	// with the client's key and the output is encrypted only for the
+	// client itself; in server mode (PutPlain) it is declared in the
+	// request and policy decides who reads.
 	Lineage []cryptowire.LineageSource
 }
 
@@ -303,13 +306,15 @@ func (c *Client) BucketEncryption(ctx context.Context, bucket string) (string, e
 
 // PutPlain uploads length bytes of plaintext from src to a server-mode
 // bucket (D-12, SSE-005): the storage role encrypts it under a data key
-// the keys role seals for the upload; no recipient key is involved. When
-// the publication needs an approval, the ApprovalRequired error names the
-// staged upload's Intent; repeat with FinalizeUpload(Intent, nil) once it
-// is given.
+// the keys role seals for the upload; no recipient key is involved. With
+// opts.Lineage it publishes a derived output, streamed with no length
+// known in advance (length is then ignored). When the publication needs an
+// approval, the ApprovalRequired error names the staged upload's Intent
+// and its Finalize request; repeat with FinalizeUpload(Intent, Finalize)
+// once it is given.
 func (c *Client) PutPlain(ctx context.Context, bucket, key string, src io.Reader, length int64, opts PutOptions) (Published, error) {
 	if opts.Lineage != nil {
-		return Published{}, errors.New("fga: derived outputs in server mode are not supported yet")
+		return c.putDerivedPlain(ctx, bucket, key, src, opts)
 	}
 	h := map[string]string{"Content-Type": "application/octet-stream", "Idempotency-Key": opts.IdempotencyKey}
 	if h["Idempotency-Key"] == "" {
@@ -327,6 +332,72 @@ func (c *Client) PutPlain(ctx context.Context, bucket, key string, src io.Reader
 	var out Published
 	_, err := c.do(ctx, http.MethodPut, objectURL(c.StorageURL, bucket, "", key, "", nil), c.StorageToken, src, length, h, &out)
 	return out, err
+}
+
+// putDerivedPlain sends a server-mode derived output as multipart/form-data:
+// its lineage, then its content, streamed.
+func (c *Client) putDerivedPlain(ctx context.Context, bucket, key string, src io.Reader, opts PutOptions) (Published, error) {
+	lineage, err := json.Marshal(map[string][]cryptowire.LineageSource{"sources": opts.Lineage})
+	if err != nil {
+		return Published{}, err
+	}
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		err := func() error {
+			lw, err := mw.CreateFormField("lineage")
+			if err != nil {
+				return err
+			}
+			if _, err := lw.Write(lineage); err != nil {
+				return err
+			}
+			cw, err := mw.CreateFormFile("content", "content")
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(cw, src); err != nil {
+				return err
+			}
+			return mw.Close()
+		}()
+		pw.CloseWithError(err)
+	}()
+	h := map[string]string{"Content-Type": mw.FormDataContentType(), "Idempotency-Key": opts.IdempotencyKey}
+	if h["Idempotency-Key"] == "" {
+		h["Idempotency-Key"] = cryptowire.NewUUID().String()
+	}
+	if opts.IfMatch != "" {
+		h["If-Match"] = opts.IfMatch
+	}
+	if opts.IfNoneMatch {
+		h["If-None-Match"] = "*"
+	}
+	if opts.Label != "" {
+		h["Fga-Label"] = opts.Label
+	}
+	q := url.Values{"key": {key}}
+	var out Published
+	_, err = c.do(ctx, http.MethodPost, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/derived/content?"+q.Encode(), c.StorageToken, pr, -1,
+		h, &out)
+	pr.CloseWithError(err)
+	var need *ApprovalRequired
+	if errors.As(err, &need) {
+		need.Finalize, _ = json.Marshal(map[string][]cryptowire.LineageSource{"sources": opts.Lineage})
+	}
+	return out, err
+}
+
+// GetDerivedPlain writes a server-mode derived version's plaintext (the
+// current one when version is "") to dst. The server delivers it only if
+// the caller may read every source of its lineage or it was declassified
+// to the caller (DRV-002).
+func (c *Client) GetDerivedPlain(ctx context.Context, bucket, key, version string, dst io.Writer) (string, error) {
+	q := url.Values{"key": {key}}
+	if version != "" {
+		q.Set("version", version)
+	}
+	return c.plain(ctx, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/derived/content?"+q.Encode(), dst)
 }
 
 // GetPlain writes a server-mode version's plaintext (the current one when

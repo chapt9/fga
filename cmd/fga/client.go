@@ -43,8 +43,8 @@ import (
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
 //	                   in a server-mode bucket the server encrypts; -to does not apply, policy decides who reads
-//	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage, for the caller only
-//	fga get-derived    -bucket B -key K -out FILE [-version V]
+//	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage (in client mode, for the caller only)
+//	fga get-derived    -bucket B -key K -out FILE [-version V]   either mode
 //	fga search         -bucket B [-prefix P] [-project P] [-label MAX]   documents the caller may discover, by metadata
 //	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE | -collection]   UTF-8 text, one unit
 //	                   (with -collection, one text entry) per paragraph
@@ -61,8 +61,8 @@ import (
 //	fga propose-label  -bucket B -key K -label L -classifier C
 //	fga approvals                        list approvals the caller may decide
 //	fga approve|reject ID
-//	fga finalize       -intent I [-request FILE | -document] -approval A   finish a put that needed an approval (no -request in server mode;
-//	                   -document for a server-mode document)
+//	fga finalize       -intent I [-request FILE | -document] -approval A   finish a put that needed an approval (in server mode,
+//	                   -request only for a derived output; -document for a server-mode document)
 //
 // An operation that needs an approval prints the approval's ID; once an
 // approver has approved it, repeat the command with -approval ID. A put
@@ -328,21 +328,33 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		defer f.Close()
+		lineage, err := parseSources(*sources)
+		if err != nil {
+			return err
+		}
 		if serverMode(ctx, c, *bucket) {
-			if *to != "" || *sources != "" {
-				return errors.New("a server-mode bucket takes no recipients or lineage: policy decides who reads")
+			if *to != "" {
+				return errors.New("a server-mode bucket takes no recipients: policy decides who reads")
 			}
 			st, err := f.Stat()
 			if err != nil {
 				return err
 			}
-			p, err := c.PutPlain(ctx, *bucket, *key, f, st.Size(), client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label})
+			p, err := c.PutPlain(ctx, *bucket, *key, f, st.Size(), client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label, Lineage: lineage})
 			var need *client.ApprovalRequired
-			if errors.As(err, &need) {
+			switch {
+			case errors.As(err, &need) && need.Finalize != nil:
+				// A derived output's lineage is repeated with the approval.
+				path := filepath.Join(*dir, "pending-"+need.Intent+".json")
+				if err := os.WriteFile(path, need.Finalize, 0o600); err != nil {
+					return err
+				}
+				fmt.Printf("approval required: %s\nafter approval: fga finalize -intent %s -request %s -approval %s\n", need.ID, need.Intent, path, need.ID)
+				return nil
+			case errors.As(err, &need):
 				fmt.Printf("approval required: %s\nafter approval: fga finalize -intent %s -approval %s\n", need.ID, need.Intent, need.ID)
 				return nil
-			}
-			if err != nil {
+			case err != nil:
 				return err
 			}
 			fmt.Printf("published %s object %s version %s etag %s (server-encrypted)\n", *key, p.Object, p.Version, p.ETag)
@@ -356,18 +368,9 @@ func clientCommand(cmd string, args []string) error {
 			}
 			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
 		}
-		opts := client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label}
-		if *sources != "" {
-			if *to != "" {
-				return errors.New("a derived output is encrypted for its owner only; share it afterwards")
-			}
-			for _, src := range split(*sources) {
-				parts := strings.Split(src, ":")
-				if len(parts) != 3 {
-					return fmt.Errorf("-sources entry %q is not type:id:version", src)
-				}
-				opts.Lineage = append(opts.Lineage, cryptowire.LineageSource{Type: parts[0], ID: parts[1], Version: parts[2]})
-			}
+		opts := client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label, Lineage: lineage}
+		if lineage != nil && *to != "" {
+			return errors.New("a derived output is encrypted for its owner only; share it afterwards")
 		}
 		p, err := c.Put(ctx, *bucket, *key, f, recipients, opts)
 		var need *client.ApprovalRequired
@@ -401,7 +404,17 @@ func clientCommand(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		v, err := c.GetDerived(ctx, *bucket, *key, *version, f)
+		// The server route first; a client-mode output answers
+		// ENCRYPTION_MODE, and nothing was written.
+		id, err := c.GetDerivedPlain(ctx, *bucket, *key, *version, f)
+		var e *client.Error
+		if errors.As(err, &e) && e.Code == "ENCRYPTION_MODE" {
+			var v client.VersionInfo
+			v, err = c.GetDerived(ctx, *bucket, *key, *version, f)
+			id = v.Version + " (verified and decrypted)"
+		} else if err == nil {
+			id += " (server-encrypted)"
+		}
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
@@ -409,7 +422,7 @@ func clientCommand(cmd string, args []string) error {
 			os.Remove(tmp)
 			return err
 		}
-		fmt.Printf("verified and decrypted derived version %s\n", v.Version)
+		fmt.Printf("read derived version %s\n", id)
 		return os.Rename(tmp, *out)
 	case "put-document", "append":
 		text, err := os.ReadFile(*in)
@@ -680,6 +693,19 @@ func approvalHint(err error) error {
 		return fmt.Errorf("approval required: %s; repeat the command with -approval %s once it is approved", need.ID, need.ID)
 	}
 	return err
+}
+
+// parseSources reads -sources, type:id:version,...; none is nil.
+func parseSources(s string) ([]cryptowire.LineageSource, error) {
+	var out []cryptowire.LineageSource
+	for _, src := range split(s) {
+		parts := strings.Split(src, ":")
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("-sources entry %q is not type:id:version", src)
+		}
+		out = append(out, cryptowire.LineageSource{Type: parts[0], ID: parts[1], Version: parts[2]})
+	}
+	return out, nil
 }
 
 func split(s string) []string {

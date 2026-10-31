@@ -1,7 +1,8 @@
 // Package keycheck verifies the further decisions that a key release needs
 // besides its own: for an original file, the complete-content decisions,
 // raw-read on the document version and read on every unit (CNT-003,
-// review finding 3). The keys role admits their bindings in the same fence
+// review finding 3); for a server-mode derived output, the reader path
+// (DRV-002). The keys role admits their bindings in the same fence
 // as the release, for a client-mode envelope (internal/envelope) and a
 // server-mode data key (internal/datakeys) alike, so a change to any unit
 // between the storage role's checks and the release blocks it.
@@ -77,6 +78,78 @@ func CompleteContent(ctx context.Context, q catalog.Querier, v *signing.Verifier
 	}
 	if len(covered) != len(members) {
 		return nil, ErrDecision
+	}
+	return out, nil
+}
+
+// ReaderPath verifies the reader path of a server-mode derived output's
+// release to its reader, the caller (DRV-002, DRV-009): either one
+// derived.declassify-reader decision with deliver and declassify on this
+// output and version, or derived.sources decisions whose checks name the
+// version's transitive lineage exactly. All are the caller's own operation
+// checks, single-use, of primary's tenant and actor. It returns their fence
+// bindings.
+func ReaderPath(ctx context.Context, q catalog.Querier, v *signing.Verifier, primary signing.Record, output, version cryptowire.UUID,
+	extra []signing.Signed) ([]fence.Binding, error) {
+	var recs []signing.Record
+	for _, x := range extra {
+		rec, err := v.Check(x)
+		if err != nil || !rec.SingleUse || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+			return nil, ErrDecision
+		}
+		for _, c := range rec.Checks {
+			if c.Kind != string(registry.KindOperation) {
+				return nil, ErrDecision
+			}
+		}
+		recs = append(recs, rec)
+	}
+	if len(recs) == 1 && recs[0].Operation == registry.OpDerivedDeclassifyReader {
+		declassified := false
+		for _, c := range recs[0].Checks {
+			if c.ResourceType != "document.derived" || c.ResourceID != output.String() || c.Version != version.String() {
+				return nil, ErrDecision
+			}
+			declassified = declassified || c.Action == "declassify"
+		}
+		if !declassified {
+			return nil, ErrDecision
+		}
+	} else {
+		want, err := catalog.TransitiveLineage(ctx, q, primary.Tenant, version, 32)
+		if err != nil {
+			return nil, err
+		}
+		need := map[cryptowire.LineageSource]bool{}
+		for _, src := range want {
+			need[src] = true
+		}
+		if len(need) == 0 {
+			return nil, ErrDecision
+		}
+		for _, rec := range recs {
+			if rec.Operation != registry.OpDerivedSources {
+				return nil, ErrDecision
+			}
+			for _, c := range rec.Checks {
+				src := cryptowire.LineageSource{Type: c.ResourceType, ID: c.ResourceID, Version: c.Version}
+				if !need[src] {
+					return nil, ErrDecision
+				}
+				delete(need, src)
+			}
+		}
+		if len(need) != 0 {
+			return nil, ErrDecision
+		}
+	}
+	out := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		b, err := fence.FromRecord(rec)
+		if err != nil {
+			return nil, ErrDecision
+		}
+		out[i] = b
 	}
 	return out, nil
 }

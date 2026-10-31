@@ -28,6 +28,10 @@ The owner's client must already have created the recipient's envelope. A `declas
 
 Every lineage source's resource binding (generation and metadata revision) is a check of the delivery decision, so the authority fence and the stream lease recheck them. A label change, deletion or other change to any transitive source invalidates the decision and aborts an admitted stream at its next lease check. The reported reason is `LINEAGE_AUTHORITY_CHANGED` when the changed resource is a lineage source rather than the output itself. The traversal is bounded by the limits above.
 
+## Server mode (D-12, S4b)
+
+In a server-mode bucket the lineage is declared in the authenticated upload request and bound to the caller's publication decision rather than signed. A reader has no recipient key and reads under `deliver` and their own reader path, which the keys role checks again when it releases the data key. See [server-documents.md](server-documents.md), "Derived outputs".
+
 ## Implementation (R1-C step 5)
 
 **Publication.** A derived output is a new key of kind `derived`, begun with `"derived": true` and staged like an object. Finalize also carries a signed lineage: `fga.lineage/v1`, strict JSON, JWS type `fga-lineage+jws`, signed by the same active key as the descriptor. It names this output and version and 1 to 1,000 distinct sources (`storage.object`, `document.text_unit` or `document.derived`, each at an exact LIVE version of the tenant). Bounds: transitive depth at most 32. Cycles cannot arise, because a lineage names only existing versions and an output is new.

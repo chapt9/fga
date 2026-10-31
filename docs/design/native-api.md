@@ -40,6 +40,8 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Server-mode unit export | `POST /v1/buckets/{bucket}/document/export/content?key=&version=` `{"units": [...]}` | `document.export`, then each unit's release; plaintext units as JSON |
 | Server-mode unit | `GET /v1/buckets/{bucket}/document/unit/content?key=&unit=&version=` | The unit read's checks, then the unit's data-key release (`storage.key.release-unit` or `-entry`); plaintext body |
 | Server-mode export | `GET /v1/buckets/{bucket}/object/export?key=&version=` | Object `export` and `read` (`storage.object.export`), then release; plaintext body |
+| Server-mode derived upload | `POST /v1/buckets/{bucket}/derived/content?key=` (multipart: `lineage` `{"sources": [...]}`, then `content`) | Derived begin, data-key seal, staging and publication (`derived.publish-server*`) with the declared lineage, as in server-documents.md; `202` names the approval and the intent, finalized with `{"sources": [...]}` |
+| Server-mode derived read | `GET /v1/buckets/{bucket}/derived/content?key=&version=` | `deliver` and the caller's reader path, then the data-key release (`storage.key.release-derived`) with a reader path the keys role checks in its fence; plaintext body |
 | Set a bucket's encryption mode | `PUT /v1/buckets/{bucket}/encryption` | Bucket `manage` (`storage.bucket.set-encryption`) on the proposed change `change.encryption`, which shows `new_encryption` to policy; applies to uploads begun afterwards (encryption-modes.md) |
 | Propose a label | `POST /v1/buckets/{bucket}/object/label-proposals?key=` | Object `propose-label` (`storage.object.propose-label`); advisory only |
 | List approvals | `GET /v1/approvals?after=&limit=` | Per pending approval, a fresh `approve` decision on its target (`storage.object.approve` or `storage.bucket.approve`); others are left out |
@@ -76,7 +78,7 @@ Every error body is `{"error": CODE}` with no protected identifiers.
 | 401 | `UNAUTHENTICATED` | Missing or invalid token |
 | 404 | `NOT_FOUND` | Absent target, **and** any policy denial of an object, version or bucket operation (DEC-010, CNT-004): absent and denied look the same |
 | 409 | `CONFLICT` | Idempotency mismatch, intent in the wrong state, different bytes for a blob, stale authority after a bounded retry |
-| 409 | `ENCRYPTION_MODE` | The bucket or version is in the other encryption mode than the route serves (ENC-002); only the routes above marked server-mode serve server-mode objects, documents and collections; derived outputs are client-mode only until the rest of S4b. Only an authorized caller gets it; anyone else gets `NOT_FOUND` |
+| 409 | `ENCRYPTION_MODE` | The bucket or version is in the other encryption mode than the route serves (ENC-002); only the routes above marked server-mode serve server-mode objects, documents, collections and derived outputs. Only an authorized caller gets it; anyone else gets `NOT_FOUND` |
 | 412 | `PRECONDITION_FAILED` | `If-Match` or `If-None-Match` failed at commit (only after the operation was authorized) |
 | 413 | `TOO_LARGE` | Body above the bound |
 | 429 | `OVERLOADED` | Admission limits (AVL-006) |

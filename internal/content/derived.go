@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,7 @@ import (
 	"fga/internal/fence"
 	"fga/internal/labels"
 	"fga/internal/opplan"
+	"fga/internal/payload"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -175,6 +177,30 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 	if err != nil || l.TenantID != in.Tenant.String() || l.ObjectID != in.Object.String() || l.VersionID != in.LogicalVersion.String() || l.Signer != signer {
 		return Published{}, fmt.Errorf("%w: lineage does not match the intent", ErrInvalid)
 	}
+	return s.publishDerived(ctx, c, in, derivedPublication{lineage: l, raw: lineage, sig: lineageSig, signer: signer, desc: desc, req: r, envs: envs})
+}
+
+// derivedPublication is what a derived version is published with: its
+// lineage, as sent and signed in client mode or as recorded by the
+// storage role in server mode (no signature or signer), and in client mode
+// its descriptor, finalize request and initial envelopes.
+type derivedPublication struct {
+	lineage cryptowire.Lineage
+	raw     []byte
+	sig     string
+	signer  string
+	desc    cryptowire.Descriptor
+	req     FinalizeRequest
+	envs    []checkedEnvelope
+}
+
+// publishDerived decides and commits a derived version (DRV-001, DRV-007),
+// in either mode: the label from the bucket's floor, the lineage and any
+// proposal; the publication decision with its plan and the caller's read
+// on every direct source; and the fenced commit.
+func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent, p derivedPublication) (Published, error) {
+	l, lineage, lineageSig, signer, desc, r, envs := p.lineage, p.raw, p.sig, p.signer, p.desc, p.req, p.envs
+	server := in.encryption == "server"
 	sources, depth, err := s.lineageSources(ctx, s.d.Catalog.Pool(), c.Tenant, l)
 	if err != nil {
 		return Published{}, err
@@ -211,6 +237,10 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 	if !in.newObject {
 		op, ref, envelopeObject = registry.OpDerivedPublishVersion, planned(registry.ChangeLabel, in.Object.String()+"|"+in.label), in.Object.String()
 		checks = []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", in.Object.String())}}
+	}
+	if server {
+		op = map[string]string{registry.OpDerivedPublish: registry.OpDerivedPublishServer,
+			registry.OpDerivedPublishVersion: registry.OpDerivedPublishServerVersion}[op]
 	}
 	if raised {
 		checks = append(checks, check{id: "label", role: registry.RoleLabel, action: "label", ref: ref})
@@ -256,8 +286,10 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 	}
 	var result Published
 	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
-		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		if !server {
+			if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
+				return fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
 		}
 		if raised {
 			if err := s.labelOrderHolds(ctx, tx, base, in.label, in.bucket); err != nil {
@@ -307,7 +339,19 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `
+		if server {
+			// The sealed data key moves from the intent to the version
+			// (SSE-002); there is no client descriptor.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+				                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
+				SELECT $1, $2, $3, $4, $5, 'LIVE', i.ciphertext_length, i.ciphertext_sha256, $6, $7, $8, $8, 'server', i.sealed_key, i.kek_version,
+				       i.plaintext_length
+				  FROM upload_intents i WHERE i.tenant = $1 AND i.id = $9 AND i.sealed_key IS NOT NULL AND i.plaintext_length IS NOT NULL`,
+				c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int(payload.Suite), int(payload.Format), now, in.IntentID); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `
 			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
 			                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
 			VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,
@@ -318,8 +362,12 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 		if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, in.Object, in.LogicalVersion); err != nil {
 			return err
 		}
+		var sigArg any = lineageSig
+		if server {
+			sigArg = nil
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO derived_versions VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			c.Tenant, in.LogicalVersion, in.Object, lineage, lineageSig, effective, depth); err != nil {
+			c.Tenant, in.LogicalVersion, in.Object, lineage, sigArg, effective, depth); err != nil {
 			return err
 		}
 		for i, src := range l.Sources {
@@ -341,6 +389,9 @@ func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID crypto
 		}
 		targets := []audit.Target{{Type: "document.derived", ID: in.Object.String(), Version: in.LogicalVersion.String(), Signer: signer,
 			Digest: desc.CiphertextSHA256}}
+		if server {
+			targets[0].Digest = in.ciphertextSHA256
+		}
 		for _, src := range l.Sources {
 			targets = append(targets, audit.Target{Type: src.Type, ID: src.ID, Version: src.Version})
 		}
@@ -487,16 +538,41 @@ func (s *Service) ReadDerivedCiphertext(ctx context.Context, c Caller, bucketNam
 	if err != nil {
 		return nil, err
 	}
-	recs := append([]signing.Record{own}, path...)
+	if err := clientMode(v.Encryption); err != nil {
+		return nil, err
+	}
+	merged, own0, tenantID, err := s.admitDerived(ctx, c, output, v, append([]signing.Record{own}, path...), recipient)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	return &Stream{ReadCloser: s.derivedLease(r, merged, own0), Version: info(v, true)}, nil
+}
+
+// admitDerived admits the read of a derived version under the fence over
+// recs, the output's own decision first and then its reader's or
+// recipient's path, recording the admission. It returns their merged
+// binding and the output's own.
+func (s *Service) admitDerived(ctx context.Context, c Caller, output cryptowire.UUID, v version, recs []signing.Record,
+	recipient string) (fence.Binding, fence.Binding, cryptowire.UUID, error) {
+	own := recs[0]
 	bindings := make([]fence.Binding, len(recs))
+	var err error
 	for i, rec := range recs {
 		if bindings[i], err = fence.FromRecord(rec); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+			return fence.Binding{}, fence.Binding{}, cryptowire.UUID{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 	}
 	tenantID, err := s.tenantID(ctx, c.Tenant)
 	if err != nil {
-		return nil, err
+		return fence.Binding{}, fence.Binding{}, tenantID, err
 	}
 	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
 		var state string
@@ -513,33 +589,27 @@ func (s *Service) ReadDerivedCiphertext(ctx context.Context, c Caller, bucketNam
 			audit.Target{Type: "document.derived", ID: output.String(), Version: v.ID.String(), Digest: v.SHA256, Recipient: recipient}))
 	}))
 	if err != nil {
-		return nil, err
+		return fence.Binding{}, fence.Binding{}, tenantID, err
 	}
 	merged, err := fence.Merge(bindings)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	if err := clientMode(v.Encryption); err != nil {
-		return nil, err
-	}
-	digest, err := cryptowire.ParseDigest(v.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
-	}
-	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
-	if err != nil {
-		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+		return fence.Binding{}, fence.Binding{}, tenantID, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	ownBinding := bindings[0]
 	ownBinding.ValidUntil = merged.ValidUntil
-	l := s.leaseUntil(r, merged, merged.ValidUntil, func(err error) error {
-		// The output's own authority still holds: a source changed.
-		if s.d.Fence.Check(context.Background(), ownBinding) == nil {
+	return merged, ownBinding, tenantID, nil
+}
+
+// derivedLease wraps a derived stream in the merged lease; when a recheck
+// fails while the output's own authority still holds, a lineage source
+// changed and the stream ends with ErrLineageChanged (V-145).
+func (s *Service) derivedLease(r io.ReadCloser, merged, own fence.Binding) io.ReadCloser {
+	return s.leaseUntil(r, merged, merged.ValidUntil, func(err error) error {
+		if s.d.Fence.Check(context.Background(), own) == nil {
 			return ErrLineageChanged
 		}
 		return fmt.Errorf("%w: %v", ErrLease, err)
 	})
-	return &Stream{ReadCloser: l, Version: info(v, true)}, nil
 }
 
 // ShareDerived publishes an envelope of a derived version for another

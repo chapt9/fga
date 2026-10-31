@@ -95,6 +95,9 @@ type DataKeys interface {
 	// ReleaseOriginalKey releases an original file's key with the
 	// complete-content decisions extra.
 	ReleaseOriginalKey(ctx context.Context, decision signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error)
+	// ReleaseDerivedKey releases a derived output version's key with the
+	// reader path extra.
+	ReleaseDerivedKey(ctx context.Context, decision signing.Signed, extra []signing.Signed, versionID string) ([]byte, error)
 }
 
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are

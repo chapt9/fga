@@ -514,3 +514,57 @@ func TestReleaseOriginal(t *testing.T) {
 	}
 	noKeyInAudit(t, f.st, "DATA_KEY_RELEASED", 1, key)
 }
+
+// TestReleaseDerived covers DRV-002 for the keys role (S4b): a derived
+// version's key is released only with deliver on it and a reader path of
+// the caller: read on exactly its transitive lineage, or a declassification
+// of this very output version.
+func TestReleaseDerived(t *testing.T) {
+	f := setup(t)
+	put := func(key, text string) content.Published {
+		p, err := f.st.Content.PutObject(ctx, f.alice.Caller, content.BeginRequest{Bucket: "vault", Key: key, IdempotencyKey: key},
+			int64(len(text)), strings.NewReader(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	src, other := put("src.txt", "source"), put("other.txt", "other")
+	derived := func(key string) content.Published {
+		p, err := f.st.Content.PutDerivedPlain(ctx, f.alice.Caller, content.BeginRequest{Bucket: "vault", Key: key, IdempotencyKey: key},
+			[]cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}, -1, strings.NewReader("derived"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	out, out2 := derived("out.txt"), derived("out2.txt")
+	deliver := func(p content.Published) decisionsvc.Check {
+		return decisionsvc.Check{ID: "output", Role: registry.RoleOutput, Action: "deliver", Resource: decisionsvc.Alias{Type: "document.derived", ID: p.Object},
+			Version: p.Version}
+	}
+	sourceRead := func(p content.Published) signing.Signed {
+		return f.decide(t, f.alice, registry.OpDerivedSources, decisionsvc.Check{ID: "source-0", Role: registry.RoleSourceObject, Action: "read",
+			Resource: decisionsvc.Alias{Type: "storage.object", ID: p.Object}, Version: p.Version})
+	}
+	declassify := func(p content.Published) signing.Signed {
+		return f.decide(t, f.alice, registry.OpDerivedDeclassifyReader, deliver(p), decisionsvc.Check{ID: "declassify", Role: registry.RoleDeclassify,
+			Action: "declassify", Resource: decisionsvc.Alias{Type: "document.derived", ID: p.Object}, Version: p.Version})
+	}
+	primary := func() signing.Signed { return f.decide(t, f.alice, registry.OpKeyReleaseDerived, deliver(out)) }
+	if _, err := f.svc.ReleaseDerived(ctx, primary(), []signing.Signed{sourceRead(other)}, out.Version); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("a path over another source: %v", err)
+	}
+	if _, err := f.svc.ReleaseDerived(ctx, primary(), nil, out.Version); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("no path: %v", err)
+	}
+	if _, err := f.svc.ReleaseDerived(ctx, primary(), []signing.Signed{declassify(out2)}, out.Version); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("another output's declassification: %v", err)
+	}
+	if k, err := f.svc.ReleaseDerived(ctx, primary(), []signing.Signed{sourceRead(src)}, out.Version); err != nil || len(k) != kek.DataKeySize {
+		t.Fatalf("the lineage path: %v", err)
+	}
+	if k, err := f.svc.ReleaseDerived(ctx, primary(), []signing.Signed{declassify(out)}, out.Version); err != nil || len(k) != kek.DataKeySize {
+		t.Fatalf("this output's declassification: %v", err)
+	}
+}
