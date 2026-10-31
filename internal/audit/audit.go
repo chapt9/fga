@@ -24,7 +24,25 @@ const (
 	KindMutation            Kind = "mutation"
 	KindApprovalConsumption Kind = "approval_consumption"
 	KindExternalDelivery    Kind = "external_delivery"
+	// KindReadAdmission is an admitted ciphertext read (CNT-008), and
+	// KindEnvelopePublication the publication or retirement of a recipient
+	// envelope (KEY-009). KindKeyRelease is an envelope delivery.
+	KindReadAdmission       Kind = "read_admission"
+	KindEnvelopePublication Kind = "envelope_publication"
 )
+
+// Target names the exact object, version and envelope an outcome event is
+// about, by identifier and digest only (KEY-009, DSC-003).
+type Target struct {
+	Type       string `json:"type"`
+	ID         string `json:"id"`
+	Version    string `json:"version,omitempty"`
+	Recipient  string `json:"recipient,omitempty"`
+	Envelope   string `json:"envelope,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
+	Signer     string `json:"signer,omitempty"`
+	Digest     string `json:"digest,omitempty"`
+}
 
 // Check summarizes one check. It names resources and actions but carries no
 // attribute values, labels or arguments (AUD-003).
@@ -53,6 +71,7 @@ type Event struct {
 	BundleDigest string    `json:"bundle_digest,omitempty"`
 	PolicyEpoch  uint64    `json:"policy_epoch,omitempty"`
 	Checks       []Check   `json:"checks,omitempty"`
+	Targets      []Target  `json:"targets,omitempty"`
 	At           time.Time `json:"at"`
 }
 

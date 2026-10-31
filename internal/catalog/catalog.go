@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/audit"
@@ -267,10 +268,28 @@ func (s *Store) Consume(ctx context.Context, decisionID string, until time.Time)
 	return tag.RowsAffected() == 1, nil
 }
 
-// Append implements audit.Outbox. The capacity check and the insert are one
-// statement; under concurrent appends the bound can be exceeded by at most
-// the number of concurrent writers.
+// Append implements audit.Outbox.
 func (s *Store) Append(ctx context.Context, e audit.Event) error {
+	return appendEvent(ctx, s.pool, s.outboxCapacity, e)
+}
+
+// AppendTx appends an event inside the caller's transaction, so the event
+// commits or rolls back with the outcome it records (AUD-002).
+func (s *Store) AppendTx(ctx context.Context, tx pgx.Tx, e audit.Event) error {
+	return appendEvent(ctx, tx, s.outboxCapacity, e)
+}
+
+// Querier is a connection pool or a transaction.
+type Querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// appendEvent inserts e unless the outbox is full. The capacity check and
+// the insert are one statement; under concurrent appends the bound can be
+// exceeded by at most the number of concurrent writers.
+func appendEvent(ctx context.Context, q Querier, capacity int, e audit.Event) error {
 	if e.ID == "" {
 		return errors.New("catalog: event ID is required")
 	}
@@ -278,12 +297,12 @@ func (s *Store) Append(ctx context.Context, e audit.Event) error {
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx,
+	tag, err := q.Exec(ctx,
 		`INSERT INTO audit_outbox (id, tenant, kind, event)
 		 SELECT $1, $2, $3, $4
 		  WHERE (SELECT count(*) FROM audit_outbox WHERE delivered_at IS NULL) < $5
 		 ON CONFLICT (id) DO NOTHING`,
-		e.ID, e.Tenant, string(e.Kind), payload, s.outboxCapacity)
+		e.ID, e.Tenant, string(e.Kind), payload, capacity)
 	if err != nil {
 		return err
 	}
@@ -291,7 +310,7 @@ func (s *Store) Append(ctx context.Context, e audit.Event) error {
 		return nil
 	}
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audit_outbox WHERE id = $1)`, e.ID).Scan(&exists); err != nil {
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audit_outbox WHERE id = $1)`, e.ID).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
@@ -299,6 +318,10 @@ func (s *Store) Append(ctx context.Context, e audit.Event) error {
 	}
 	return audit.ErrFull
 }
+
+// Pool returns the store's connection pool, for roles that run their own
+// transactions over the catalog, such as the authority fence.
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Pending implements audit.Outbox.
 func (s *Store) Pending(ctx context.Context, limit int) ([]audit.Event, error) {
