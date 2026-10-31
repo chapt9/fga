@@ -2,6 +2,8 @@
 # line. Adding a line needs review: it widens the role's attack surface.
 fga/cmd/fga-decision
 fga/internal/audit
+# Reviewed 2026-10-31: first-hop token verification (go-jose only).
+fga/internal/authn
 fga/internal/catalog
 fga/internal/decision
 fga/internal/decisionsvc

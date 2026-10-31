@@ -4,6 +4,8 @@
 //	fga policy validate DIR                  parse, compile and run a bundle's sentinels
 //	fga policy sign -key FILE -key-id ID -epoch N DIR
 //	                                         sign a bundle directory in place
+//	fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]
+//	                                         print a development access token
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"fga/internal/authn"
 	"fga/internal/release"
 )
 
@@ -28,9 +31,13 @@ func main() {
 	}
 }
 
-const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR"
+const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR" +
+	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]"
 
 func run(args []string) error {
+	if len(args) >= 1 && args[0] == "dev-token" {
+		return devToken(args[1:])
+	}
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
@@ -94,13 +101,9 @@ func sign(args []string) error {
 		return errors.New("policy sign needs -key, -key-id, -epoch and one bundle directory")
 	}
 	dir := fs.Arg(0)
-	raw, err := os.ReadFile(*keyFile)
+	priv, err := readPrivateKey(*keyFile)
 	if err != nil {
 		return err
-	}
-	priv, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil || len(priv) != ed25519.PrivateKeySize {
-		return errors.New("the key file must hold a base64 Ed25519 private key")
 	}
 	b, m, err := release.LoadBundle(dir)
 	if err != nil {
@@ -119,6 +122,47 @@ func sign(args []string) error {
 	digest, _ := b.Digest()
 	fmt.Printf("signed %s epoch %d with %s\n", digest, b.Epoch, b.KeyID)
 	return nil
+}
+
+// devToken prints an access token of the development profile
+// (first-hop-authentication.md). The key is the development issuer's.
+func devToken(args []string) error {
+	fs := flag.NewFlagSet("dev-token", flag.ContinueOnError)
+	keyFile := fs.String("key", "", "development issuer private key file (base64 Ed25519)")
+	keyID := fs.String("key-id", "", "issuer key ID")
+	sub := fs.String("sub", "", "identity ID")
+	tenant := fs.String("tenant", "", "tenant")
+	aud := fs.String("aud", "", "audience, for example fga-storage")
+	ttl := fs.Duration("ttl", 15*time.Minute, "lifetime, at most 1h")
+	if err := fs.Parse(args); err != nil || *keyFile == "" || *keyID == "" || *sub == "" || *tenant == "" || *aud == "" {
+		return errors.New("dev-token needs -key, -key-id, -sub, -tenant and -aud")
+	}
+	priv, err := readPrivateKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	iss, err := authn.NewIssuer("fga-dev", *keyID, priv, time.Now)
+	if err != nil {
+		return err
+	}
+	tok, err := iss.Issue(*sub, *tenant, *aud, *ttl)
+	if err != nil {
+		return err
+	}
+	fmt.Println(tok)
+	return nil
+}
+
+func readPrivateKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	priv, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil || len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("the key file must hold a base64 Ed25519 private key")
+	}
+	return priv, nil
 }
 
 func signBundle(b *release.Bundle, keyID string, priv ed25519.PrivateKey) error {

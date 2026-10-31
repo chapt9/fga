@@ -26,7 +26,25 @@ type Config struct {
 	Audiences      []string          `json:"audiences"`
 	DecisionMaxAge string            `json:"decision_max_age"`
 	OutboxCapacity int               `json:"outbox_capacity"`
+	// TokenIssuer verifies first-hop user tokens (TRU-003). Without it only
+	// delegated requests can be decided.
+	TokenIssuer *TokenIssuerConfig `json:"token_issuer,omitempty"`
+	// AdapterAudiences maps each adapter to the token audience of the users
+	// it serves; PublicAudience is the audience of the public facade.
+	AdapterAudiences map[string]string `json:"adapter_audiences,omitempty"`
+	PublicAudience   string            `json:"public_audience,omitempty"`
 }
+
+// TokenIssuerConfig names one token issuer and its Ed25519 verification
+// keys by key ID (base64). D-04 is open: the only qualified use is the
+// development issuer, which production refuses.
+type TokenIssuerConfig struct {
+	Issuer string            `json:"issuer"`
+	Keys   map[string]string `json:"keys"`
+}
+
+// devIssuer is the development token issuer of first-hop-authentication.md.
+const devIssuer = "fga-dev"
 
 // TLSConfig names the server certificate and the CA that issues adapter
 // workload certificates. Client certificates are required (DEC-007).
@@ -105,6 +123,17 @@ func (c Config) Validate() error {
 	}
 	if c.OutboxCapacity <= 0 {
 		fail("outbox_capacity must be positive")
+	}
+	if ti := c.TokenIssuer; ti != nil {
+		if ti.Issuer == "" || len(ti.Keys) == 0 {
+			fail("token_issuer needs issuer and keys")
+		}
+		if ti.Issuer == devIssuer && c.Profile == profileProduction {
+			fail("the development token issuer is not allowed in production")
+		}
+	}
+	if (len(c.AdapterAudiences) > 0 || c.PublicAudience != "") && c.TokenIssuer == nil {
+		fail("adapter_audiences and public_audience need a token_issuer")
 	}
 	return errors.Join(errs...)
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
@@ -124,10 +125,31 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	if err != nil {
 		return nil, err
 	}
+	tokens, err := tokenVerifier(cfg)
+	if err != nil {
+		return nil, err
+	}
 	maxAge, _ := time.ParseDuration(cfg.DecisionMaxAge) // validated by Config.Validate
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
+		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience,
 		Operations: registry.R1Operations(types), Authority: store,
 		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
+}
+
+// tokenVerifier returns the configured first-hop token verifier, or nil.
+func tokenVerifier(cfg Config) (decisionsvc.TokenVerifier, error) {
+	if cfg.TokenIssuer == nil {
+		return nil, nil
+	}
+	keys := map[string]ed25519.PublicKey{}
+	for id, b64 := range cfg.TokenIssuer.Keys {
+		key, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("token issuer key %q is not a base64 Ed25519 public key", id)
+		}
+		keys[id] = key
+	}
+	return authn.NewVerifier(cfg.TokenIssuer.Issuer, keys, time.Now), nil
 }
 
 func loadSigner(cfg Config) (*signing.Signer, error) {

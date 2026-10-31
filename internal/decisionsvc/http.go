@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"fga/internal/strictjson"
 )
@@ -33,8 +34,9 @@ func AdapterFromClientCert(r *http.Request) (string, error) {
 	return "", errors.New("client certificate names no adapter")
 }
 
-// Handler serves the JSON facade (DEC-001) and the health endpoints
-// (REL-006): POST /v1/decide-batch, GET /healthz, GET /readyz.
+// Handler serves the adapter facade (DEC-001), the public facade and the
+// health endpoints (REL-006): POST /v1/decide-batch, POST /v1/check,
+// GET /healthz, GET /readyz.
 func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/decide-batch", func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +57,27 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.Decide(r.Context(), adapter, req))
+	})
+	// The public facade authenticates the user by bearer token and answers
+	// with the public projection only (DEC-001, DEC-010).
+	mux.HandleFunc("POST /v1/check", func(w http.ResponseWriter, r *http.Request) {
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || token == "" {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
+		if err != nil {
+			http.Error(w, "request too large or unreadable", http.StatusRequestEntityTooLarge)
+			return
+		}
+		var req Request
+		if err := strictjson.Decode(body, &req); err != nil {
+			http.Error(w, "malformed request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(s.DecidePublic(r.Context(), token, req))
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

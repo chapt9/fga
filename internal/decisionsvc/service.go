@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"fga/internal/audit"
+	"fga/internal/authn"
 	"fga/internal/decision"
 	"fga/internal/gate"
 	"fga/internal/policy"
@@ -37,6 +38,7 @@ const (
 	ReasonAuditUnavailable   decision.Reason = "AUDIT_UNAVAILABLE"
 	ReasonSigningFailed      decision.Reason = "SIGNING_FAILED"
 	ReasonAdmissionClosed    decision.Reason = "ADMISSION_CLOSED"
+	ReasonAuthentication     decision.Reason = "AUTHENTICATION_FAILED"
 )
 
 // Ref names an identity at the revision the adapter built the request from.
@@ -75,15 +77,18 @@ type Request struct {
 	Tenant    string `json:"tenant"`
 	// Operation is the registered operation; its checks are fixed by the
 	// registry, not chosen by the caller (RES-001, DEC-001).
-	Operation       string  `json:"operation"`
-	OperationID     string  `json:"operation_id"`
-	OperationDigest string  `json:"operation_digest"`
-	Audience        string  `json:"audience"`
-	SingleUse       bool    `json:"single_use"`
-	Actor           Ref     `json:"actor"`
-	Subject         *Ref    `json:"subject,omitempty"`
-	Delegation      string  `json:"delegation,omitempty"`
-	Checks          []Check `json:"checks"`
+	Operation       string `json:"operation"`
+	OperationID     string `json:"operation_id"`
+	OperationDigest string `json:"operation_digest"`
+	Audience        string `json:"audience"`
+	SingleUse       bool   `json:"single_use"`
+	Actor           Ref    `json:"actor"`
+	Subject         *Ref   `json:"subject,omitempty"`
+	Delegation      string `json:"delegation,omitempty"`
+	// Evidence is the user's bearer access token, passed on unchanged by the
+	// adapter (TRU-003). It authenticates the actor.
+	Evidence string  `json:"evidence,omitempty"`
+	Checks   []Check `json:"checks"`
 }
 
 // Result reports one check, with the business and ceiling effects kept apart
@@ -116,6 +121,16 @@ type Response struct {
 	ValidUntil   *time.Time      `json:"valid_until,omitempty"`
 	Signed       *SignedDecision `json:"signed,omitempty"`
 }
+
+// TokenVerifier verifies a bearer access token for an audience.
+// authn.Verifier implements it.
+type TokenVerifier interface {
+	Verify(token, audience string) (authn.Claims, error)
+}
+
+// PublicAdapter is the adapter name of requests that arrive through the
+// public facade. No authenticated adapter can use it.
+const PublicAdapter = "fga-public"
 
 // Authority reports the deployment's recovery incarnation and whether
 // admission is open (AVL-008).
@@ -153,12 +168,18 @@ type Deps struct {
 	Types      *registry.Types
 	Operations *registry.Operations
 	Authority  Authority
-	Signer     *signing.Signer
-	Outbox     audit.Outbox
-	Audiences  []string
-	MaxAge     time.Duration
-	Limits     Limits
-	Now        func() time.Time
+	// Authn verifies first-hop evidence. AdapterAudiences maps each adapter
+	// to the token audience of the users it serves, and PublicAudience is
+	// the audience of tokens presented to the public facade.
+	Authn            TokenVerifier
+	AdapterAudiences map[string]string
+	PublicAudience   string
+	Signer           *signing.Signer
+	Outbox           audit.Outbox
+	Audiences        []string
+	MaxAge           time.Duration
+	Limits           Limits
+	Now              func() time.Time
 }
 
 // Service decides batches.
@@ -226,6 +247,9 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	}
 	if req.Tenant == "" || adapter == "" || len(req.Checks) == 0 || len(req.Checks) > s.d.Limits.MaxChecks || !s.audiences[req.Audience] {
 		return deny(ReasonInvalidRequest)
+	}
+	if !s.authenticated(adapter, req) {
+		return deny(ReasonAuthentication)
 	}
 	op, ok := s.d.Operations.Lookup(req.Operation)
 	if !ok {
@@ -332,6 +356,39 @@ func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound 
 			BusinessEffect: r.Business.String(), CeilingEffect: ceilingName(r.Ceiling), Requires: append([]string{}, r.Requires...)})
 	}
 	return rec
+}
+
+// authenticated checks first-hop evidence (TRU-003, DEC-007). A request
+// with evidence must carry a token for the adapter's user audience, issued
+// to the actor in the request's tenant. A request without evidence must
+// name a delegation, which the gate verifies against authoritative state;
+// otherwise caller-asserted identity plus a workload identity would be
+// enough, which TRU-003 forbids.
+func (s *Service) authenticated(adapter string, req Request) bool {
+	if req.Evidence == "" {
+		return req.Delegation != "" && adapter != PublicAdapter
+	}
+	audience := s.d.AdapterAudiences[adapter]
+	if adapter == PublicAdapter {
+		audience = s.d.PublicAudience
+	}
+	if audience == "" || s.d.Authn == nil {
+		return false
+	}
+	c, err := s.d.Authn.Verify(req.Evidence, audience)
+	return err == nil && c.Tenant == req.Tenant && c.Subject == req.Actor.ID
+}
+
+// DecidePublic serves the public facade: the caller is the token's subject
+// acting for itself, and only the public projection is returned (DEC-001,
+// DEC-010).
+func (s *Service) DecidePublic(ctx context.Context, token string, req Request) PublicResponse {
+	req.Evidence = token
+	if token == "" || req.Delegation != "" || req.Subject != nil {
+		req.Evidence = ""
+		req.Delegation = ""
+	}
+	return s.Decide(ctx, PublicAdapter, req).Public()
 }
 
 // ceilingName reports a ceiling result as the Decision API names it: an

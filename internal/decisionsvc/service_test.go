@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fga/internal/audit"
+	"fga/internal/authn"
 	"fga/internal/decision"
 	"fga/internal/delegation"
 	"fga/internal/gate"
@@ -46,6 +47,7 @@ func (e epochs) RequiredEpoch(_ context.Context, tenant string) (uint64, error) 
 }
 
 type fixture struct {
+	issuer   *authn.Issuer
 	svc      *Service
 	outbox   *audit.MemoryOutbox
 	verifier *signing.Verifier
@@ -119,6 +121,12 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 	if err != nil {
 		t.Fatal(err)
 	}
+	tokPub, tokPriv, _ := ed25519.GenerateKey(nil)
+	issuer, err := authn.NewIssuer("fga-dev", "tok-1", tokPriv, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := authn.NewVerifier("fga-dev", map[string]ed25519.PublicKey{"tok-1": tokPub}, clock)
 	outbox := audit.NewMemoryOutbox(outboxCapacity)
 	ops, err := registry.NewOperations(types, []registry.Operation{
 		{Name: "unit.read", Checks: []registry.CheckSpec{{Role: "unit", ResourceType: "document.text_unit", Action: "read"}}},
@@ -131,6 +139,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		t.Fatal(err)
 	}
 	svc, err := New(Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types, Operations: ops, Authority: FixedAuthority{Incarnation: 4}, Signer: signer,
+		Authn: tokens, AdapterAudiences: map[string]string{"storage-1": "fga-storage", "tools-gw-1": "fga-storage"}, PublicAudience: "fga-decision",
 		Outbox: outbox, Audiences: []string{"storage"}, MaxAge: 30 * time.Second, Limits: DefaultLimits, Now: clock})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +147,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 	keys := func() map[string]signing.Key {
 		return map[string]signing.Key{"dec-1": {Public: decPub, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)}}
 	}
-	return &fixture{svc: svc, outbox: outbox, epochs: ep,
+	return &fixture{issuer: issuer, svc: svc, outbox: outbox, epochs: ep,
 		verifier: signing.NewVerifier("storage", keys, signing.NewMemoryConsumption(), clock)}
 }
 
@@ -146,6 +155,16 @@ func request(alias string) Request {
 	return Request{RequestID: "r-81", Tenant: "t-acme", Operation: "unit.read", OperationID: "op-9f3", OperationDigest: "sha256:op",
 		Audience: "storage", Actor: Ref{ID: "agent-7", Revision: 12}, Subject: &Ref{ID: "user-42", Revision: 88}, Delegation: "dlg-5",
 		Checks: []Check{{ID: "c1", Role: "unit", Action: "read", Resource: Alias{Namespace: "mcp", Name: alias}}}}
+}
+
+// withToken adds evidence for the request's actor.
+func (f *fixture) withToken(r Request) Request {
+	tok, err := f.issuer.Issue(r.Actor.ID, r.Tenant, "fga-storage", time.Minute)
+	if err != nil {
+		panic(err)
+	}
+	r.Evidence = tok
+	return r
 }
 
 // shareRequest is user-42 sharing u-1 with the holders of the given
@@ -169,7 +188,7 @@ func shareRequest(fingerprints ...string) Request {
 func TestRecipientChecks(t *testing.T) {
 	f := newFixture(t, 10)
 	ctx := context.Background()
-	resp := f.svc.Decide(ctx, "storage-1", shareRequest("sha256:77"))
+	resp := f.svc.Decide(ctx, "storage-1", f.withToken(shareRequest("sha256:77")))
 	if resp.Outcome != "ALLOW" || resp.Results[0].PrincipalID != "user-42" || resp.Results[1].PrincipalID != "user-77" {
 		t.Fatalf("share with user-77 = %+v", resp)
 	}
@@ -206,7 +225,7 @@ func TestRecipientChecks(t *testing.T) {
 			return r
 		}(), "OPERATION_MISMATCH"},
 	} {
-		resp := f.svc.Decide(ctx, "storage-1", tc.req)
+		resp := f.svc.Decide(ctx, "storage-1", f.withToken(tc.req))
 		if resp.Outcome != "DENY" || resp.Reason != tc.reason || resp.Signed != nil {
 			t.Errorf("%s: %s %s, want DENY %s", name, resp.Outcome, resp.Reason, tc.reason)
 		}
@@ -361,7 +380,7 @@ func TestPublicProjection(t *testing.T) {
 	ctx := context.Background()
 	unknown := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#missing"))
 	ceilingDenied := f.svc.Decide(ctx, "tools-gw-1", request("doc://q3#draft"))
-	businessDenied := f.svc.Decide(ctx, "storage-1", shareRequest("sha256:77", "sha256:90"))
+	businessDenied := f.svc.Decide(ctx, "storage-1", f.withToken(shareRequest("sha256:77", "sha256:90")))
 	if unknown.Reason != string(ReasonUnknownResource) || ceilingDenied.Reason != "CEILING_DENY" || businessDenied.Reason != "BUSINESS_DENY" {
 		t.Fatalf("internal reasons = %s, %s, %s", unknown.Reason, ceilingDenied.Reason, businessDenied.Reason)
 	}
@@ -394,5 +413,48 @@ func TestNoDecisionWhileAdmissionClosed(t *testing.T) {
 	resp := f.svc.Decide(context.Background(), "tools-gw-1", request("doc://q3#overview"))
 	if resp.Outcome != "ERROR" || resp.Reason != string(ReasonAdmissionClosed) || resp.Signed != nil {
 		t.Fatalf("response = %+v, want ERROR ADMISSION_CLOSED", resp)
+	}
+}
+
+// TestFirstHopEvidence covers TRU-003 and DEC-007: a request without a
+// delegation needs a token for the adapter's audience issued to the actor
+// in the request's tenant; caller-asserted identity alone is refused.
+func TestFirstHopEvidence(t *testing.T) {
+	f := newFixture(t, 100)
+	ctx := context.Background()
+	if resp := f.svc.Decide(ctx, "storage-1", f.withToken(shareRequest("sha256:77"))); resp.Outcome != "ALLOW" {
+		t.Fatalf("with evidence: %+v", resp)
+	}
+	token := func(sub, tenant, aud string) string {
+		tok, _ := f.issuer.Issue(sub, tenant, aud, time.Minute)
+		return tok
+	}
+	for name, evidence := range map[string]string{
+		"no evidence":     "",
+		"other subject":   token("user-77", "t-acme", "fga-storage"),
+		"other tenant":    token("user-42", "t-other", "fga-storage"),
+		"other audience":  token("user-42", "t-acme", "fga-keys"),
+		"malformed token": "x.y.z",
+	} {
+		req := shareRequest("sha256:77")
+		req.Evidence = evidence
+		if resp := f.svc.Decide(ctx, "storage-1", req); resp.Outcome != "DENY" || resp.Reason != string(ReasonAuthentication) {
+			t.Errorf("%s: %s %s, want DENY %s", name, resp.Outcome, resp.Reason, ReasonAuthentication)
+		}
+	}
+	unmapped := f.withToken(shareRequest("sha256:77"))
+	if resp := f.svc.Decide(ctx, "unknown-adapter", unmapped); resp.Reason != string(ReasonAuthentication) {
+		t.Errorf("adapter without a user audience: %+v", resp)
+	}
+	// The public facade answers the token's subject with the projection.
+	pub := shareRequest("sha256:77")
+	if p := f.svc.DecidePublic(ctx, token("user-42", "t-acme", "fga-decision"), pub); p.Outcome != "ALLOW" || p.Reason != "" {
+		t.Errorf("public allow: %+v", p)
+	}
+	if p := f.svc.DecidePublic(ctx, token("user-42", "t-acme", "fga-storage"), pub); p.Outcome != "DENY" {
+		t.Errorf("public with a token for another audience: %+v", p)
+	}
+	if p := f.svc.DecidePublic(ctx, "", request("doc://q3#overview")); p.Outcome != "DENY" {
+		t.Errorf("public with a delegation and no token: %+v", p)
 	}
 }
