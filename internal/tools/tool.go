@@ -320,3 +320,17 @@ type Destination struct {
 	// outcome of an idempotency key (INV-003). It contains "{key}".
 	ReconcilePath string
 }
+
+// TransportDigest identifies the destination's transport: base URL,
+// address ranges, credential file and reconcile path. Its registration
+// records it on the policy-visible resource, so a dispatch uses exactly
+// the transport its decision saw (review v4 F03).
+func (d Destination) TransportDigest() string {
+	cidrs := make([]string, len(d.AllowedCIDRs))
+	for i, p := range d.AllowedCIDRs {
+		cidrs[i] = p.String()
+	}
+	b, _ := json.Marshal([]any{d.ID, d.BaseURL, cidrs, d.CredentialFile, d.ReconcilePath})
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}

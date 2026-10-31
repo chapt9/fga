@@ -144,13 +144,17 @@ func TestStatus(t *testing.T) {
 		switch r.URL.Path {
 		case "/idempotency/inv-1":
 			_, _ = w.Write([]byte(`{"status":"succeeded"}`))
+		case "/idempotency/inv-3":
+			_, _ = w.Write([]byte(`{"status":"failed"}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 	h, d := New(time.Second), destination(t, srv)
-	for key, want := range map[string]Outcome{"inv-1": Succeeded, "inv-2": Failed} {
+	// A key the destination has no record of is NotReceived, not a failure:
+	// a call sent in time may still arrive (review v4 F02).
+	for key, want := range map[string]Outcome{"inv-1": Succeeded, "inv-2": NotReceived, "inv-3": Failed} {
 		if got, supported, err := h.Status(context.Background(), d, key); got != want || !supported || err != nil {
 			t.Errorf("%s: %v %v %v, want %v", key, got, supported, err, want)
 		}

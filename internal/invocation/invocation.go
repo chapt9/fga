@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fga/internal/approval"
 	"fga/internal/reservation"
 )
 
@@ -63,6 +62,11 @@ type Invocation struct {
 	Receipt         string
 	DispatchedAt    *time.Time
 	Resolution      *Resolution
+	// Binding is what the dispatch was authorized for, as its executor
+	// recorded it in the dispatch's transaction; SendDeadline the time
+	// after which no worker may still send it (review v4 F01, F02).
+	Binding      json.RawMessage
+	SendDeadline *time.Time
 }
 
 // Resolution records how an UNKNOWN outcome was closed (INV-006).
@@ -84,7 +88,7 @@ type Store struct {
 func New(pool *pgxpool.Pool, now func() time.Time) *Store { return &Store{pool: pool, now: now} }
 
 const columns = `tenant, id, idempotency_key, operation_digest, tool, tool_version, arguments, actor, subject,
-	delegation, state, fencing_token, receipt, dispatched_at, resolution`
+	delegation, state, fencing_token, receipt, dispatched_at, resolution, binding, send_deadline`
 
 func scan(row pgx.Row) (Invocation, error) {
 	var inv Invocation
@@ -92,7 +96,7 @@ func scan(row pgx.Row) (Invocation, error) {
 	var resolution []byte
 	err := row.Scan(&inv.Tenant, &inv.ID, &inv.IdempotencyKey, &inv.OperationDigest, &inv.Tool, &inv.ToolVersion,
 		&inv.Arguments, &inv.Actor, &inv.Subject, &inv.Delegation, &state, &inv.FencingToken, &inv.Receipt,
-		&inv.DispatchedAt, &resolution)
+		&inv.DispatchedAt, &resolution, &inv.Binding, &inv.SendDeadline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invocation{}, ErrNotFound
 	}
@@ -202,34 +206,14 @@ func (s *Store) locked(ctx context.Context, tx pgx.Tx, tenant, id string, token 
 	return inv, nil
 }
 
-// BeginDispatch moves a leased invocation to DISPATCHING and, if an approval
-// is named, consumes it in the same transaction (INV-002, APR-003).
-func (s *Store) BeginDispatch(ctx context.Context, tenant, id string, token int64, approvalID string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		inv, err := s.locked(ctx, tx, tenant, id, token)
-		if err != nil {
-			return err
-		}
-		if inv.State != StatePrepared && inv.State != StateReserved {
-			return ErrState
-		}
-		now := s.now()
-		if approvalID != "" {
-			if err := approval.ConsumeTx(ctx, tx, tenant, approvalID, inv.OperationDigest, now); err != nil {
-				return err
-			}
-		}
-		_, err = tx.Exec(ctx, `UPDATE invocations SET state = 'DISPATCHING', dispatched_at = $3, updated_at = $3
-			WHERE tenant = $1 AND id = $2`, tenant, id, now)
-		return err
-	})
-}
-
 // DispatchTx moves a leased invocation to DISPATCHING inside tx, the
 // authority fence of its decision, which consumes the decision and the
-// approval it binds in the same transaction (INV-002). It returns the
-// invocation as it was.
-func (s *Store) DispatchTx(ctx context.Context, tx pgx.Tx, tenant, id string, token int64) (Invocation, error) {
+// approval it binds in the same transaction (INV-002). It records the
+// binding the dispatch was authorized for, and the worker's lease expiry
+// as the send deadline: the worker sends nothing after it, and no
+// reconciliation takes an absent key for a failure before it. It returns
+// the invocation as dispatched.
+func (s *Store) DispatchTx(ctx context.Context, tx pgx.Tx, tenant, id string, token int64, binding json.RawMessage) (Invocation, error) {
 	inv, err := s.locked(ctx, tx, tenant, id, token)
 	if err != nil {
 		return Invocation{}, err
@@ -237,15 +221,18 @@ func (s *Store) DispatchTx(ctx context.Context, tx pgx.Tx, tenant, id string, to
 	if inv.State != StatePrepared && inv.State != StateReserved {
 		return Invocation{}, ErrState
 	}
-	_, err = tx.Exec(ctx, `UPDATE invocations SET state = 'DISPATCHING', dispatched_at = $3, updated_at = $3
-		WHERE tenant = $1 AND id = $2`, tenant, id, s.now())
-	return inv, err
+	return scan(tx.QueryRow(ctx, `UPDATE invocations SET state = 'DISPATCHING', dispatched_at = $3, updated_at = $3, binding = $4,
+		       send_deadline = lease_expires_at
+		 WHERE tenant = $1 AND id = $2 RETURNING `+columns, tenant, id, s.now(), binding))
 }
 
 // Complete records the dispatch outcome. SUCCEEDED commits the reservation,
 // FAILED (the effect is known not to have happened) releases it, and
-// UNKNOWN keeps it until resolution (INV-007).
-func (s *Store) Complete(ctx context.Context, tenant, id string, token int64, outcome State, receipt string) error {
+// UNKNOWN keeps it until resolution (INV-007). also, if set, runs in the
+// same transaction, so the outcome's audit event is recorded with it or
+// not at all (review v4 F08).
+func (s *Store) Complete(ctx context.Context, tenant, id string, token int64, outcome State, receipt string,
+	also func(context.Context, pgx.Tx) error) error {
 	if outcome != StateSucceeded && outcome != StateFailed && outcome != StateUnknown {
 		return fmt.Errorf("invocation: %s is not a dispatch outcome", outcome)
 	}
@@ -260,9 +247,14 @@ func (s *Store) Complete(ctx context.Context, tenant, id string, token int64, ou
 		if err := settle(ctx, tx, tenant, id, outcome); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE invocations SET state = $3, receipt = $4, lease_owner = '', lease_expires_at = NULL,
-			updated_at = $5 WHERE tenant = $1 AND id = $2`, tenant, id, string(outcome), receipt, s.now())
-		return err
+		if _, err := tx.Exec(ctx, `UPDATE invocations SET state = $3, receipt = $4, lease_owner = '', lease_expires_at = NULL,
+			updated_at = $5 WHERE tenant = $1 AND id = $2`, tenant, id, string(outcome), receipt, s.now()); err != nil {
+			return err
+		}
+		if also != nil {
+			return also(ctx, tx)
+		}
+		return nil
 	})
 }
 
@@ -350,26 +342,39 @@ func (s *Store) WriteOffTx(ctx context.Context, tx pgx.Tx, tenant, id, principal
 // Stalled returns DISPATCHING invocations whose lease has expired: a worker
 // stopped mid-dispatch and a replacement must reconcile them.
 func (s *Store) Stalled(ctx context.Context, limit int) ([]Invocation, error) {
-	return s.list(ctx, `state = 'DISPATCHING' AND lease_expires_at <= $2`, limit, s.now())
+	return s.list(ctx, `state = 'DISPATCHING' AND lease_expires_at <= $2`, `dispatched_at`, limit, s.now())
 }
 
-// Escalate marks an UNKNOWN invocation escalated (INV-006). It reports
-// whether this call did so: an invocation is escalated once.
-func (s *Store) Escalate(ctx context.Context, tenant, id string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE invocations SET escalated_at = $3, updated_at = $3
+// EscalateTx marks an UNKNOWN invocation escalated (INV-006) inside tx. It
+// reports whether this call did so: an invocation is escalated once.
+func (s *Store) EscalateTx(ctx context.Context, tx pgx.Tx, tenant, id string) (bool, error) {
+	tag, err := tx.Exec(ctx, `UPDATE invocations SET escalated_at = $3, updated_at = $3
 		WHERE tenant = $1 AND id = $2 AND state = 'UNKNOWN' AND escalated_at IS NULL`, tenant, id, s.now())
 	return tag.RowsAffected() == 1, err
 }
 
-// Unknown returns UNKNOWN invocations, oldest dispatch first, for escalation
-// by hold age (INV-006).
+// InTx runs fn in one transaction of the store's database, for a change
+// and its audit event together.
+func (s *Store) InTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, s.pool, fn)
+}
+
+// Unknown returns UNKNOWN invocations, those least recently checked first,
+// so that every one is reached however many stay open (INV-006, review v4
+// F06).
 func (s *Store) Unknown(ctx context.Context, limit int) ([]Invocation, error) {
-	return s.list(ctx, `state = 'UNKNOWN'`, limit)
+	return s.list(ctx, `state = 'UNKNOWN'`, `checked_at NULLS FIRST, dispatched_at`, limit)
+}
+
+// Checked records that an invocation's outcome was just asked for.
+func (s *Store) Checked(ctx context.Context, tenant, id string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE invocations SET checked_at = $3 WHERE tenant = $1 AND id = $2`, tenant, id, s.now())
+	return err
 }
 
 // list runs a filtered query; $1 is the limit and args fill $2 onwards.
-func (s *Store) list(ctx context.Context, where string, limit int, args ...any) ([]Invocation, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+columns+` FROM invocations WHERE `+where+` ORDER BY dispatched_at LIMIT $1`,
+func (s *Store) list(ctx context.Context, where, order string, limit int, args ...any) ([]Invocation, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+columns+` FROM invocations WHERE `+where+` ORDER BY `+order+` LIMIT $1`,
 		append([]any{limit}, args...)...)
 	if err != nil {
 		return nil, err

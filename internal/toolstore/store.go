@@ -164,7 +164,14 @@ func (s *Store) ReviewedTools(ctx context.Context, tenant string) ([]tools.Tool,
 
 // PutDestination stores a destination.
 func (s *Store) PutDestination(ctx context.Context, tenant string, d tools.Destination) error {
-	_, err := s.pool.Exec(ctx, `
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error { return PutDestinationTx(ctx, tx, tenant, d) })
+}
+
+// PutDestinationTx is PutDestination inside tx, such as the one that also
+// registers the destination's resource (catalog.RegisterDestinationTx), so
+// transport and policy-visible resource change together (review v4 F03).
+func PutDestinationTx(ctx context.Context, tx pgx.Tx, tenant string, d tools.Destination) error {
+	_, err := tx.Exec(ctx, `
 		INSERT INTO destinations (tenant, id, base_url, allowed_cidrs, credential_file, reconcile_path)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (tenant, id) DO UPDATE SET base_url = EXCLUDED.base_url, allowed_cidrs = EXCLUDED.allowed_cidrs,
@@ -175,10 +182,22 @@ func (s *Store) PutDestination(ctx context.Context, tenant string, d tools.Desti
 
 // Destination returns a registered destination.
 func (s *Store) Destination(ctx context.Context, tenant, id string) (tools.Destination, error) {
-	d := tools.Destination{ID: id}
-	err := s.pool.QueryRow(ctx, `
+	return destination(ctx, s.pool.QueryRow(ctx, `
 		SELECT base_url, allowed_cidrs, credential_file, reconcile_path FROM destinations WHERE tenant = $1 AND id = $2`,
-		tenant, id).Scan(&d.BaseURL, &d.AllowedCIDRs, &d.CredentialFile, &d.ReconcilePath)
+		tenant, id), id)
+}
+
+// DestinationTx returns a registered destination inside tx, locked against
+// a change until tx ends: a dispatch reads it in its decision's fence.
+func DestinationTx(ctx context.Context, tx pgx.Tx, tenant, id string) (tools.Destination, error) {
+	return destination(ctx, tx.QueryRow(ctx, `
+		SELECT base_url, allowed_cidrs, credential_file, reconcile_path FROM destinations WHERE tenant = $1 AND id = $2 FOR SHARE`,
+		tenant, id), id)
+}
+
+func destination(_ context.Context, row pgx.Row, id string) (tools.Destination, error) {
+	d := tools.Destination{ID: id}
+	err := row.Scan(&d.BaseURL, &d.AllowedCIDRs, &d.CredentialFile, &d.ReconcilePath)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tools.Destination{}, ErrUnknownDestination
 	}

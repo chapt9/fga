@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +21,7 @@ import (
 	"fga/internal/r1test"
 	"fga/internal/release"
 	"fga/internal/signing"
+	"fga/internal/tools"
 	"fga/internal/toolstore"
 )
 
@@ -86,8 +90,16 @@ func TestInvoke(t *testing.T) {
 		}
 	}
 	guest := f.Caller(t, "guest", "guest")
-	if _, err := f.Svc.Invoke(ctx, guest, payment("g-1", 100)); !errors.Is(err, executor.ErrNotFound) {
+	if _, err := f.Svc.Invoke(ctx, guest, payment("shared", 100)); !errors.Is(err, executor.ErrNotFound) {
 		t.Fatalf("a user without the rights: %v", err)
+	}
+	// A refused call leaves nothing behind, and takes no key from another
+	// (review v4 F07).
+	if res, err := f.Svc.Invoke(ctx, alice, payment("shared", 100)); err != nil || res.State != string(invocation.StateSucceeded) {
+		t.Fatalf("alice after the guest used her key: %+v %v", res, err)
+	}
+	if n := f.St.Count(`SELECT count(*) FROM invocations WHERE actor = 'guest'`); n != 0 {
+		t.Fatalf("a refused call left %d invocations", n)
 	}
 	// A record changed after review is not usable (AGT-001).
 	changed := pay
@@ -98,7 +110,7 @@ func TestInvoke(t *testing.T) {
 	if _, err := f.Svc.Invoke(ctx, alice, payment("k-2", 100)); !errors.Is(err, executor.ErrNotFound) {
 		t.Fatalf("an unreviewed record: %v", err)
 	}
-	if f.Dest.Count() != 1 {
+	if f.Dest.Count() != 2 {
 		t.Fatalf("%d dispatches", f.Dest.Count())
 	}
 }
@@ -139,6 +151,10 @@ func TestInvokeApproval(t *testing.T) {
 	}
 	if n := f.St.Count(`SELECT count(*) FROM approvals WHERE id = $1 AND state = 'CONSUMED'`, need.ID); n != 1 {
 		t.Fatal("the approval was not consumed with the dispatch")
+	}
+	// A consumed approval serves no second dispatch of the same plan (V-040).
+	if _, err := f.Svc.Invoke(ctx, approved, payment("large-again", 9000)); err == nil || f.Dest.Count() != 2 {
+		t.Fatalf("a consumed approval was used again: %v, %d dispatches", err, f.Dest.Count())
 	}
 }
 
@@ -308,27 +324,67 @@ func TestReconcile(t *testing.T) {
 		return inv
 	}
 
-	t.Run("asked of the destination", func(t *testing.T) {
+	t.Run("asked of the destination dispatched to", func(t *testing.T) {
 		o := o
 		o.Reconcilable = true
 		f := executortest.Deploy(t, o)
 		reported, stalled := unknown(t, f, "c-1"), unknown(t, f, "c-2")
 		f.Dest.Report(reported, "succeeded")
 		stall(t, f, stalled)
+		// The destination is registered anew elsewhere: the open calls are
+		// still asked of the one they were sent to (review v4 F01).
+		other := &executortest.Destination{Status: http.StatusOK}
+		srv := httptest.NewServer(other)
+		t.Cleanup(srv.Close)
+		if err := executor.RegisterDestination(ctx, f.St.Pool, r1test.Tenant, tools.Destination{ID: "bank", BaseURL: srv.URL,
+			AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}, ReconcilePath: "/payments/{key}"},
+			map[string]any{"approved": true}); err != nil {
+			t.Fatal(err)
+		}
 		reconcile(t, f, 2)
 		if inv := state(t, f, reported); inv.State != invocation.StateSucceeded || inv.Resolution == nil || inv.Resolution.By != executor.Reconciler {
 			t.Fatalf("a reported success: %+v", inv)
 		}
+		// Never received, but the worker could still send until its
+		// deadline: not yet a failure (F02).
+		if inv := state(t, f, stalled); inv.State != invocation.StateUnknown {
+			t.Fatalf("a stalled dispatch within its send window: %+v", inv)
+		}
+		*f.St.Clock = f.St.Clock.Add(3 * time.Minute)
+		reconcile(t, f, 1)
 		if inv := state(t, f, stalled); inv.State != invocation.StateFailed {
-			t.Fatalf("a stalled dispatch the destination never received: %+v", inv)
+			t.Fatalf("a stalled dispatch never received after its window: %+v", inv)
 		}
 		if n := f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'COMMITTED'`); n != 1 ||
 			f.St.Count(`SELECT count(*) FROM reservations WHERE state = 'RELEASED'`) != 1 {
 			t.Fatal("the reservations were not settled by the reported outcomes")
 		}
+		if f.St.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'outcome' IN ('RESOLVED_SUCCEEDED', 'RECONCILED_UNKNOWN', 'RESOLVED_FAILED')`) != 3 {
+			t.Fatal("a reconciliation step has no audit event")
+		}
 		reconcile(t, f, 0)
-		if f.Dest.Count() != 2 {
-			t.Fatalf("%d dispatches", f.Dest.Count())
+		if f.Dest.Count() != 2 || len(other.Asked) != 0 {
+			t.Fatalf("%d dispatches; the new destination asked %v", f.Dest.Count(), other.Asked)
+		}
+	})
+	t.Run("every open call is reached", func(t *testing.T) {
+		o := o
+		o.Reconcilable = true
+		f := executortest.Deploy(t, o)
+		var keys []string
+		for _, k := range []string{"e-1", "e-2", "e-3"} {
+			keys = append(keys, unknown(t, f, k))
+			*f.St.Clock = f.St.Clock.Add(time.Second)
+		}
+		for range 2 {
+			if _, err := f.Svc.Reconcile(ctx, 2); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range keys {
+			if !slices.Contains(f.Dest.Asked, k) {
+				t.Fatalf("%s was never asked about in two passes of two (F06): %v", k, f.Dest.Asked)
+			}
 		}
 	})
 	t.Run("not askable: held, escalated once", func(t *testing.T) {
@@ -384,6 +440,67 @@ func (a afterDecider) Decide(ctx context.Context, req decisionsvc.Request) (deci
 	resp, err := a.Decider.Decide(ctx, req)
 	a.after()
 	return resp, err
+}
+
+// TestDispatchBinding covers review v4 F02 and F03: a dispatch uses the
+// destination's transport only as the resource its decision saw records
+// it, and a worker sends nothing it cannot finish within its lease.
+func TestDispatchBinding(t *testing.T) {
+	t.Run("a transport changed apart from its resource", func(t *testing.T) {
+		f := deploy(t, plainInvoke, nil, http.StatusOK, 10_000)
+		alice := f.Caller(t, "alice", "member")
+		elsewhere := &executortest.Destination{Status: http.StatusOK}
+		srv := httptest.NewServer(elsewhere)
+		t.Cleanup(srv.Close)
+		f.Svc = f.Service(t, afterDecider{r1test.Decider{Service: f.St.Decisions, Adapter: r1test.ToolsAdapter}, func() {
+			if err := toolstore.New(f.St.Pool).PutDestination(ctx, r1test.Tenant, tools.Destination{ID: "bank", BaseURL: srv.URL,
+				AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}); err != nil {
+				t.Error(err)
+			}
+		}})
+		if _, err := f.Svc.Invoke(ctx, alice, payment("b-1", 100)); !errors.Is(err, executor.ErrConflict) || f.Dest.Count()+elsewhere.Count() != 0 {
+			t.Fatalf("a call over a transport its decision did not see: %v, %d and %d calls", err, f.Dest.Count(), elsewhere.Count())
+		}
+	})
+	t.Run("no time left in the lease", func(t *testing.T) {
+		f := deploy(t, plainInvoke, nil, http.StatusOK, 10_000)
+		alice := f.Caller(t, "alice", "member")
+		svc := f.Service(t, r1test.Decider{Service: f.St.Decisions, Adapter: r1test.ToolsAdapter}, func(d *executor.Deps) { d.Lease = time.Second })
+		if res, err := svc.Invoke(ctx, alice, payment("b-2", 100)); err != nil || res.State != string(invocation.StateFailed) || f.Dest.Count() != 0 {
+			t.Fatalf("a call the worker could not finish in its lease: %+v %v, %d calls", res, err, f.Dest.Count())
+		}
+	})
+}
+
+// TestOutcomeAudited covers review v4 F08: an outcome is recorded with its
+// audit event or not at all; one that could not be is recorded later by
+// reconciliation, with its event.
+func TestOutcomeAudited(t *testing.T) {
+	f := executortest.Deploy(t, executortest.Options{Reconcilable: true})
+	alice := f.Caller(t, "alice", "member")
+	f.Dest.OnCall = func() {
+		if _, err := f.St.Pool.Exec(ctx, `INSERT INTO audit_outbox (id, tenant, kind, event)
+			SELECT 'fill-' || g, 'x', 'x', '{}' FROM generate_series(1, 10000) g`); err != nil {
+			t.Error(err)
+		}
+	}
+	res, err := f.Svc.Invoke(ctx, alice, payment("a-1", 100))
+	if err != nil || res.State != string(invocation.StateDispatching) {
+		t.Fatalf("an outcome whose event could not be recorded: %+v %v", res, err)
+	}
+	f.Dest.OnCall = nil
+	f.Dest.Report(res.Invocation, "succeeded")
+	if _, err := f.St.Pool.Exec(ctx, `DELETE FROM audit_outbox WHERE id LIKE 'fill-%'`); err != nil {
+		t.Fatal(err)
+	}
+	*f.St.Clock = f.St.Clock.Add(2 * time.Minute)
+	if n, err := f.Svc.Reconcile(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("reconcile: %d %v", n, err)
+	}
+	if inv, _ := f.Inv.Get(ctx, r1test.Tenant, res.Invocation); inv.State != invocation.StateSucceeded ||
+		f.St.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'outcome' = 'RECONCILED_SUCCEEDED'`) != 1 {
+		t.Fatalf("the reconciled outcome and its event: %+v", inv)
+	}
 }
 
 // TestAudience pins the tools role's audience to the test stack's.

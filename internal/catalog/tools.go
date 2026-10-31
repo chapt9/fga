@@ -53,23 +53,40 @@ func (s *Store) RegisterTool(ctx context.Context, tenant, id string, op registry
 // "destination:<id>", aliased in registry.DestinationNamespace, which
 // policy allows to send to.
 func (s *Store) RegisterDestination(ctx context.Context, tenant, id string, attrs map[string]any) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error { return RegisterDestinationTx(ctx, tx, tenant, id, attrs) })
+}
+
+// RegisterDestinationTx is RegisterDestination inside tx.
+func RegisterDestinationTx(ctx context.Context, tx pgx.Tx, tenant, id string, attrs map[string]any) error {
 	a, err := json.Marshal(attrs)
 	if err != nil {
 		return err
 	}
 	rid := registry.DestinationNamespace + ":" + id
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO resources VALUES ($1, $2, 'network.destination', '', 1, 1, 1, $3)
-			ON CONFLICT (tenant, id) DO UPDATE SET attributes = EXCLUDED.attributes,
-			       generation = resources.generation + 1, metadata_revision = resources.metadata_revision + 1
-			 WHERE resources.type = 'network.destination'`, tenant, rid, a); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO aliases VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-			tenant, registry.DestinationNamespace, id, rid)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO resources VALUES ($1, $2, 'network.destination', '', 1, 1, 1, $3)
+		ON CONFLICT (tenant, id) DO UPDATE SET attributes = EXCLUDED.attributes,
+		       generation = resources.generation + 1, metadata_revision = resources.metadata_revision + 1
+		 WHERE resources.type = 'network.destination'`, tenant, rid, a)
+	if err != nil {
 		return err
-	})
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("catalog: %s is another type of resource", rid)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO aliases VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+		tenant, registry.DestinationNamespace, id, rid)
+	return err
+}
+
+// ResourceAttributesTx returns a resource's attributes inside tx.
+func ResourceAttributesTx(ctx context.Context, tx pgx.Tx, tenant, id string) (map[string]any, error) {
+	var attrs map[string]any
+	err := tx.QueryRow(ctx, `SELECT attributes FROM resources WHERE tenant = $1 AND id = $2 FOR SHARE`, tenant, id).Scan(&attrs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoRow
+	}
+	return attrs, err
 }
 
 // ToolOperation returns a tenant's registered tool operation, if any. The

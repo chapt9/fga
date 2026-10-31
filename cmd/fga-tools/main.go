@@ -75,6 +75,11 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	// A worker sends only within its lease; a lease that cannot hold one
+	// whole destination call would cut every slow call short.
+	if duration(c.Lease, time.Minute) < duration(c.ConnectorTimeout, 30*time.Second)+10*time.Second {
+		errs = append(errs, errors.New("lease must exceed connector_timeout by at least 10s"))
+	}
 	return errors.Join(errs...)
 }
 
@@ -117,7 +122,7 @@ func run(args []string) error {
 	}
 	store := catalog.New(pool, cfg.OutboxCapacity)
 	if rest := global.Args(); len(rest) > 0 {
-		return admin(ctx, store, toolstore.New(pool), rest)
+		return admin(ctx, pool, store, toolstore.New(pool), rest)
 	}
 	return serve(ctx, cfg, pool, store)
 }
@@ -192,7 +197,7 @@ func serve(ctx context.Context, cfg Config, pool *pgxpool.Pool, store *catalog.S
 // admin registers tools, destinations and budgets: the out-of-band
 // administration of the tool registry (AGT-001). Only a reviewed tool's
 // operation is recorded for the decision role.
-func admin(ctx context.Context, store *catalog.Store, ts *toolstore.Store, args []string) error {
+func admin(ctx context.Context, pool *pgxpool.Pool, store *catalog.Store, ts *toolstore.Store, args []string) error {
 	if len(args) < 2 {
 		return errors.New("usage: tool add|tool review|destination add|budget set [flags]")
 	}
@@ -258,10 +263,7 @@ func admin(ctx context.Context, store *catalog.Store, ts *toolstore.Store, args 
 		if *id == "" || *baseURL == "" {
 			return errors.New("destination add: -id and -url are required")
 		}
-		if err := ts.PutDestination(ctx, *tenant, d); err != nil {
-			return err
-		}
-		if err := store.RegisterDestination(ctx, *tenant, *id, map[string]any{"name": *id, "approved": *approved}); err != nil {
+		if err := executor.RegisterDestination(ctx, pool, *tenant, d, map[string]any{"approved": *approved}); err != nil {
 			return err
 		}
 		fmt.Printf("destination %s registered\n", *id)

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fga/internal/approval"
 	"fga/internal/pgtest"
 	"fga/internal/reservation"
 	"fga/internal/tools"
@@ -63,10 +63,22 @@ func (f *fixture) dispatch(t *testing.T) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.BeginDispatch(context.Background(), "t-acme", f.inv.ID, inv.FencingToken, ""); err != nil {
+	if err := f.dispatchWith(f.inv.ID, inv.FencingToken); err != nil {
 		t.Fatal(err)
 	}
 	return inv.FencingToken
+}
+
+// dispatchWith moves id to DISPATCHING with token, as the executor does in
+// its decision's fence.
+func (f *fixture) dispatchWith(id string, token int64) error {
+	return f.s.InTx(context.Background(), func(tx pgx.Tx) error {
+		inv, err := f.s.DispatchTx(context.Background(), tx, "t-acme", id, token, []byte(`{"destination":"d"}`))
+		if err == nil && (inv.SendDeadline == nil || !inv.SendDeadline.Equal(f.clock.Add(time.Minute))) {
+			return errors.New("the send deadline is not the lease's expiry")
+		}
+		return err
+	})
 }
 
 func TestCreateIsIdempotentPerOperation(t *testing.T) {
@@ -108,41 +120,11 @@ func TestLeaseAndFencing(t *testing.T) {
 	if err != nil || b.FencingToken <= a.FencingToken {
 		t.Fatalf("takeover = %+v, %v", b, err)
 	}
-	if err := f.s.BeginDispatch(ctx, "t-acme", f.inv.ID, a.FencingToken, ""); !errors.Is(err, ErrFenced) {
+	if err := f.dispatchWith(f.inv.ID, a.FencingToken); !errors.Is(err, ErrFenced) {
 		t.Fatalf("the replaced worker dispatching: %v, want %v", err, ErrFenced)
 	}
-	if err := f.s.BeginDispatch(ctx, "t-acme", f.inv.ID, b.FencingToken, ""); err != nil {
+	if err := f.dispatchWith(f.inv.ID, b.FencingToken); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestDispatchConsumesTheApproval covers APR-003 and V-040: the approval is
-// consumed with the move to DISPATCHING, so it cannot serve a second dispatch.
-func TestDispatchConsumesTheApproval(t *testing.T) {
-	f := setup(t)
-	ctx := context.Background()
-	approvals := approval.New(f.pool, func() time.Time { return *f.clock })
-	a, _ := approvals.Request(ctx, approval.Approval{Tenant: "t-acme", Operation: f.inv.ID, OperationDigest: "sha256:op",
-		RequestedBy: "user-42", Actor: "agent-7", ExpiresAt: start.Add(time.Hour)})
-	_ = approvals.Decide(ctx, "t-acme", a.ID, "finance-1", true)
-
-	inv, _ := f.s.Acquire(ctx, "t-acme", f.inv.ID, "worker-a", time.Minute)
-	if err := f.s.BeginDispatch(ctx, "t-acme", f.inv.ID, inv.FencingToken, a.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := approvals.Get(ctx, "t-acme", a.ID); got.State != approval.StateConsumed {
-		t.Fatalf("approval state = %s, want CONSUMED", got.State)
-	}
-
-	// Another invocation of the same operation cannot reuse it.
-	other, _ := f.s.Create(ctx, Invocation{Tenant: "t-acme", IdempotencyKey: "idem-2", OperationDigest: "sha256:op",
-		Tool: "expense.submit", ToolVersion: 1, Arguments: []byte(`{}`), Actor: "agent-7", Subject: "user-42"})
-	lease, _ := f.s.Acquire(ctx, "t-acme", other.ID, "worker-a", time.Minute)
-	if err := f.s.BeginDispatch(ctx, "t-acme", other.ID, lease.FencingToken, a.ID); !errors.Is(err, approval.ErrNotUsable) {
-		t.Fatalf("reusing a consumed approval: %v", err)
-	}
-	if got, _ := f.s.Get(ctx, "t-acme", other.ID); got.State != StatePrepared {
-		t.Errorf("failed dispatch left state %s, want PREPARED", got.State)
 	}
 }
 
@@ -159,7 +141,7 @@ func TestOutcomesSettleTheReservation(t *testing.T) {
 		f := setup(t)
 		f.reserve(t, 500)
 		token := f.dispatch(t)
-		if err := f.s.Complete(context.Background(), "t-acme", f.inv.ID, token, tc.outcome, "r-1"); err != nil {
+		if err := f.s.Complete(context.Background(), "t-acme", f.inv.ID, token, tc.outcome, "r-1", nil); err != nil {
 			t.Fatal(err)
 		}
 		if reserved, spent := f.budget(t); reserved != tc.reserved || spent != tc.spent {
@@ -184,10 +166,10 @@ func TestNoRedispatch(t *testing.T) {
 	if err != nil || takeover.State != StateDispatching {
 		t.Fatalf("takeover = %+v, %v", takeover, err)
 	}
-	if err := f.s.BeginDispatch(ctx, "t-acme", f.inv.ID, takeover.FencingToken, ""); !errors.Is(err, ErrState) {
+	if err := f.dispatchWith(f.inv.ID, takeover.FencingToken); !errors.Is(err, ErrState) {
 		t.Fatalf("redispatch after takeover: %v, want %v", err, ErrState)
 	}
-	if err := f.s.Complete(ctx, "t-acme", f.inv.ID, takeover.FencingToken, StateUnknown, ""); err != nil {
+	if err := f.s.Complete(ctx, "t-acme", f.inv.ID, takeover.FencingToken, StateUnknown, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.Acquire(ctx, "t-acme", f.inv.ID, "worker-c", time.Minute); !errors.Is(err, ErrState) {
@@ -202,7 +184,7 @@ func TestResolution(t *testing.T) {
 		f := setup(t)
 		f.reserve(t, 500)
 		token := f.dispatch(t)
-		_ = f.s.Complete(ctx, "t-acme", f.inv.ID, token, StateUnknown, "")
+		_ = f.s.Complete(ctx, "t-acme", f.inv.ID, token, StateUnknown, "", nil)
 		return f
 	}
 

@@ -25,7 +25,8 @@ func TestImportAllowlist(t *testing.T) {
 
 // TestValidate covers MOD-003 for the tools role's own settings.
 func TestValidate(t *testing.T) {
-	for _, c := range []Config{{OutboxCapacity: 0}, {OutboxCapacity: 10, Lease: "soon"}, {OutboxCapacity: 10, ConnectorTimeout: "-1s"}} {
+	for _, c := range []Config{{OutboxCapacity: 0}, {OutboxCapacity: 10, Lease: "soon"}, {OutboxCapacity: 10, ConnectorTimeout: "-1s"},
+		{OutboxCapacity: 10, Lease: "20s", ConnectorTimeout: "15s"}} {
 		if c.Validate() == nil {
 			t.Errorf("%+v accepted", c)
 		}

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -63,12 +64,20 @@ type Deps struct {
 	Fence     *fence.Fence
 	Connector Connector
 	// Worker names this replica as a lease owner; Lease is how long a
-	// dispatch may take before another worker may reconcile it.
+	// dispatch may take before another worker may reconcile it: the worker
+	// sends nothing after it. Settle is how long after that a destination
+	// may still receive a call sent in time; until then its "never
+	// received" is not a failure (zero: Lease).
 	Worker string
 	Lease  time.Duration
+	Settle time.Duration
 	Now    func() time.Time
 	Logger *slog.Logger
 }
+
+// sendMargin is how long before its lease ends a worker stops sending, so
+// that its outcome is recorded while the lease holds.
+const sendMargin = 2 * time.Second
 
 // Service is the tools role.
 type Service struct{ d Deps }
@@ -81,6 +90,9 @@ func New(d Deps) (*Service, error) {
 	}
 	if d.Logger == nil {
 		d.Logger = slog.Default()
+	}
+	if d.Settle <= 0 {
+		d.Settle = d.Lease
 	}
 	d.Verifier.Applying(Applies)
 	return &Service{d: d}, nil
@@ -191,30 +203,23 @@ func argSpec(t tools.Tool, name string) tools.ArgSpec {
 }
 
 // Invoke carries out one call (AGT-003): (1) the caller is the verified
-// token's subject acting for itself; (2, 3) the tool, version and
-// arguments are planned; (4) the decision role decides the tool's
-// operation for the plan, which may need an approval; (5) the dispatch
-// commits in the decision's fence, with the reservation the decision
-// obliges; (6) the destination is called once under the invocation and the
-// outcome recorded. A retry under the same idempotency key returns the
-// invocation as it stands and never dispatches again (INV-003, INV-004).
+// token's subject, or an agent under a delegation; (2, 3) the tool,
+// version and arguments are planned; (4) the decision role decides the
+// tool's operation for the plan, which may need an approval, before any
+// state is recorded for the call; (5) the dispatch commits in the
+// decision's fence, with the reservation the decision obliges and the
+// destination's transport exactly as the decision saw it; (6) the
+// destination is called once under the invocation, within the worker's
+// lease, and the outcome recorded with its audit event. A retry under the
+// same idempotency key returns the invocation as it stands and never
+// dispatches again (INV-003, INV-004).
 func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Result, error) {
 	p, err := s.plan(ctx, c.Tenant, r)
 	if err != nil {
 		return Result{}, err
 	}
-	inv, err := s.d.Invocations.Create(ctx, invocation.Invocation{Tenant: c.Tenant, IdempotencyKey: r.IdempotencyKey,
-		OperationDigest: p.digest, Tool: p.tool.ID, ToolVersion: p.tool.Version, Arguments: p.args.Canonical(), Actor: c.Principal,
-		Subject: c.Subject, Delegation: c.Delegation})
-	switch {
-	case errors.Is(err, invocation.ErrIdempotencyConflict):
-		return Result{}, ErrConflict
-	case err != nil:
-		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	case inv.State != invocation.StatePrepared && inv.State != invocation.StateReserved:
-		return result(inv), nil
-	}
-
+	// A caller the decision refuses leaves nothing behind: no invocation,
+	// and no idempotency key taken from another (review v4 F07).
 	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, p.op, Audience, true, p.checks,
 		enforce.Options{Plan: &p.plan})
 	if err != nil {
@@ -230,6 +235,17 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		}
 		amount = m
 	}
+	inv, err := s.d.Invocations.Create(ctx, invocation.Invocation{Tenant: c.Tenant, IdempotencyKey: r.IdempotencyKey,
+		OperationDigest: p.digest, Tool: p.tool.ID, ToolVersion: p.tool.Version, Arguments: p.args.Canonical(), Actor: c.Principal,
+		Subject: c.Subject, Delegation: c.Delegation})
+	switch {
+	case errors.Is(err, invocation.ErrIdempotencyConflict):
+		return Result{}, ErrConflict
+	case err != nil:
+		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	case inv.State != invocation.StatePrepared && inv.State != invocation.StateReserved:
+		return result(inv), nil
+	}
 	b, err := fence.FromRecord(rec)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -241,8 +257,15 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		}
 		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
+	var dispatched invocation.Invocation
+	var dest tools.Destination
 	err = s.d.Fence.Run(ctx, b, nil, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := s.d.Invocations.DispatchTx(ctx, tx, c.Tenant, inv.ID, leased.FencingToken); err != nil {
+		var raw []byte
+		var err error
+		if dest, raw, err = s.bind(ctx, tx, c.Tenant, p.tool); err != nil {
+			return err
+		}
+		if dispatched, err = s.d.Invocations.DispatchTx(ctx, tx, c.Tenant, inv.ID, leased.FencingToken, raw); err != nil {
 			return err
 		}
 		if reserve {
@@ -255,32 +278,109 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 	switch {
 	case errors.Is(err, reservation.ErrInsufficient), errors.Is(err, reservation.ErrCurrency), errors.Is(err, reservation.ErrUnknownBudget):
 		return Result{}, ErrBudget
-	case errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval), isAuthorityChange(err):
+	case errors.Is(err, toolstore.ErrUnknownDestination):
+		return Result{}, ErrNotFound
+	case errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval), errors.Is(err, errTransportChanged), isAuthorityChange(err):
 		return Result{}, ErrConflict
 	case err != nil:
 		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 
-	dest, err := s.d.Tools.Destination(ctx, c.Tenant, p.tool.Destination)
-	var res connector.Result
-	if err != nil {
-		res = connector.Result{Outcome: connector.Failed, Detail: "destination not registered"}
-	} else {
-		res = s.d.Connector.Do(ctx, dest, connector.Call{Method: p.tool.Endpoint.Method, Path: p.tool.Endpoint.Path,
-			Body: p.args.Canonical(), IdempotencyKey: inv.ID})
-	}
+	res := s.send(ctx, dispatched, dest, connector.Call{Method: p.tool.Endpoint.Method, Path: p.tool.Endpoint.Path,
+		Body: p.args.Canonical(), IdempotencyKey: inv.ID})
 	outcome := map[connector.Outcome]invocation.State{connector.Succeeded: invocation.StateSucceeded,
 		connector.Failed: invocation.StateFailed, connector.Unknown: invocation.StateUnknown}[res.Outcome]
-	if err := s.d.Invocations.Complete(ctx, c.Tenant, inv.ID, leased.FencingToken, outcome, res.Receipt); err != nil {
+	err = s.d.Invocations.Complete(ctx, c.Tenant, inv.ID, leased.FencingToken, outcome, res.Receipt, func(ctx context.Context, tx pgx.Tx) error {
+		return s.d.Catalog.AppendTx(ctx, tx, event(rec, inv.ID, string(outcome), p))
+	})
+	if err != nil {
 		// The call happened (or may have); a later reconciliation records
-		// it (INV-003).
+		// it, with its audit event (INV-003).
 		s.d.Logger.Error("executor: recording an outcome", "invocation", inv.ID, "outcome", outcome, "error", err)
 		return Result{Invocation: inv.ID, State: string(invocation.StateDispatching)}, nil
 	}
-	if err := s.d.Catalog.Append(ctx, event(rec, inv.ID, string(outcome), p)); err != nil {
-		s.d.Logger.Error("executor: audit", "invocation", inv.ID, "error", err)
-	}
 	return Result{Invocation: inv.ID, State: string(outcome), Receipt: res.Receipt}, nil
+}
+
+// errTransportChanged is a destination whose transport is not the one its
+// policy-visible resource records.
+var errTransportChanged = errors.New("executor: the destination's transport changed")
+
+// binding is what a dispatch was authorized for, recorded with it: the
+// destination's transport as it was in the dispatch's fence, and the
+// tool's maximum hold age. Reconciliation asks that destination, never
+// one registered since (review v4 F01, F03).
+type binding struct {
+	Destination    string   `json:"destination"`
+	BaseURL        string   `json:"base_url"`
+	AllowedCIDRs   []string `json:"allowed_cidrs"`
+	CredentialFile string   `json:"credential_file"`
+	ReconcilePath  string   `json:"reconcile_path"`
+	MaxHoldAge     string   `json:"max_hold_age"`
+}
+
+// bind reads the tool's destination in tx, locked until the dispatch
+// commits, and checks that its transport is the one the destination's
+// resource records: the resource the decision bound and the fence
+// rechecks, so the transport used is the one the decision saw.
+func (s *Service) bind(ctx context.Context, tx pgx.Tx, tenant string, t tools.Tool) (tools.Destination, []byte, error) {
+	d, err := toolstore.DestinationTx(ctx, tx, tenant, t.Destination)
+	if err != nil {
+		return tools.Destination{}, nil, err
+	}
+	attrs, err := catalog.ResourceAttributesTx(ctx, tx, tenant, registry.DestinationNamespace+":"+d.ID)
+	if err != nil {
+		return tools.Destination{}, nil, err
+	}
+	if attrs[TransportAttribute] != d.TransportDigest() {
+		return tools.Destination{}, nil, errTransportChanged
+	}
+	b := binding{Destination: d.ID, BaseURL: d.BaseURL, CredentialFile: d.CredentialFile, ReconcilePath: d.ReconcilePath,
+		MaxHoldAge: t.MaxHoldAge, AllowedCIDRs: []string{}}
+	for _, p := range d.AllowedCIDRs {
+		b.AllowedCIDRs = append(b.AllowedCIDRs, p.String())
+	}
+	raw, err := json.Marshal(b)
+	return d, raw, err
+}
+
+// TransportAttribute is the destination resource's attribute that records
+// its transport digest (tools.Destination.TransportDigest).
+const TransportAttribute = "transport"
+
+// bound returns the binding an invocation was dispatched with.
+func bound(inv invocation.Invocation) (binding, tools.Destination, bool) {
+	var b binding
+	if len(inv.Binding) == 0 || json.Unmarshal(inv.Binding, &b) != nil {
+		return binding{}, tools.Destination{}, false
+	}
+	d := tools.Destination{ID: b.Destination, BaseURL: b.BaseURL, CredentialFile: b.CredentialFile, ReconcilePath: b.ReconcilePath}
+	for _, c := range b.AllowedCIDRs {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			return binding{}, tools.Destination{}, false
+		}
+		d.AllowedCIDRs = append(d.AllowedCIDRs, p)
+	}
+	return b, d, true
+}
+
+// send calls the destination only while the worker's lease holds, with a
+// deadline at its end: after it, another worker may reconcile the call,
+// and nothing this worker sends may arrive later than the deadline plus
+// the destination's own handling (review v4 F02). A call with no time left
+// is not sent.
+func (s *Service) send(ctx context.Context, inv invocation.Invocation, d tools.Destination, call connector.Call) connector.Result {
+	if inv.SendDeadline == nil {
+		return connector.Result{Outcome: connector.Failed, Detail: "not sent: no send deadline"}
+	}
+	left := inv.SendDeadline.Sub(s.d.Now()) - sendMargin
+	if left <= 0 {
+		return connector.Result{Outcome: connector.Failed, Detail: "not sent: the worker's lease ends"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, left)
+	defer cancel()
+	return s.d.Connector.Do(ctx, d, call)
 }
 
 // Get returns an invocation to its actor, or to a principal who may
@@ -407,3 +507,26 @@ func alias2(namespace, name string) decisionsvc.Alias {
 
 // newEventID is a random audit event ID.
 func newEventID() string { return cryptowire.NewUUID().String() }
+
+// Beginner begins a transaction, as a pgxpool.Pool does.
+type Beginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// RegisterDestination records a destination's transport and its
+// policy-visible resource, with the transport's digest and attrs, in one
+// transaction: a decision never sees one without the other (review v4
+// F03).
+func RegisterDestination(ctx context.Context, db Beginner, tenant string, d tools.Destination, attrs map[string]any) error {
+	a := map[string]any{"name": d.ID}
+	for k, v := range attrs {
+		a[k] = v
+	}
+	a[TransportAttribute] = d.TransportDigest()
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if err := toolstore.PutDestinationTx(ctx, tx, tenant, d); err != nil {
+			return err
+		}
+		return catalog.RegisterDestinationTx(ctx, tx, tenant, d.ID, a)
+	})
+}

@@ -43,10 +43,14 @@ const (
 	Unknown Outcome = iota
 	Succeeded
 	Failed
+	// NotReceived is a destination's answer that it has no record of an
+	// idempotency key. It shows a failure only once no earlier dispatch
+	// can still arrive (INV-003).
+	NotReceived
 )
 
 func (o Outcome) String() string {
-	return [...]string{"UNKNOWN", "SUCCEEDED", "FAILED"}[o]
+	return [...]string{"UNKNOWN", "SUCCEEDED", "FAILED", "NOT_RECEIVED"}[o]
 }
 
 // Call is one request to a destination.
@@ -196,7 +200,8 @@ func receipt(resp *http.Response, body []byte) string {
 // Status asks the destination for the outcome of an idempotency key, for
 // reconciling a dispatch whose answer was lost (INV-003). supported is false
 // when the destination has no reconcile endpoint. A 404 means the
-// destination has no record of the key, so the call never took effect.
+// destination has no record of the key (NotReceived): the call has not
+// taken effect so far, which is a failure only if it can no longer arrive.
 func (h *HTTP) Status(ctx context.Context, d tools.Destination, key string) (outcome Outcome, supported bool, err error) {
 	if d.ReconcilePath == "" {
 		return Unknown, false, nil
@@ -219,7 +224,7 @@ func (h *HTTP) Status(ctx context.Context, d tools.Destination, key string) (out
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNotFound:
-		return Failed, true, nil
+		return NotReceived, true, nil
 	case http.StatusOK:
 		var body struct {
 			Status string `json:"status"`

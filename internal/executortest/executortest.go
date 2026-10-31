@@ -33,14 +33,17 @@ import (
 )
 
 // Destination is a fake external service: it records calls and answers
-// them with Status. With a reconcile path registered, GET /payments/{key}
-// reports Outcomes[key] ("succeeded" or "failed"), or 404 for a key it
-// never received.
+// them with Status, running OnCall first if set. With a reconcile path
+// registered, GET /payments/{key} reports Outcomes[key] ("succeeded" or
+// "failed"), or 404 for a key it never received; Asked records the keys
+// asked about.
 type Destination struct {
 	mu       sync.Mutex
 	Calls    []Call
+	Asked    []string
 	Status   int
 	Outcomes map[string]string
+	OnCall   func()
 }
 
 // Call is one recorded call.
@@ -53,13 +56,18 @@ func (d *Destination) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if r.Method == http.MethodGet {
-		outcome, ok := d.Outcomes[strings.TrimPrefix(r.URL.Path, "/payments/")]
+		key := strings.TrimPrefix(r.URL.Path, "/payments/")
+		d.Asked = append(d.Asked, key)
+		outcome, ok := d.Outcomes[key]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		_, _ = io.WriteString(w, `{"status":"`+outcome+`"}`)
 		return
+	}
+	if d.OnCall != nil {
+		d.OnCall()
 	}
 	b, _ := io.ReadAll(r.Body)
 	d.Calls = append(d.Calls, Call{Key: r.Header.Get("Idempotency-Key"), Auth: r.Header.Get("Authorization"), Body: b})
@@ -192,10 +200,9 @@ func Install(t *testing.T, st *r1test.Stack, o Options) *Fixture {
 		d.ReconcilePath = "/payments/{key}"
 	}
 	must(ts.PutTool(ctx, r1test.Tenant, Pay, true))
-	must(ts.PutDestination(ctx, r1test.Tenant, d))
+	must(executor.RegisterDestination(ctx, st.Pool, r1test.Tenant, d, map[string]any{"approved": true}))
 	must(ts.PutBudget(ctx, r1test.Tenant, "ops", tools.Money{Currency: "EUR", Minor: o.Limit}))
 	must(st.Catalog.RegisterTool(ctx, r1test.Tenant, "pay", Pay.Operation(), map[string]any{"name": "pay", "kind": "executor", "destination": "bank"}))
-	must(st.Catalog.RegisterDestination(ctx, r1test.Tenant, "bank", map[string]any{"approved": true}))
 	_, err := st.Pool.Exec(ctx, `INSERT INTO resources VALUES ($1, 'record:acct-1', 'business.record', '', 1, 1, 1, '{"project":"p1"}')`, r1test.Tenant)
 	must(err)
 	_, err = st.Pool.Exec(ctx, `INSERT INTO aliases VALUES ($1, 'account', 'acct-1', 'record:acct-1')`, r1test.Tenant)
@@ -205,13 +212,18 @@ func Install(t *testing.T, st *r1test.Stack, o Options) *Fixture {
 	return f
 }
 
-// Service builds the tools role over the fixture with decider.
-func (f *Fixture) Service(t *testing.T, decider enforce.Decider) *executor.Service {
+// Service builds the tools role over the fixture with decider, after edit
+// if set.
+func (f *Fixture) Service(t *testing.T, decider enforce.Decider, edit ...func(*executor.Deps)) *executor.Service {
 	t.Helper()
 	now := func() time.Time { return *f.St.Clock }
-	svc, err := executor.New(executor.Deps{Catalog: f.St.Catalog, Tools: toolstore.New(f.St.Pool), Invocations: f.Inv,
+	d := executor.Deps{Catalog: f.St.Catalog, Tools: toolstore.New(f.St.Pool), Invocations: f.Inv,
 		Reservations: reservation.New(f.St.Pool), Decider: decider, Verifier: f.St.Verifier(executor.Audience),
-		Fence: fence.New(f.St.Pool, time.Second, now), Connector: connector.New(5 * time.Second), Worker: "w1", Lease: time.Minute, Now: now})
+		Fence: fence.New(f.St.Pool, time.Second, now), Connector: connector.New(5 * time.Second), Worker: "w1", Lease: time.Minute, Now: now}
+	for _, e := range edit {
+		e(&d)
+	}
+	svc, err := executor.New(d)
 	if err != nil {
 		t.Fatal(err)
 	}

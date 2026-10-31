@@ -12,7 +12,7 @@ A tool is administered out of band with `fga-tools` subcommands. Nothing an agen
 |---|---|
 | `tool add -tenant T -file tool.json` | Stores the record: ID, version, destination, endpoint, strict argument schema, budget and amount argument, maximum hold age. The tool is unusable until reviewed |
 | `tool review -tenant T -id ID` | Marks the current record reviewed and registers it in the catalog: the `agent.tool` resource `tool:<id>` (alias namespace `tool`, attributes `kind: executor`, destination, version) and the operation `tool:<id>` with exactly its checks (`tool_operations`). A changed registration advances the resource's generation, so earlier decisions fail at their fence |
-| `destination add -tenant T -id D -url U -cidrs … [-credential-file F] [-approved]` | Registers the destination: the base URL, allowed address ranges, the destination's own credential, and a `network.destination` resource `destination:<id>` whose `approved` attribute policy may test |
+| `destination add -tenant T -id D -url U -cidrs … [-credential-file F] [-approved]` | Registers the destination in one transaction: the base URL, allowed address ranges, the destination's own credential, and a `network.destination` resource `destination:<id>` whose `approved` attribute policy may test and whose `transport` attribute is the transport's digest |
 | `budget set -tenant T -id B -currency C -limit N` | A budget in integer minor units (DAT-005) |
 
 A record changed after its review is unusable, because its digest no longer matches the reviewed one (V-034).
@@ -33,8 +33,8 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
 
 1. **Who:** the token's subject, acting for itself, or the caller of an MCP call (below), which may be an agent acting for a user under a delegation. The invocation records the actor, the subject and the delegation ([delegated-agents.md](delegated-agents.md)).
 2. **Which tool:** the reviewed record at exactly the requested version (AGT-004), with the arguments validated against its strict schema.
-3. **What exactly:** the call becomes its checks and its canonical plan (`opplan`), whose digest is the operation digest. The invocation is created under the idempotency key. The same key with the same plan and actor returns the same invocation; another plan or another actor is a conflict (INV-004).
-4. **May it:** the decision role decides the operation for the plan. A policy may require:
+3. **What exactly:** the call becomes its checks and its canonical plan (`opplan`), whose digest is the operation digest.
+4. **May it:** the decision role decides the operation for the plan, before anything is recorded for the call: a refused caller leaves no invocation and takes no idempotency key. Only then is the invocation created under the key. The same key with the same plan, actor, subject and delegation returns the same invocation; anything else is a conflict (INV-004). A policy may require:
    - an approval, which opens one for exactly that plan (the call answers 202 with its ID and is repeated with `Fga-Approval`);
    - a reservation, which the release's obligation mapping turns into a signed `reservation` obligation ([obligations.md](obligations.md)). Without the mapping the call is refused.
 5. **Before sending:** one transaction, the authority fence of the decision (INV-002), which:
@@ -42,10 +42,12 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
    - consumes the decision and the approval;
    - moves the invocation to DISPATCHING under the worker's lease and fencing token;
    - holds the reservation on the tool's budget, which the database bounds whatever the concurrency (APR-004);
+   - reads the destination's transport, locked until commit, and checks it against the `transport` digest of the destination resource the decision bound: a transport changed apart from its resource is refused;
+   - records that transport and the tool's maximum hold age on the invocation (its binding), and the worker's lease expiry as its send deadline;
    - records the audit event.
 
    A revocation that commits first leaves the call unsent (DAT-007).
-6. **Send once:** the connector calls the destination with its own credential, the invocation's ID as the idempotency key, only at allowed addresses checked at connection time, and without following redirects (AGT-005, AGT-006). The outcome is recorded:
+6. **Send once:** the connector calls the bound destination with its own credential, the invocation's ID as the idempotency key, only at allowed addresses checked at connection time, and without following redirects (AGT-005, AGT-006). It sends only before the send deadline, less a margin, and the call is cut at it: once another worker may reconcile the call, this one sends nothing more. The lease must exceed the connector timeout by at least 10 seconds. The outcome is recorded with its audit event in one transaction; if that fails, the call stays DISPATCHING for reconciliation:
    - SUCCEEDED (2xx) charges the reservation;
    - FAILED (not sent, or 4xx) releases it;
    - UNKNOWN (anything else after sending) keeps it held (INV-007).
@@ -66,13 +68,16 @@ ABANDONED keeps the charge and the consumed approval, and its idempotency key ne
 
 ## Reconciliation (E2, INV-003, INV-006, INV-008)
 
-`fga-tools` runs a pass every `reconcile_every` (default 30s) over the oldest 100 open invocations of each kind. It never dispatches again.
+`fga-tools` runs a pass every `reconcile_every` (default 30s) over up to 100 open invocations of each kind: stalled dispatches oldest first, UNKNOWN ones least recently asked first, so every one is reached however many stay open. It never dispatches again, and it asks only the destination an invocation was bound to at dispatch, never one registered since.
 
 | Found | Done |
 |---|---|
-| DISPATCHING whose worker's lease ran out (the worker stopped mid-call) | The destination is asked by the idempotency key, at the destination's `reconcile_path`; the outcome it reports is recorded, a key it never received as FAILED, and anything else as UNKNOWN |
+| DISPATCHING whose worker's lease ran out (the worker stopped mid-call) | The bound destination is asked by the idempotency key, at its `reconcile_path`; a reported success or failure is recorded, anything else as UNKNOWN |
 | UNKNOWN | Asked likewise; a reported outcome closes it as a resolution by `system:reconciler` with the report as evidence. The reservation is charged or released with it |
+| A key the destination never received | A failure only after the send deadline and the settle time (default: the lease): until then a call sent in time may still arrive. Before that, it is UNKNOWN |
 | UNKNOWN held beyond the tool's maximum hold age | Escalated once: `escalated_at` and an `ESCALATED` audit event. It stays UNKNOWN, its charge held, until a principal resolves it |
+
+Every step is recorded with its audit event in one transaction.
 
 A pass that panics is contained; the next pass runs.
 
@@ -88,12 +93,14 @@ A pass that panics is contained; the next pass runs.
 
 | Test | Covers |
 |---|---|
-| `internal/executor` `TestInvoke` | AGT-003 end to end against a recording destination: one dispatch with the destination's credential and the invocation as key; retry without redispatch; another plan or actor under the key; unknown tool, other version, extra argument, a user without rights, and a record changed after review, all refused |
-| `TestInvokeApproval` | A policy reading `request.operation.amount_minor` requires an approval for large payments; another plan is not covered; the approval is consumed with the dispatch |
+| `internal/executor` `TestInvoke` | AGT-003 end to end against a recording destination: one dispatch with the destination's credential and the invocation as key; retry without redispatch; another plan or actor under the key; unknown tool, other version, extra argument, a user without rights, and a record changed after review, all refused; a refused call leaves no invocation and takes no key |
+| `TestInvokeApproval` | A policy reading `request.operation.amount_minor` requires an approval for large payments; another plan is not covered; the approval is consumed with the dispatch and serves no second one (V-040) |
 | `TestInvokeReservation` | Reserved in the dispatch's transaction; charged on success, released on refusal, held while unknown; a payment beyond the budget sent nowhere; no reservation without the mapping |
 | `TestResolution` | The actor cannot resolve; evidence is required; ABANDONED keeps the charge and never redispatches; another lead writes it off; an agent for a lead resolves another's call, never the lead's own |
 | `TestDispatchFence` | A revocation between decision and dispatch leaves the call unsent |
-| `TestReconcile` | A reported success and a stalled dispatch the destination never received are recorded, the reservations settled with them, nothing sent again; without a reconcile path, a stalled dispatch stays UNKNOWN with its charge held and is escalated once past the hold age |
+| `TestDispatchBinding` | A transport changed apart from its resource is refused, nothing sent; a worker without time left in its lease sends nothing |
+| `TestOutcomeAudited` | An outcome whose audit event cannot be recorded is not recorded either; reconciliation records both later |
+| `TestReconcile` | Calls are asked of the destination they were sent to, not one registered since; a key never received is UNKNOWN within the send window and FAILED after it, the reservations settled, nothing sent again; every open call is reached in bounded passes; without a reconcile path, a stalled dispatch stays UNKNOWN with its charge held and is escalated once past the hold age |
 | `internal/mcpsvc` `TestMCPRegisteredTools` | Listing and calling through the MCP role, approvals included |
 | `cmd/fga-tools` `TestImportAllowlist`, `TestValidate` | MOD-004 and the configuration |
 | `scripts/smoke.sh` | A tool added and reviewed with `fga-tools`; refused before review; called once for bob with the destination's credential; a retry answered without a second call; a guest refused; listed and called through the MCP role |

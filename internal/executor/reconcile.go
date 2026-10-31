@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"fga/internal/audit"
 	"fga/internal/enforce"
 	"fga/internal/invocation"
@@ -77,14 +79,20 @@ func InputSchema(t tools.Tool) map[string]any {
 
 // Reconcile runs one pass over invocations whose outcome is open, and
 // reports how many it settled or escalated. It never dispatches again
-// (INV-003):
-//   - a DISPATCHING invocation whose worker's lease ran out is asked of the
-//     destination by its idempotency key, where the destination supports
-//     that, and recorded as reported, or UNKNOWN (INV-008);
-//   - an UNKNOWN invocation is asked likewise, and closed by the reported
-//     outcome as a recorded resolution (INV-006);
+// (INV-003), and asks only the destination each invocation was dispatched
+// to, as it was then (review v4 F01):
+//   - a DISPATCHING invocation whose worker's lease ran out is asked of
+//     that destination by its idempotency key, where the destination
+//     supports that, and recorded as reported, or UNKNOWN (INV-008);
+//   - an UNKNOWN invocation is asked likewise, the least recently asked
+//     first, and closed by the reported outcome as a recorded resolution
+//     (INV-006, F06);
 //   - an UNKNOWN invocation held beyond its tool's maximum hold age is
-//     escalated once, with an audit event.
+//     escalated once.
+//
+// A destination's "never received" is a failure only once the worker's
+// send deadline and the settle time have passed: until then the call may
+// still arrive (F02). Every change is recorded with its audit event (F08).
 func (s *Service) Reconcile(ctx context.Context, limit int) (int, error) {
 	n := 0
 	stalled, err := s.d.Invocations.Stalled(ctx, limit)
@@ -97,9 +105,11 @@ func (s *Service) Reconcile(ctx context.Context, limit int) (int, error) {
 			continue
 		}
 		outcome := s.status(ctx, inv)
-		if err := s.d.Invocations.Complete(ctx, inv.Tenant, inv.ID, leased.FencingToken, outcome, "reconciled"); err == nil {
+		if err := s.d.Invocations.Complete(ctx, inv.Tenant, inv.ID, leased.FencingToken, outcome, "reconciled",
+			func(ctx context.Context, tx pgx.Tx) error {
+				return s.d.Catalog.AppendTx(ctx, tx, s.event(inv, "RECONCILED_"+string(outcome)))
+			}); err == nil {
 			n++
-			s.audit(ctx, inv, "RECONCILED_"+string(outcome))
 		}
 	}
 	unknown, err := s.d.Invocations.Unknown(ctx, limit)
@@ -107,22 +117,35 @@ func (s *Service) Reconcile(ctx context.Context, limit int) (int, error) {
 		return n, err
 	}
 	for _, inv := range unknown {
+		if err := s.d.Invocations.Checked(ctx, inv.Tenant, inv.ID); err != nil {
+			return n, err
+		}
 		if outcome := s.status(ctx, inv); outcome != invocation.StateUnknown {
-			if err := s.d.Invocations.Resolve(ctx, inv.Tenant, inv.ID, Reconciler, outcome,
-				"the destination reported "+string(outcome)+" for the idempotency key"); err == nil {
+			if err := s.d.Invocations.InTx(ctx, func(tx pgx.Tx) error {
+				if err := s.d.Invocations.ResolveTx(ctx, tx, inv.Tenant, inv.ID, Reconciler, outcome,
+					"the destination reported "+string(outcome)+" for the idempotency key"); err != nil {
+					return err
+				}
+				return s.d.Catalog.AppendTx(ctx, tx, s.event(inv, "RESOLVED_"+string(outcome)))
+			}); err == nil {
 				n++
-				s.audit(ctx, inv, "RESOLVED_"+string(outcome))
 			}
 			continue
 		}
-		t, err := s.d.Tools.Tool(ctx, inv.Tenant, inv.Tool)
-		hold, perr := time.ParseDuration(t.MaxHoldAge)
-		if err != nil || perr != nil || inv.DispatchedAt == nil || s.d.Now().Sub(*inv.DispatchedAt) < hold {
+		b, _, ok := bound(inv)
+		hold, err := time.ParseDuration(b.MaxHoldAge)
+		if !ok || err != nil || inv.DispatchedAt == nil || s.d.Now().Sub(*inv.DispatchedAt) < hold {
 			continue
 		}
-		if escalated, err := s.d.Invocations.Escalate(ctx, inv.Tenant, inv.ID); err == nil && escalated {
+		escalated := false
+		if err := s.d.Invocations.InTx(ctx, func(tx pgx.Tx) error {
+			var err error
+			if escalated, err = s.d.Invocations.EscalateTx(ctx, tx, inv.Tenant, inv.ID); err != nil || !escalated {
+				return err
+			}
+			return s.d.Catalog.AppendTx(ctx, tx, s.event(inv, "ESCALATED"))
+		}); err == nil && escalated {
 			n++
-			s.audit(ctx, inv, "ESCALATED")
 		}
 	}
 	return n, nil
@@ -131,17 +154,14 @@ func (s *Service) Reconcile(ctx context.Context, limit int) (int, error) {
 // Reconciler is the principal reconciliation records resolutions under.
 const Reconciler = "system:reconciler"
 
-// status asks the destination for an invocation's outcome by its
-// idempotency key; without support, or on any doubt, it is UNKNOWN. Only a
-// destination with a reconcile path reports FAILED: an absent key there
-// was never received.
+// status asks the destination an invocation was dispatched to for its
+// outcome by the idempotency key; without support, or on any doubt, it is
+// UNKNOWN. A destination's report that the call failed is FAILED; its
+// "never received" is FAILED only once nothing the worker sent can still
+// arrive: after its send deadline and the settle time.
 func (s *Service) status(ctx context.Context, inv invocation.Invocation) invocation.State {
-	t, err := s.d.Tools.Tool(ctx, inv.Tenant, inv.Tool)
-	if err != nil {
-		return invocation.StateUnknown
-	}
-	d, err := s.d.Tools.Destination(ctx, inv.Tenant, t.Destination)
-	if err != nil {
+	_, d, ok := bound(inv)
+	if !ok {
 		return invocation.StateUnknown
 	}
 	outcome, supported, err := s.d.Connector.Status(ctx, d, inv.ID)
@@ -152,14 +172,15 @@ func (s *Service) status(ctx context.Context, inv invocation.Invocation) invocat
 		return invocation.StateSucceeded
 	case outcome == connector.Failed:
 		return invocation.StateFailed
+	case outcome == connector.NotReceived && inv.SendDeadline != nil && !s.d.Now().Before(inv.SendDeadline.Add(s.d.Settle)):
+		return invocation.StateFailed
 	}
 	return invocation.StateUnknown
 }
 
-func (s *Service) audit(ctx context.Context, inv invocation.Invocation, outcome string) {
-	if err := s.d.Catalog.Append(ctx, audit.Event{ID: newEventID(), Kind: audit.KindMutation, Tenant: inv.Tenant, Actor: inv.Actor,
-		Outcome: outcome, At: s.d.Now(), Targets: []audit.Target{{Type: "agent.tool", ID: registry.ToolOperationPrefix + inv.Tool,
-			Version: strconv.Itoa(inv.ToolVersion)}, {Type: "tool.invocation", ID: inv.ID, Digest: inv.OperationDigest}}}); err != nil {
-		s.d.Logger.Error("executor: audit", "invocation", inv.ID, "error", err)
-	}
+// event is the audit record of a reconciliation step.
+func (s *Service) event(inv invocation.Invocation, outcome string) audit.Event {
+	return audit.Event{ID: newEventID(), Kind: audit.KindMutation, Tenant: inv.Tenant, Actor: inv.Actor, Outcome: outcome, At: s.d.Now(),
+		Targets: []audit.Target{{Type: "agent.tool", ID: registry.ToolOperationPrefix + inv.Tool, Version: strconv.Itoa(inv.ToolVersion)},
+			{Type: "tool.invocation", ID: inv.ID, Digest: inv.OperationDigest}}}
 }
