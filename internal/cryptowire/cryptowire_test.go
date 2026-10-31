@@ -224,3 +224,113 @@ func TestRecipientProofAndKeys(t *testing.T) {
 		t.Error("X25519 public key validation")
 	}
 }
+
+// goldenUnitContext is the frozen profile-2 example (a document unit).
+func goldenUnitContext() EnvelopeContext {
+	c := goldenContext()
+	c.Document, c.DocumentVersion, c.ManifestDigest = uuid(0xa1), uuid(0xb1), digest(0xc1)
+	return c
+}
+
+// goldenUnitHex is profile 1's golden encoding with profile version 2 and
+// fields 15 to 17 appended. Changing it changes the wire profile.
+const goldenUnitHex = "080212100102030405060708090a0b0c0d0e0f101a101112131415161718191a1b1c1d1e1f2022102122232425262728292a2b2c2d2e2f30" +
+	"2a103132333435363738393a3b3c3d3e3f403001380142204142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f6048" +
+	"9c804052206162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80580160016a208182838485868788898a8b8c8d8e" +
+	"8f909192939495969798999a9b9c9d9e9fa07080f4d28e99347a10a1a2a3a4a5a6a7a8a9aaabacadaeafb0820110b1b2b3b4b5b6b7b8b9babb" +
+	"bcbdbebfc08a0120c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0"
+
+// TestUnitContext covers profile 2 (DOC-007, V-152): the frozen encoding,
+// and the rejection of partial, misplaced and profile-mismatched document
+// fields.
+func TestUnitContext(t *testing.T) {
+	g, _ := hex.DecodeString(goldenUnitHex)
+	b, err := goldenUnitContext().Marshal()
+	if err != nil || !bytes.Equal(b, g) {
+		t.Fatalf("encoding changed:\n got %x\nwant %s (%v)", b, goldenUnitHex, err)
+	}
+	c, err := ParseEnvelopeContext(g)
+	if err != nil || c != goldenUnitContext() || c.Profile() != 2 {
+		t.Fatalf("parse = %+v, %v", c, err)
+	}
+	p1 := golden(t)
+	tail := g[len(p1):] // fields 15 to 17
+	for name, b := range map[string][]byte{
+		"profile 1 with document fields": append(slices.Clone(p1), tail...),
+		"profile 2 without them":         append([]byte{0x08, 0x02}, p1[2:]...),
+		"profile 2 missing field 17":     g[:len(g)-35],
+		"profile 2 fields reordered":     append(append(slices.Clone(g[:len(p1)]), tail[18:37]...), append(slices.Clone(tail[:18]), tail[37:]...)...),
+		"profile 3":                      append([]byte{0x08, 0x03}, g[2:]...),
+	} {
+		if _, err := ParseEnvelopeContext(b); !errors.Is(err, ErrFormat) {
+			t.Errorf("%s: accepted (%v)", name, err)
+		}
+	}
+	partial := goldenUnitContext()
+	partial.ManifestDigest = Digest{}
+	if _, err := partial.Marshal(); err == nil {
+		t.Error("a context with a partial document binding was encoded")
+	}
+	// Two document versions reusing one unit have distinct contexts
+	// (V-152).
+	other := goldenUnitContext()
+	other.DocumentVersion = uuid(0xd1)
+	ob, _ := other.Marshal()
+	if bytes.Equal(ob, g) {
+		t.Error("contexts of two document versions are equal")
+	}
+}
+
+// TestManifestAndUnitDescriptor covers the strict document formats of
+// DOC-001.
+func TestManifestAndUnitDescriptor(t *testing.T) {
+	unit := ManifestUnit{UnitID: uuid(0x11).String(), UnitVersionID: uuid(0x21).String(), CryptoVersionID: uuid(0x31).String(),
+		CiphertextSHA256: digest(0x41).String(), CiphertextLength: 100, Suite: Suite1, Format: Format1}
+	m := Manifest{TenantID: uuid(1).String(), DocumentID: uuid(2).String(), DocumentVersionID: uuid(3).String(),
+		NormalizationVersion: "fga.text/nfc-paragraphs-v1", Units: []ManifestUnit{unit}}
+	b, err := m.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseManifest(b); err != nil {
+		t.Fatal(err)
+	}
+	d1 := ManifestDigest(b)
+	if d1 == ManifestDigest(append(slices.Clone(b), ' ')) {
+		t.Error("the digest ignores the bytes")
+	}
+	for name, edit := range map[string]func(*Manifest){
+		"no units":       func(m *Manifest) { m.Units = nil },
+		"duplicate unit": func(m *Manifest) { m.Units = []ManifestUnit{unit, unit} },
+		"bad unit digest": func(m *Manifest) {
+			m.Units = []ManifestUnit{{UnitID: unit.UnitID, UnitVersionID: unit.UnitVersionID, CryptoVersionID: unit.CryptoVersionID, CiphertextSHA256: "sha256:00", CiphertextLength: 1, Suite: 1, Format: 1}}
+		},
+		"no normalization": func(m *Manifest) { m.NormalizationVersion = "" },
+		"bad document":     func(m *Manifest) { m.DocumentID = "doc" },
+	} {
+		bad := m
+		edit(&bad)
+		if _, err := bad.Marshal(); err == nil {
+			t.Errorf("%s: encoded", name)
+		}
+	}
+	if _, err := ParseManifest(append(b[:len(b)-1], []byte(`,"extra":1}`)...)); err == nil {
+		t.Error("a manifest with an unknown field parsed")
+	}
+	ud := UnitDescriptor{TenantID: uuid(1).String(), DocumentID: uuid(2).String(), DocumentVersionID: uuid(3).String(),
+		ManifestDigest: d1.String(), UnitID: unit.UnitID, UnitVersionID: unit.UnitVersionID, CryptoVersionID: unit.CryptoVersionID,
+		BlobID: uuid(0x51).String(), CiphertextSHA256: unit.CiphertextSHA256, CiphertextLength: 100, Suite: Suite1, Format: Format1,
+		Signer: digest(0x81).String(), CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
+	db, err := ud.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud.Version = UnitDescriptorVersion
+	if got, err := ParseUnitDescriptor(db); err != nil || got != ud {
+		t.Fatalf("unit descriptor = %+v, %v", got, err)
+	}
+	ud.ManifestDigest = "manifest"
+	if _, err := ud.Marshal(); err == nil {
+		t.Error("a unit descriptor without a manifest digest was encoded")
+	}
+}

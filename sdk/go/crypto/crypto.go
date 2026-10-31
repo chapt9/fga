@@ -477,7 +477,7 @@ func checkCiphertext(ciphertext io.ReadSeeker, desc cryptowire.Descriptor) error
 }
 
 func contextMatches(c cryptowire.EnvelopeContext, d cryptowire.Descriptor) bool {
-	return c.Tenant.String() == d.TenantID && c.Object.String() == d.ObjectID && c.LogicalVersion.String() == d.LogicalVersionID &&
+	return c.Profile() == 1 && c.Tenant.String() == d.TenantID && c.Object.String() == d.ObjectID && c.LogicalVersion.String() == d.LogicalVersionID &&
 		c.CryptoVersion.String() == d.CryptoVersionID && c.Suite == d.Suite && c.Format == d.Format &&
 		c.CiphertextSHA256.String() == d.CiphertextSHA256 && c.CiphertextLength == d.CiphertextLength
 }

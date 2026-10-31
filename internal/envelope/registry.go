@@ -304,7 +304,7 @@ type EnvelopeRef struct {
 // is retired in the same transaction.
 func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key, versionID string, e EnvelopeIn) (EnvelopeRef, error) {
 	ctxv, err := cryptowire.ParseEnvelopeContext(e.Context)
-	if err != nil || len(e.Ciphertext) == 0 || len(e.Ciphertext) > cryptowire.MaxHPKECiphertext {
+	if err != nil || ctxv.Profile() != 1 || len(e.Ciphertext) == 0 || len(e.Ciphertext) > cryptowire.MaxHPKECiphertext {
 		return EnvelopeRef{}, ErrInvalid
 	}
 	var signerPub []byte

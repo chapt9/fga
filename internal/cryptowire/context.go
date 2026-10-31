@@ -8,7 +8,9 @@ import (
 )
 
 // EnvelopeContext is RecipientEnvelopeContextV1 (RCP-005, RCP-006): exactly
-// one object version and one recipient, with the ciphertext it unlocks.
+// one object or unit version and one recipient, with the ciphertext it
+// unlocks. Profile 1 is an ordinary object; profile 2 is a document unit
+// and also names the document version and its manifest (DOC-007, V-152).
 type EnvelopeContext struct {
 	Tenant              UUID
 	Object              UUID
@@ -26,10 +28,23 @@ type EnvelopeContext struct {
 	Sharer Digest
 	// CreatedAt is informational and never evidence (RCP-011).
 	CreatedAt time.Time
+	// Document, DocumentVersion and ManifestDigest are set together, and
+	// only for a unit (profile 2).
+	Document        UUID
+	DocumentVersion UUID
+	ManifestDigest  Digest
 }
 
-// Field numbers of RecipientEnvelopeContextV1. Fields 15 to 17 are reserved
-// for R1-C document units and reject in profile 1.
+// Profile is 2 for a document unit's context and 1 otherwise.
+func (c EnvelopeContext) Profile() uint64 {
+	if c.Document.IsZero() && c.DocumentVersion.IsZero() && c.ManifestDigest == (Digest{}) {
+		return 1
+	}
+	return 2
+}
+
+// Field numbers of RecipientEnvelopeContextV1. Fields 15 to 17 exist only
+// in profile 2 (document units) and reject in profile 1.
 const (
 	fieldProfileVersion protowire.Number = iota + 1
 	fieldTenant
@@ -45,19 +60,23 @@ const (
 	fieldGeneration
 	fieldSharer
 	fieldCreatedAt
-	fieldCount = fieldCreatedAt
+	fieldDocument
+	fieldDocumentVersion
+	fieldManifestDigest
 )
 
 // sizes gives the exact length of each bytes field.
 var sizes = map[protowire.Number]int{
 	fieldTenant: 16, fieldObject: 16, fieldLogicalVersion: 16, fieldCryptoVersion: 16,
 	fieldCiphertextSHA256: 32, fieldRecipient: 32, fieldSharer: 32,
+	fieldDocument: 16, fieldDocumentVersion: 16, fieldManifestDigest: 32,
 }
 
 func (c EnvelopeContext) valid() bool {
 	return !c.Tenant.IsZero() && !c.Object.IsZero() && !c.LogicalVersion.IsZero() && !c.CryptoVersion.IsZero() &&
 		SupportedProfile(c.Suite, c.Format) && c.CiphertextLength > 0 && c.RecipientKeyVersion > 0 && c.Generation > 0 &&
-		c.CreatedAt.UnixMilli() > 0 && c.CiphertextSHA256 != Digest{} && c.Recipient != Digest{} && c.Sharer != Digest{}
+		c.CreatedAt.UnixMilli() > 0 && c.CiphertextSHA256 != Digest{} && c.Recipient != Digest{} && c.Sharer != Digest{} &&
+		(c.Profile() == 1 || !c.Document.IsZero() && !c.DocumentVersion.IsZero() && c.ManifestDigest != Digest{})
 }
 
 // Marshal encodes the context once, every field present, in field order.
@@ -79,7 +98,7 @@ func (c EnvelopeContext) encode() []byte {
 		b = protowire.AppendTag(b, n, protowire.BytesType)
 		b = protowire.AppendBytes(b, v)
 	}
-	varint(fieldProfileVersion, 1)
+	varint(fieldProfileVersion, c.Profile())
 	raw(fieldTenant, c.Tenant[:])
 	raw(fieldObject, c.Object[:])
 	raw(fieldLogicalVersion, c.LogicalVersion[:])
@@ -93,6 +112,11 @@ func (c EnvelopeContext) encode() []byte {
 	varint(fieldGeneration, c.Generation)
 	raw(fieldSharer, c.Sharer[:])
 	varint(fieldCreatedAt, uint64(c.CreatedAt.UnixMilli()))
+	if c.Profile() == 2 {
+		raw(fieldDocument, c.Document[:])
+		raw(fieldDocumentVersion, c.DocumentVersion[:])
+		raw(fieldManifestDigest, c.ManifestDigest[:])
+	}
 	return b
 }
 
@@ -106,7 +130,8 @@ func ParseEnvelopeContext(in []byte) (EnvelopeContext, error) {
 		return c, formatErr("envelope context size %d", len(in))
 	}
 	b := in
-	for want := protowire.Number(1); want <= fieldCount; want++ {
+	last := fieldCreatedAt // profile 2 extends it to fieldManifestDigest
+	for want := protowire.Number(1); want <= last; want++ {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 || num != want {
 			return c, formatErr("envelope context field %d missing, out of order, duplicated or unknown", want)
@@ -133,6 +158,12 @@ func ParseEnvelopeContext(in []byte) (EnvelopeContext, error) {
 				copy(c.Recipient[:], v)
 			case fieldSharer:
 				copy(c.Sharer[:], v)
+			case fieldDocument:
+				copy(c.Document[:], v)
+			case fieldDocumentVersion:
+				copy(c.DocumentVersion[:], v)
+			case fieldManifestDigest:
+				copy(c.ManifestDigest[:], v)
 			}
 			continue
 		}
@@ -143,7 +174,11 @@ func ParseEnvelopeContext(in []byte) (EnvelopeContext, error) {
 		b = b[n:]
 		switch num {
 		case fieldProfileVersion:
-			if v != 1 {
+			switch v {
+			case 1:
+			case 2:
+				last = fieldManifestDigest
+			default:
 				return c, formatErr("profile version %d", v)
 			}
 		case fieldSuite, fieldFormat:

@@ -109,4 +109,6 @@ Profile 2 is profile 1 extended for units of a document ([documents.md](document
 | Manifest | `fga.manifest/v1` strict JSON core; digest = SHA-256(`"fga.manifest/v1"` ‖ `0x00` ‖ core); detached JWS of type `fga-manifest+jws` |
 | Unit descriptor | `fga.unit-descriptor/v1` strict JSON; detached JWS of type `fga-unit-descriptor+jws` |
 
-Frozen examples: a profile-2 golden encoding and negative examples for missing, partial and profile-1-with-document fields are added to the `internal/cryptowire` tests with the implementation.
+Frozen examples (`internal/cryptowire` tests): the profile-2 golden encoding (profile 1's golden example with profile version 2 and fields 15 to 17 appended), and negative examples for a profile-1 context with document fields, a profile-2 context without them, a missing field 17, reordered document fields and profile 3. Object paths (finalize, share, the SDK's object decryption) reject profile-2 contexts, so a unit envelope never opens an ordinary object and the reverse.
+
+Manifest limits: at most 512 KiB and 1,000 units, unit IDs distinct, a normalization version required (at most 64 bytes).

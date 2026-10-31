@@ -553,7 +553,7 @@ func (s *Service) checkEnvelopes(ctx context.Context, c Caller, in storedIntent,
 			return nil, ErrInvalid
 		}
 		ctxv, err := cryptowire.ParseEnvelopeContext(e.Context)
-		if err != nil {
+		if err != nil || ctxv.Profile() != 1 {
 			return nil, fmt.Errorf("%w: envelope context", ErrInvalid)
 		}
 		if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, e.Signature, cryptowire.EnvelopeSigningInput(e.Context, e.Ciphertext),
