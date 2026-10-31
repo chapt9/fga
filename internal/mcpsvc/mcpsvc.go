@@ -274,10 +274,13 @@ func (s *Service) origin(h http.Handler) http.Handler {
 
 // bound admits an MCP call (a POST) within the user's and the total
 // limits of concurrent calls, and a new session within the user's and
-// the total limits of open sessions; otherwise it answers 429.
+// the total limits of open sessions; otherwise it answers 429. The user
+// is the token's holder: a delegation the request names binds its session
+// but does not make another user with limits of its own.
 func (s *Service) bound(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user := auth.TokenInfoFromContext(r.Context()).UserID
+		c, _ := auth.TokenInfoFromContext(r.Context()).Extra[callerKey].(caller)
+		user := strconv.Quote(c.tenant) + " " + strconv.Quote(c.principal)
 		if r.Method != http.MethodPost {
 			h.ServeHTTP(w, r)
 			return

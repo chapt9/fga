@@ -461,6 +461,11 @@ func TestMCPLimits(t *testing.T) {
 	if _, err := d.ConnectWith(t, mcptest.Conn{User: "alice", Protocol: mcptest.Stateful}); err == nil {
 		t.Fatal("alice opened a third session")
 	}
+	// A delegation header does not make the token's holder another user
+	// with limits of their own (fga-audit F-03).
+	if _, err := d.ConnectWith(t, mcptest.Conn{User: "alice", Delegation: "dlg-any", Protocol: mcptest.Stateful}); err == nil {
+		t.Fatal("alice opened a third session under a delegation header")
+	}
 	b := stateful(t, d, "bob")
 	if _, err := d.ConnectWith(t, mcptest.Conn{User: "carol", Protocol: mcptest.Stateful}); err == nil {
 		t.Fatal("a session over the total")
