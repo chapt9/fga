@@ -53,9 +53,14 @@ type Sentinel struct {
 type Bundle struct {
 	Epoch     uint64
 	Documents map[string][]byte
-	Sentinels []Sentinel
-	KeyID     string
-	Signature []byte
+	// Ceiling names the documents of the ceiling set. A release must declare
+	// it, even when it is empty, so that a missing ceiling set is never
+	// mistaken for an empty one (POL-007, V-153).
+	Ceiling         []string
+	CeilingDeclared bool
+	Sentinels       []Sentinel
+	KeyID           string
+	Signature       []byte
 }
 
 // Digest identifies the bundle's documents and sentinels.
@@ -70,6 +75,13 @@ func (b Bundle) Digest() (string, error) {
 	for _, name := range names {
 		doc := sha256.Sum256(b.Documents[name])
 		fmt.Fprintf(h, "%s\n%x\n", name, doc)
+	}
+	if b.CeilingDeclared {
+		ceiling := slices.Sorted(slices.Values(b.Ceiling))
+		fmt.Fprintf(h, "ceiling %d\n", len(ceiling))
+		for _, name := range ceiling {
+			fmt.Fprintf(h, "%s\n", name)
+		}
 	}
 	sentinels, err := json.Marshal(b.Sentinels)
 	if err != nil {
@@ -165,11 +177,24 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 	}
 	m.record(digest, b.Epoch, StateVerified, nil)
 
+	if !b.CeilingDeclared {
+		return nil, errors.New("release: the manifest does not declare the ceiling set")
+	}
+	declared := map[string]bool{}
+	for _, name := range b.Ceiling {
+		if _, ok := b.Documents[name]; !ok || declared[name] {
+			return nil, fmt.Errorf("release: ceiling document %q is missing or listed twice", name)
+		}
+		declared[name] = true
+	}
 	docs := make([]format.Document, 0, len(b.Documents))
 	for name, raw := range b.Documents {
 		d, err := format.Parse(raw)
 		if err != nil {
 			return nil, fmt.Errorf("release: %s: %w", name, err)
+		}
+		if (d.Set == format.SetCeiling) != declared[name] {
+			return nil, fmt.Errorf("release: %s: a document is in the ceiling set exactly when the manifest declares it there", name)
 		}
 		docs = append(docs, d)
 	}

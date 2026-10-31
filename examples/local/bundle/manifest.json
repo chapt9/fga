@@ -1,5 +1,6 @@
 {
   "epoch": 0,
+  "ceiling": ["ceiling.json"],
   "key_id": "",
   "signature": "",
   "sentinels": [

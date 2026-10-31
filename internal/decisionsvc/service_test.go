@@ -78,7 +78,8 @@ func newFixture(t *testing.T, outboxCapacity int) *fixture {
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	releases := release.NewManager(map[string]ed25519.PublicKey{"pub-1": pub}, types, engine.DefaultOptions, ep, clock)
-	b := release.Bundle{Epoch: 1, KeyID: "pub-1", Documents: map[string][]byte{"b.json": []byte(business), "c.json": []byte(ceiling)}}
+	b := release.Bundle{Epoch: 1, KeyID: "pub-1", Documents: map[string][]byte{"b.json": []byte(business), "c.json": []byte(ceiling)},
+		Ceiling: []string{"c.json"}, CeilingDeclared: true}
 	digest, _ := b.Digest()
 	b.Signature = ed25519.Sign(priv, release.SigningBytes(1, digest))
 	if err := releases.Activate(ctx, b); err != nil {

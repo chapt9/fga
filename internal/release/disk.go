@@ -18,9 +18,12 @@ const (
 	PoliciesDir  = "policies"
 )
 
-// Manifest is the stored form of a bundle's epoch, signature and sentinels.
+// Manifest is the stored form of a bundle's epoch, ceiling declaration,
+// signature and sentinels. Ceiling is required: an explicit empty list
+// declares an empty ceiling set, and an omitted field rejects the bundle.
 type Manifest struct {
 	Epoch     uint64             `json:"epoch"`
+	Ceiling   *[]string          `json:"ceiling"`
 	KeyID     string             `json:"key_id"`
 	Signature string             `json:"signature"`
 	Sentinels []ManifestSentinel `json:"sentinels"`
@@ -57,6 +60,9 @@ func LoadBundle(dir string) (Bundle, Manifest, error) {
 		return Bundle{}, Manifest{}, fmt.Errorf("release: %s: %w", ManifestFile, err)
 	}
 	b := Bundle{Epoch: m.Epoch, KeyID: m.KeyID, Documents: map[string][]byte{}}
+	if m.Ceiling != nil {
+		b.Ceiling, b.CeilingDeclared = *m.Ceiling, true
+	}
 	if m.Signature != "" {
 		if b.Signature, err = base64.StdEncoding.DecodeString(m.Signature); err != nil {
 			return Bundle{}, Manifest{}, fmt.Errorf("release: signature: %w", err)

@@ -42,12 +42,18 @@ func reviewerSentinel(want policy.Effect) Sentinel {
 
 func signed(t *testing.T, epoch uint64, doc string, sentinels ...Sentinel) Bundle {
 	t.Helper()
-	b := Bundle{Epoch: epoch, Documents: map[string][]byte{"units.json": []byte(doc)}, Sentinels: sentinels, KeyID: "publisher-1"}
+	b := Bundle{Epoch: epoch, Documents: map[string][]byte{"units.json": []byte(doc)}, CeilingDeclared: true,
+		Sentinels: sentinels, KeyID: "publisher-1"}
+	return resign(t, b)
+}
+
+func resign(t *testing.T, b Bundle) Bundle {
+	t.Helper()
 	digest, err := b.Digest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.Signature = ed25519.Sign(priv, SigningBytes(epoch, digest))
+	b.Signature = ed25519.Sign(priv, SigningBytes(b.Epoch, digest))
 	return b
 }
 
@@ -210,5 +216,54 @@ func TestEffectChanges(t *testing.T) {
 	}
 	if len(changes) != 1 || changes[0].Before != policy.EffectAllow || changes[0].After != policy.EffectDeny {
 		t.Fatalf("changes = %+v, want reviewer read ALLOW -> DENY", changes)
+	}
+}
+
+const draftCeiling = `{"format":"fga.policy/v1","set":"ceiling","resource":"document.text_unit","scope":"","rules":[{"id":"c","effect":"deny","actions":["read"],"roles":["*"],"when":"resource.attributes.state != 'LIVE'"}]}`
+
+// TestCeilingDeclaration covers POL-007 and V-153: a release declares its
+// ceiling set. An explicitly empty set passes every check; an omitted
+// declaration, an undeclared ceiling document and a declared document that
+// is missing or is not a ceiling document all reject.
+func TestCeilingDeclaration(t *testing.T) {
+	ctx := context.Background()
+	withCeiling := func(declared bool, names ...string) Bundle {
+		b := Bundle{Epoch: 1, KeyID: "publisher-1", CeilingDeclared: declared, Ceiling: names,
+			Documents: map[string][]byte{"units.json": []byte(reviewersRead), "ceiling.json": []byte(draftCeiling)}}
+		return resign(t, b)
+	}
+	for name, tc := range map[string]struct {
+		bundle  Bundle
+		wantErr string
+	}{
+		"omitted declaration":       {resign(t, Bundle{Epoch: 1, KeyID: "publisher-1", Documents: map[string][]byte{"units.json": []byte(reviewersRead)}}), "declare the ceiling set"},
+		"undeclared ceiling":        {withCeiling(true), "ceiling set exactly"},
+		"business declared ceiling": {withCeiling(true, "ceiling.json", "units.json"), "ceiling set exactly"},
+		"missing ceiling document":  {withCeiling(true, "ceiling.json", "gone.json"), "missing"},
+	} {
+		if err := newManager(fixedEpochs{}).Activate(ctx, tc.bundle); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: Activate = %v, want an error containing %q", name, err, tc.wantErr)
+		}
+	}
+
+	m := newManager(fixedEpochs{})
+	if err := m.Activate(ctx, signed(t, 1, reviewersRead)); err != nil {
+		t.Fatalf("explicitly empty ceiling set: %v", err)
+	}
+	snap, _ := m.Snapshot(ctx, "t-acme")
+	req := reviewerSentinel(policy.EffectAllow).Request
+	req.Set, req.SnapshotDigest = policy.SetCeiling, snap.Digest
+	req.Resource.Attributes = map[string]any{"state": "DRAFT"}
+	if res, err := m.Evaluate(ctx, req); err != nil || res.Actions["read"].Effect != policy.EffectAllow {
+		t.Fatalf("empty ceiling set = %+v, %v; want PASS", res, err)
+	}
+
+	if err := m.Activate(ctx, resign(t, func() Bundle { b := withCeiling(true, "ceiling.json"); b.Epoch = 2; return b }())); err != nil {
+		t.Fatalf("declared ceiling set: %v", err)
+	}
+	snap, _ = m.Snapshot(ctx, "t-acme")
+	req.SnapshotDigest = snap.Digest
+	if res, err := m.Evaluate(ctx, req); err != nil || res.Actions["read"].Effect != policy.EffectDeny {
+		t.Fatalf("declared ceiling on a draft = %+v, %v; want DENY", res, err)
 	}
 }
