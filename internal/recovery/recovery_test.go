@@ -3,15 +3,20 @@ package recovery_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"fga/internal/backupcrypt"
 	"fga/internal/blob"
 	"fga/internal/content"
+	"fga/internal/cryptowire"
 	"fga/internal/r1test"
 	"fga/internal/recovery"
 	"fga/internal/registry"
@@ -312,5 +317,71 @@ func TestBackupReportsMissingBlobs(t *testing.T) {
 	}
 	if got, err := recovery.ReadManifest(dir, backupKey(t)); err != nil || len(got.Missing) != 1 {
 		t.Fatalf("the manifest read back: %+v, %v", got, err)
+	}
+}
+
+// atEOF reads b and runs hook once, when the reader reaches its end.
+type atEOF struct {
+	r    io.Reader
+	hook func()
+	once sync.Once
+}
+
+func (a *atEOF) Read(p []byte) (int, error) {
+	n, err := a.r.Read(p)
+	if err == io.EOF {
+		a.once.Do(a.hook)
+	}
+	return n, err
+}
+
+// TestReclaimDuringUpload is the regression test of review v2 finding 5:
+// reclamation aborted an expired upload and removed its blob while the
+// upload was still writing; the upload then made its blob durable, failed
+// to mark the intent staged, and left a blob that nothing names and no
+// later reclamation removes. Staging now makes the blob durable only under
+// the intent's row, while it is still reserved.
+func TestReclaimDuringUpload(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	reclaim := func() {
+		if _, err := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(24*time.Hour)); err != nil {
+			t.Error(err)
+		}
+	}
+	blobs := func() int {
+		n := 0
+		err := filepath.WalkDir(filepath.Join(st.BlobDir, "blobs"), func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				n++
+			}
+			return err
+		})
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := blobs()
+
+	// Client mode: opaque ciphertext staged for a begun upload.
+	in, err := st.Content.Begin(ctx, alice.Caller, content.BeginRequest{Bucket: "reports", Key: "doc", IdempotencyKey: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.Repeat([]byte("c"), 4096)
+	if _, err := st.Content.PutCiphertext(ctx, alice.Caller, in.IntentID, int64(len(body)), cryptowire.Digest(sha256.Sum256(body)),
+		&atEOF{r: bytes.NewReader(body), hook: reclaim}); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("staging an upload reclaimed meanwhile: %v", err)
+	}
+	// Server mode: plaintext encrypted into the staged blob.
+	if _, err := st.Content.PutObject(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "plan.txt", IdempotencyKey: "u2"},
+		int64(len(body)), &atEOF{r: bytes.NewReader(body), hook: reclaim}); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("a server-mode upload reclaimed meanwhile: %v", err)
+	}
+	if after := blobs(); after != before {
+		t.Fatalf("%d blobs after the reclaimed uploads, %d before: orphans were left", after, before)
 	}
 }

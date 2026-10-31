@@ -185,22 +185,7 @@ func (s *Service) encryptStaged(ctx context.Context, c Caller, in storedIntent, 
 	}
 	var sum cryptowire.Digest
 	copy(sum[:], h.Sum(nil))
-	if _, err := s.d.Blobs.Finalize(w, size, sum); err != nil {
-		if errors.Is(err, blob.ErrConflict) {
-			return ErrConflict
-		}
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	tag, err := s.d.Catalog.Pool().Exec(ctx, `
-		UPDATE upload_intents SET state = 'STAGED', ciphertext_length = $3, ciphertext_sha256 = $4, plaintext_length = $5
-		 WHERE tenant = $1 AND id = $2 AND state = 'RESERVED'`, c.Tenant, in.IntentID, size, sum.String(), length)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrConflict
-	}
-	return nil
+	return s.stageBlob(ctx, c.Tenant, in.IntentID, w, size, sum, &length)
 }
 
 // prepareServer obtains the publication decision of a staged server-mode

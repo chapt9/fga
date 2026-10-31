@@ -420,25 +420,50 @@ func (s *Service) PutCiphertext(ctx context.Context, c Caller, intentID cryptowi
 		}
 		return Receipt{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	if _, err := s.d.Blobs.Finalize(w, length, sum); err != nil {
-		switch {
-		case errors.Is(err, blob.ErrMismatch):
-			return Receipt{}, fmt.Errorf("%w: length or digest mismatch", ErrInvalid)
-		case errors.Is(err, blob.ErrConflict):
-			return Receipt{}, ErrConflict
-		}
-		return Receipt{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	tag, err := s.d.Catalog.Pool().Exec(ctx, `
-		UPDATE upload_intents SET state = 'STAGED', ciphertext_length = $3, ciphertext_sha256 = $4
-		 WHERE tenant = $1 AND id = $2 AND state = 'RESERVED'`, c.Tenant, intentID, length, sum.String())
-	if err != nil {
-		return Receipt{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	if tag.RowsAffected() != 1 {
-		return Receipt{}, ErrConflict
+	if err := s.stageBlob(ctx, c.Tenant, intentID, w, length, sum, nil); err != nil {
+		return Receipt{}, err
 	}
 	return Receipt{Blob: in.Blob, Length: length, SHA256: sum}, nil
+}
+
+// stageBlob makes w's blob durable and marks the intent STAGED in one
+// transaction that holds the intent's row, and only while the intent is
+// still RESERVED. Reclamation aborts an expired intent and removes its
+// blob under the same row, so it either runs first, and the temporary
+// file is dropped, or after, and removes the blob it finds; no durable
+// blob is left that no intent names (review v2 finding 5). plaintext is a
+// server-mode upload's plaintext length.
+func (s *Service) stageBlob(ctx context.Context, tenant string, intentID cryptowire.UUID, w *blob.Writer, length int64, sum cryptowire.Digest,
+	plaintext *int64) error {
+	defer w.Abort()
+	err := pgx.BeginFunc(ctx, s.d.Catalog.Pool(), func(tx pgx.Tx) error {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM upload_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, intentID).
+			Scan(&state); err != nil {
+			return err
+		}
+		if state != "RESERVED" {
+			return fmt.Errorf("%w: intent is %s", ErrConflict, state)
+		}
+		if _, err := s.d.Blobs.Finalize(w, length, sum); err != nil {
+			switch {
+			case errors.Is(err, blob.ErrMismatch):
+				return fmt.Errorf("%w: length or digest mismatch", ErrInvalid)
+			case errors.Is(err, blob.ErrConflict):
+				return ErrConflict
+			}
+			return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		_, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'STAGED', ciphertext_length = $3, ciphertext_sha256 = $4,
+		                               plaintext_length = coalesce($5, plaintext_length)
+		                         WHERE tenant = $1 AND id = $2`, tenant, intentID, length, sum.String(), plaintext)
+		return err
+	})
+	switch {
+	case err == nil, errors.Is(err, ErrConflict), errors.Is(err, ErrInvalid), errors.Is(err, ErrUnavailable):
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrUnavailable, err)
 }
 
 // FinalizeRequest carries the signed descriptor and initial envelopes.
