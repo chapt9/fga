@@ -47,3 +47,18 @@ Sources: the research map's records "SSE-S3, SSE-KMS and SSE-C object encryption
 | Healing of incomplete writes and replaced drives | A bounded in-memory queue of partial operations, persisted only on orderly shutdown; trackers resume per-drive healing | **Defer to R3, adapt.** Repair state will be durable catalog records, never only an in-memory queue. | REP-005 (R3) |
 | Rebalancing and decommission | Resumable copy between pools with progress records; verification before completion | **Defer to R3, adapt.** Evacuation copies and verifies identical ciphertext, then compare-and-swaps the placement generation. | REP-004, REP-006 (R3) |
 | SigV4 request authentication | Canonicalize signed headers, query, path and payload; derive the signing key; compare signatures; presigned requests have expiry | **Defer to R3, adapt.** Our own verifier from the public specification, constant-time comparison, no presigned or streaming modes in profile v1. | S3P-002, S3P-003 (R3) |
+
+## Position relative to MinIO after D-12 (31 October 2026)
+
+Decision D-12 made server-side encryption the default and client-side encryption an opt-in per bucket. That brings the storage model closer to MinIO's server-side encryption: in a server-mode bucket the storage role handles plaintext, and an unsealed data key for one upload or read at a time, and the platform can read that content (non-guarantee N-09). The confidentiality that holds even against the platform now applies to client-mode versions only.
+
+What stays our own design:
+
+| Area | Difference |
+|---|---|
+| Key release | A data key is unsealed only by the keys role, against a signed, single-use decision for the exact operation and version, admitted in the authority fence (SSE-003). It is not unsealed because a request is authenticated, and a key never outlives one stream |
+| Authorization | One decision authority (our policy engine, default deny, ceilings, approvals, share grants honored only by explicit rules) decides every read, key release and disclosure; the storage role decides nothing itself (CNT-002) |
+| Documents | Documents and text collections are split into units, each under its own data key and checks, so a reader gets only the units policy allows; originals need complete-content permission (DOC-006, CNT-003) |
+| Derived outputs | Lineage-bound delivery: a reader needs their own read of every source, or a declassification (DRV-002) |
+| Client mode | Kept as in 2.5: client keysets and HPKE envelopes the server cannot unwrap |
+| Recovery | Revocations, including removed share grants, are journaled in a hash chain and replayed after a restore; a restore needs the KEK ring, kept apart from backups (AVL-008, SSE-006) |
