@@ -2,6 +2,8 @@ package mcpsvc_test
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -121,4 +123,36 @@ func jsonValue(t *testing.T, s string) any {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// TestMCPRegisteredToolsUnreadable covers review v4 F14: an answer of the
+// tools role that cannot be read, or lacks what it must say, is an error
+// for the MCP client, never a result.
+func TestMCPRegisteredToolsUnreadable(t *testing.T) {
+	answers := map[string]struct {
+		status int
+		body   string
+	}{
+		"truncated":              {http.StatusOK, `{"invocation_id":"i-1","st`},
+		"no state":               {http.StatusOK, `{"invocation_id":"i-1"}`},
+		"approval without an ID": {http.StatusAccepted, `{"status":"APPROVAL_REQUIRED"}`},
+	}
+	var current string
+	tools := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a := answers[current]
+		w.WriteHeader(a.status)
+		_, _ = w.Write([]byte(a.body))
+	}))
+	t.Cleanup(tools.Close)
+	d := mcptest.DeployWith(t, mcptest.Options{Limits: mcpsvc.DefaultLimits, Edit: func(deps *mcpsvc.Deps) {
+		deps.Tools, deps.ToolsAudience = mcpsvc.Peer{URL: tools.URL, HTTP: http.DefaultClient}, executor.Audience
+	}})
+	serverDocument(t, d)
+	alice := connect(t, d, "alice", "")
+	for name := range answers {
+		current = name
+		if text, err := call(alice, "tool.pay", map[string]any{"version": 1, "idempotency_key": "k", "arguments": map[string]any{}}, nil); err == nil {
+			t.Errorf("%s: a result %q", name, text)
+		}
+	}
 }

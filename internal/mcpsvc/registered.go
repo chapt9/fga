@@ -113,14 +113,27 @@ func (s *Service) callRegistered(ctx context.Context, c caller, name string, raw
 	}
 	defer resp.Body.Close()
 	var out map[string]any
-	_ = json.NewDecoder(io.LimitReader(resp.Body, maxListing)).Decode(&out)
+	decoded := json.NewDecoder(io.LimitReader(resp.Body, maxListing)).Decode(&out) == nil
+	field := func(name string) string {
+		v, _ := out[name].(string)
+		return v
+	}
+	// A success is reported only from an answer that says what happened:
+	// an unreadable one is the tools role's failure, not a result (review
+	// v4 F14).
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invocation %v: %v", out["invocation_id"], out["state"])}},
+		if !decoded || field("invocation_id") == "" || field("state") == "" {
+			return toolErr(errUnavailable)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invocation %s: %s", field("invocation_id"), field("state"))}},
 			StructuredContent: out}
 	case http.StatusAccepted:
+		if !decoded || field("approval_id") == "" {
+			return toolErr(errUnavailable)
+		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
-			"approval required: call again with approval %v once it is given", out["approval_id"])}}, StructuredContent: out}
+			"approval required: call again with approval %s once it is given", field("approval_id"))}}, StructuredContent: out}
 	case http.StatusNotFound:
 		return toolErr(errNotFound)
 	case http.StatusBadRequest:

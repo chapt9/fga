@@ -417,9 +417,9 @@ func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 }
 
 // satisfied reports whether a check's prerequisites are met by the record
-// itself: the only prerequisite a record can satisfy is an approval, and
-// only by binding one, which the fence consumes (APR-002). A reservation
-// (R2) is never satisfied here.
+// itself: an approval only by binding one, which the fence consumes
+// (APR-002), and a reservation only by the record's reservation
+// obligation, which the enforcing role applies in its fence (APR-004).
 func satisfied(requires []string, rec Record) bool {
 	for _, r := range requires {
 		switch {

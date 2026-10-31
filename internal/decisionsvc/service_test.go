@@ -211,12 +211,13 @@ func TestRecipientChecks(t *testing.T) {
 		req    Request
 		reason string
 	}{
-		"unknown fingerprint":       {shareRequest("sha256:nobody"), "RECIPIENT_UNKNOWN"},
-		"revoked key":               {shareRequest("sha256:old"), "RECIPIENT_REVOKED"},
-		"recipient may not read":    {shareRequest("sha256:77", "sha256:90"), "BUSINESS_DENY"},
-		"no recipient check":        {shareRequest(), "OPERATION_MISMATCH"},
-		"unregistered operation":    {func() Request { r := shareRequest("sha256:77"); r.Operation = "unit.delete"; return r }(), "UNKNOWN_OPERATION"},
-		"other action for the role": {func() Request { r := shareRequest("sha256:77"); r.Checks[0].Action = "read"; return r }(), "OPERATION_MISMATCH"},
+		"unknown fingerprint":    {shareRequest("sha256:nobody"), "RECIPIENT_UNKNOWN"},
+		"revoked key":            {shareRequest("sha256:old"), "RECIPIENT_REVOKED"},
+		"recipient may not read": {shareRequest("sha256:77", "sha256:90"), "BUSINESS_DENY"},
+		"no recipient check":     {shareRequest(), "OPERATION_MISMATCH"},
+		"unregistered operation": {func() Request { r := shareRequest("sha256:77"); r.Operation = "unit.delete"; return r }(), "UNKNOWN_OPERATION"},
+		// Whether an action is the role's depends on the resolved type.
+		"other action for the role": {func() Request { r := shareRequest("sha256:77"); r.Checks[0].Action = "read"; return r }(), "TARGET_MISMATCH"},
 		"operation kind for recipient": {func() Request {
 			r := shareRequest("sha256:77")
 			r.Checks[1].Kind = ""
@@ -399,6 +400,15 @@ func TestPublicProjection(t *testing.T) {
 	bad.Operation = "unit.erase"
 	if p := f.svc.Decide(ctx, "tools-gw-1", bad).Public(); p.Reason != PublicInvalid {
 		t.Errorf("unknown operation: %+v, want %s", p, PublicInvalid)
+	}
+	// A malformed role answers alike for a target that exists and one that
+	// does not: the answer must not reveal which (review v4 F05).
+	for _, alias := range []string{"doc://q3#overview", "doc://q3#missing"} {
+		r := request(alias)
+		r.Checks[0].Role = "no-such-role"
+		if p := f.svc.Decide(ctx, "tools-gw-1", r).Public(); p.Reason != PublicInvalid {
+			t.Errorf("a malformed role on %s: %+v, want %s", alias, p, PublicInvalid)
+		}
 	}
 	if p := (Response{Outcome: "ERROR", Reason: string(ReasonCatalogUnavailable)}).Public(); p.Outcome != "ERROR" || p.Reason != PublicUnavailable {
 		t.Errorf("failure: %+v", p)

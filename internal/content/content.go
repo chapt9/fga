@@ -7,9 +7,12 @@
 // Every protected operation obtains a fresh decision from the decision
 // role for its registered operation, verifies the signed record and that it
 // is bound to exactly the operation planned here, and then runs its catalog
-// transition or admission inside the authority fence. The service handles
-// ciphertext, signed descriptors and opaque envelopes only; it never sees a
-// key or plaintext (CRY-005, KEY-013).
+// transition or admission inside the authority fence. For client-mode
+// versions it handles ciphertext, signed descriptors and opaque envelopes
+// only, and never sees a key or plaintext (CRY-005, KEY-013). For
+// server-mode versions (D-12) it encrypts uploaded plaintext and decrypts
+// reads under data keys the keys role releases to it for one version and
+// one stream at a time (SSE-003), and holds no key beyond that.
 package content
 
 import (

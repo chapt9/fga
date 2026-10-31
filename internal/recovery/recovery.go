@@ -686,32 +686,15 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 	if err != nil {
 		return rep, err
 	}
-	type bad struct {
-		tenant  string
-		version cryptowire.UUID
+	quarantine, err := unverified(rows, blobs)
+	if err != nil {
+		return rep, err
 	}
-	var quarantine []bad
-	for rows.Next() {
-		var tenant, sum string
-		var version, tenantID, blobID cryptowire.UUID
-		var length int64
-		if err := rows.Scan(&tenant, &version, &tenantID, &blobID, &length, &sum); err != nil {
-			rows.Close()
-			return rep, err
-		}
-		d, err := cryptowire.ParseDigest(sum)
-		if err != nil || blobs.Verify(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: blobID}, Length: length, SHA256: d}) != nil {
-			quarantine = append(quarantine, bad{tenant, version})
-		}
-	}
-	rows.Close()
 	locked, err := checkKeys(ctx, pool, opts.KEKs, &rep)
 	if err != nil {
 		return rep, err
 	}
-	for _, l := range locked {
-		quarantine = append(quarantine, bad{l.tenant, l.version})
-	}
+	quarantine = append(quarantine, locked...)
 	for _, q := range quarantine {
 		tag, err := pool.Exec(ctx, `UPDATE object_versions SET state = 'QUARANTINED' WHERE tenant = $1 AND id = $2 AND state <> 'QUARANTINED'`,
 			q.tenant, q.version)
@@ -726,6 +709,42 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 type keyed struct {
 	tenant  string
 	version cryptowire.UUID
+}
+
+// rowScanner is the part of pgx.Rows a scan uses.
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close()
+}
+
+// receiptVerifier checks a blob against its receipt, as blob.Store does.
+type receiptVerifier interface {
+	Verify(blob.Receipt) error
+}
+
+// unverified reads versions with their blob receipts from rows, which it
+// closes, and returns those whose blob does not verify. A scan cut short
+// is an error, never a shorter list: admission must not reopen over blobs
+// nobody checked (review v4 F10).
+func unverified(rows rowScanner, blobs receiptVerifier) ([]keyed, error) {
+	defer rows.Close()
+	var out []keyed
+	for rows.Next() {
+		var tenant, sum string
+		var version, tenantID, blobID cryptowire.UUID
+		var length int64
+		if err := rows.Scan(&tenant, &version, &tenantID, &blobID, &length, &sum); err != nil {
+			return nil, err
+		}
+		d, err := cryptowire.ParseDigest(sum)
+		if err != nil || blobs.Verify(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: blobID}, Length: length, SHA256: d}) != nil {
+			out = append(out, keyed{tenant, version})
+		}
+	}
+	rows.Close()
+	return out, rows.Err()
 }
 
 // checkKeys verifies the server-mode data keys of a restored catalog

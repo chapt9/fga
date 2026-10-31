@@ -750,13 +750,17 @@ components:
         ciphertext: { $ref: "#/components/schemas/Base64" }
         signature: { type: string, description: detached compact JWS }
     FinalizeRequest:
+      description: Finalizes a client-mode upload. A derived output (begun with derived) also carries its signed lineage.
       type: object
       additionalProperties: false
       required: [descriptor, descriptor_signature, envelopes]
+      dependentRequired: { lineage: [lineage_signature], lineage_signature: [lineage] }
       properties:
         descriptor: { $ref: "#/components/schemas/Base64" }
         descriptor_signature: { type: string }
         envelopes: { type: array, minItems: 1, maxItems: 16, items: { $ref: "#/components/schemas/Envelope" } }
+        lineage: { $ref: "#/components/schemas/Base64", description: 'The derived output''s lineage, {"sources": [...]}, as its creating client signed it' }
+        lineage_signature: { type: string, description: The creating client's signature over lineage }
     ShareGrant:
       type: object
       properties:

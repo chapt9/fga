@@ -36,11 +36,16 @@ import (
 
 // Reasons the service adds to those of the decision and gate packages.
 const (
-	ReasonInvalidRequest     decision.Reason = "INVALID_REQUEST"
-	ReasonUnknownResource    decision.Reason = "UNKNOWN_RESOURCE"
-	ReasonUnknownAction      decision.Reason = "UNKNOWN_ACTION"
-	ReasonUnknownOperation   decision.Reason = "UNKNOWN_OPERATION"
-	ReasonOperationMismatch  decision.Reason = "OPERATION_MISMATCH"
+	ReasonInvalidRequest    decision.Reason = "INVALID_REQUEST"
+	ReasonUnknownResource   decision.Reason = "UNKNOWN_RESOURCE"
+	ReasonUnknownAction     decision.Reason = "UNKNOWN_ACTION"
+	ReasonUnknownOperation  decision.Reason = "UNKNOWN_OPERATION"
+	ReasonOperationMismatch decision.Reason = "OPERATION_MISMATCH"
+	// ReasonTargetMismatch is a check whose resolved target is not of the
+	// type, or its action not the action, its role names. It depends on
+	// the target, so the public projection does not tell it from an
+	// absent target (review v4 F05).
+	ReasonTargetMismatch     decision.Reason = "TARGET_MISMATCH"
 	ReasonPolicyUnavailable  decision.Reason = "POLICY_UNAVAILABLE"
 	ReasonCatalogUnavailable decision.Reason = "CATALOG_UNAVAILABLE"
 	ReasonAuditUnavailable   decision.Reason = "AUDIT_UNAVAILABLE"
@@ -376,6 +381,11 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	}
 	resp.BundleDigest, resp.PolicyEpoch = snap.Digest, snap.Epoch
 
+	// The request's own shape is checked before any target is resolved,
+	// so its answer never depends on whether a target exists (DEC-010).
+	if !shapeMatches(op, req.Checks) {
+		return deny(ReasonOperationMismatch)
+	}
 	checks := make([]decision.Check, 0, len(req.Checks))
 	var grantsUntil time.Time
 	for _, c := range req.Checks {
@@ -397,8 +407,8 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 			Kind: decision.CheckKind(c.Kind), PrincipalBinding: c.PrincipalBinding})
 		bound = append(bound, res)
 	}
-	if !matchesOperation(op, req.Checks, checks, bound) {
-		return deny(ReasonOperationMismatch)
+	if !targetsMatch(op, req.Checks, checks, bound) {
+		return deny(ReasonTargetMismatch)
 	}
 
 	env := decision.Envelope{Tenant: req.Tenant, Adapter: adapter, Actor: decision.Ref(req.Actor), Delegation: req.Delegation, Via: via}
@@ -667,17 +677,31 @@ func (s *Service) resolve(ctx context.Context, tenant string, ref Alias) (regist
 // repeated is filled once and a repeated role at least once; an optional
 // role may be left unfilled (RES-001,
 // RES-006, KEY-012). Absence of a required check fails the match.
-func matchesOperation(op registry.Operation, reqs []Check, checks []decision.Check, bound []registry.Resource) bool {
+// shapeMatches reports whether the request's checks have the roles, kinds
+// and counts the operation registers, from the request alone.
+func shapeMatches(op registry.Operation, reqs []Check) bool {
 	count := map[string]int{}
-	for i, c := range reqs {
+	for _, c := range reqs {
 		spec, ok := op.Spec(c.Role)
-		if !ok || bound[i].Type != spec.ResourceType || checks[i].Action != spec.Action || kindOf(c.Kind) != spec.CheckKind() {
+		if !ok || kindOf(c.Kind) != spec.CheckKind() {
 			return false
 		}
 		count[c.Role]++
 	}
 	for _, spec := range op.Checks {
 		if n := count[spec.Role]; n == 0 && !spec.Optional || !spec.Repeated && n > 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// targetsMatch reports whether each check's resolved target and canonical
+// action are the ones its role registers.
+func targetsMatch(op registry.Operation, reqs []Check, checks []decision.Check, bound []registry.Resource) bool {
+	for i, c := range reqs {
+		spec, _ := op.Spec(c.Role)
+		if bound[i].Type != spec.ResourceType || checks[i].Action != spec.Action {
 			return false
 		}
 	}
