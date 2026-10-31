@@ -134,6 +134,9 @@ type Stack struct {
 	Envelopes  *envelope.Service
 	Keys       content.EnvelopeDelivery
 	ReceiptKey ed25519.PublicKey
+	// BeforeDecide, if set, runs before each decision the storage and keys
+	// roles request (see Decider.Before).
+	BeforeDecide func(decisionsvc.Request)
 	// Journal is the security journal; BlobDir and JournalDir are the
 	// directories of the blob store and the journal.
 	Journal    *journal.Journal
@@ -149,10 +152,16 @@ var Now = time.Now().UTC().Truncate(time.Second)
 type Decider struct {
 	Service *decisionsvc.Service
 	Adapter string
+	// Before, if set, runs before each request is decided; tests use it to
+	// interleave a concurrent change with an operation.
+	Before *func(decisionsvc.Request)
 }
 
 // Decide implements content.Decider.
 func (d Decider) Decide(ctx context.Context, req decisionsvc.Request) (decisionsvc.Response, error) {
+	if d.Before != nil && *d.Before != nil {
+		(*d.Before)(req)
+	}
 	return d.Service.Decide(ctx, d.Adapter, req), nil
 }
 
@@ -266,7 +275,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	tokenKey := make([]byte, 32)
 	_, _ = rand.Read(tokenKey)
 	st.Content, err = content.New(content.Deps{Catalog: st.Catalog, Blobs: st.Blobs, Fence: st.Fence,
-		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter}, Verifier: st.Verifier(content.Audience),
+		Decider: Decider{Service: st.Decisions, Adapter: StorageAdapter, Before: &st.BeforeDecide}, Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id)
 		}), TokenKey: tokenKey, Limits: limits(), Now: now})
@@ -275,7 +284,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	}
 	receiptPub, receiptPriv, _ := ed25519.GenerateKey(rand.Reader)
 	st.ReceiptKey = receiptPub
-	st.Envelopes, err = envelope.New(envelope.Deps{Catalog: st.Catalog, Fence: st.Fence, Decider: Decider{Service: st.Decisions, Adapter: "keys-1"},
+	st.Envelopes, err = envelope.New(envelope.Deps{Catalog: st.Catalog, Fence: st.Fence, Decider: Decider{Service: st.Decisions, Adapter: "keys-1", Before: &st.BeforeDecide},
 		Verifier: st.Verifier(content.KeysAudience), ReceiptKeyID: "receipt-1", ReceiptKey: receiptPriv, Journal: st.Journal, Now: now})
 	if err != nil {
 		t.Fatal(err)

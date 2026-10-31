@@ -245,6 +245,18 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 		if state != "LIVE" || locked.Status != "ACTIVE" {
 			return ErrNotFound
 		}
+		// A plain read releases only the current version's envelope; an
+		// older version needs the history operation (review finding 2).
+		if rec.Operation == registry.OpGetEnvelope {
+			var head *cryptowire.UUID
+			if err := tx.QueryRow(ctx, `SELECT current_version FROM objects WHERE tenant = $1 AND id = $2 FOR SHARE`,
+				rec.Tenant, e.Object).Scan(&head); err != nil {
+				return err
+			}
+			if head == nil || *head != e.Version {
+				return ErrNotFound
+			}
+		}
 		if e.DocumentVersion != nil {
 			var originalObject *cryptowire.UUID
 			if err := tx.QueryRow(ctx, `SELECT state, original FROM document_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,

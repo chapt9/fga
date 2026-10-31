@@ -12,9 +12,11 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/blob"
+	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/fence"
 	"fga/internal/registry"
+	"fga/internal/signing"
 )
 
 // VersionInfo is the metadata of one version that stat discloses.
@@ -61,6 +63,9 @@ func (s *Service) Stat(ctx context.Context, c Caller, bucketName, key, versionSe
 	if err := s.checked(ctx, rec); err != nil {
 		return VersionInfo{}, err
 	}
+	if err := s.headHolds(ctx, s.d.Catalog.Pool(), c.Tenant, o, v, current, rec, false); err != nil {
+		return VersionInfo{}, err
+	}
 	return info(v, current), nil
 }
 
@@ -93,6 +98,9 @@ func (s *Service) ReadPackage(ctx context.Context, c Caller, bucketName, key, ve
 		return Package{}, err
 	}
 	if err := s.checked(ctx, rec); err != nil {
+		return Package{}, err
+	}
+	if err := s.headHolds(ctx, s.d.Catalog.Pool(), c.Tenant, o, v, current, rec, false); err != nil {
 		return Package{}, err
 	}
 
@@ -154,6 +162,9 @@ func (s *Service) ReadCiphertext(ctx context.Context, c Caller, bucketName, key,
 		return nil, err
 	}
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.headHolds(ctx, tx, c.Tenant, o, v, current, rec, true); err != nil {
+			return err
+		}
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM object_versions WHERE tenant = $1 AND id = $2 FOR SHARE`, c.Tenant, v.ID).Scan(&state); err != nil {
 			return err
@@ -265,4 +276,33 @@ func (l *leased) Read(p []byte) (int, error) {
 func (l *leased) Close() error {
 	l.once.Do(func() { close(l.done) })
 	return l.r.Close()
+}
+
+// headHolds rechecks, after the decision, the head the operation selected
+// before it (review finding 2): the object still has the generation the
+// decision bound, and the version is still current exactly when the
+// operation chose the checks of a current version. Otherwise an overwrite
+// in between would let a historical version pass with the checks of a
+// current one. In the fence q is the transaction and the rows are locked.
+func (s *Service) headHolds(ctx context.Context, q catalog.Querier, tenant string, o object, v version, current bool, rec signing.Record, lock bool) error {
+	sql := `SELECT o.current_version, r.generation FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
+	         WHERE o.tenant = $1 AND o.id = $2`
+	if lock {
+		sql += ` FOR SHARE OF o, r`
+	}
+	var head *cryptowire.UUID
+	var generation uint64
+	if err := q.QueryRow(ctx, sql, tenant, o.ID).Scan(&head, &generation); err != nil {
+		return err
+	}
+	bound, ok := uint64(0), false
+	for _, c := range rec.Checks {
+		if c.ResourceType == "storage.object" && c.ResourceID == o.ID.String() {
+			bound, ok = c.Generation, true
+		}
+	}
+	if !ok || generation != bound || (head != nil && *head == v.ID) != current {
+		return fmt.Errorf("%w: the object changed during the operation", ErrConflict)
+	}
+	return nil
 }
