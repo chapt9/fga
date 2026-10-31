@@ -24,10 +24,11 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Storage | `internal/content` (content service), `internal/blob` (single-node store), `internal/nativeapi`, `cmd/fga-storage` | CNT-*, PUB-*, BKD-* |
 | Keys | `internal/envelope` (recipient registry, envelope publication, delivery, retirement), `cmd/fga-keys` | KEY-*, RCP-*, TRU-005 |
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
-| Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `cmd/fga-admin` | AVL-008, KEY-017, PUB-005, PUB-006 |
+| Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile, reclaim), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006 |
+| Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
 | Approvals | `internal/approval` with a neutral operation plan (`internal/opplan`); not yet used by any storage operation | APR-001 to APR-005 |
 
-Optional R2 executor (feature `executor`, built for specification 2.2 and parked; no R1 role links it): `internal/tools`, `internal/toolstore` (its tables are applied only by `toolstore.Migrate`), `internal/tools/connector`, `internal/invocation`, `internal/reservation`.
+Executor (built for specification 2.2, parked as the optional R2 feature `executor`): `internal/tools`, `internal/toolstore` (its tables are applied only by `toolstore.Migrate`), `internal/tools/connector`, `internal/invocation`, `internal/reservation`. No R1 role links it. It will be connected into the overall system after object storage and fine-grained access control are done, together with MCP.
 
 Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decisions/rulings-2026-10-31.md](docs/decisions/rulings-2026-10-31.md). Dependency records: [docs/dependencies](docs/dependencies).
 
@@ -45,14 +46,14 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 ### Known gaps (not done or not verified)
 
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
-- **D-08 (client key custody) is open.** `fga keys init` stores the recipient keyset in the clear in a mode-0600 file. That is acceptable for development only.
-- **Mutual TLS** between roles is implemented but was not exercised; the smoke run uses the development profile on loopback.
+- **D-08 (client key custody) is open.** `fga keys init` stores the recipient keyset in the clear in a mode-0600 file, for development only. The backup key (`fga-admin backup-key generate`) is likewise a plain file the operator must keep apart from the catalog and the backups.
 - **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.
-- **Backups are not encrypted** (AVL-005 asks for encrypted, access-separated backups). They hold ciphertext and catalog rows in mode-0700 directories.
-- **Restore replaces the audit outbox.** No audit exporter process exists in R1, so events recorded after a backup are lost when that backup is restored.
-- **Missing operational controls:** tenant-aware admission limits (AVL-006), sizing measurements (SIZ-001), catalog encryption at rest (DAT-006) and `govulncheck` (LIB-003) are not done.
+- **Audit export** goes to local files only. There is no external collector and no signing or hash-chaining of export files. Events recorded after the last export and before a restore are still lost by the restore ([audit-export.md](docs/design/audit-export.md)).
+- **Admission limits** are counts of concurrent requests and streams, with unmeasured defaults (D-10 open). There are no byte-rate budgets and no sizing measurements (SIZ-001).
+- **Catalog encryption at rest (DAT-006)** is left to the volume.
 - **Content-signing keys** are provisioned by the administrator. The registry has no resource type for self-service enrollment.
-- **Keys role imports:** it links `internal/blob` through `internal/content`'s shared types. It never opens a blob, but splitting those types out would remove the import.
+- **Storage approvals (APR)** are not wired into storage operations: the spec's resource table has no `approve` action for storage objects, which needs an owner ruling.
+- **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).
 
 ## Checks
 
@@ -76,13 +77,13 @@ make spec
 
 ## Run the storage roles locally
 
-`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing, listing and deletion. It then takes a backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
+`scripts/smoke.sh` builds every binary and creates a throwaway database. It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers recipient enrollment, an encrypted round trip, denial before sharing, sharing, listing and deletion. It then exports the audit outbox, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles and checks the result. The database is dropped at the end.
 
 ```bash
 scripts/smoke.sh .local/smoke
 ```
 
-The script is also the reference for configuring the three roles: it writes `decision.json`, `keys.json` and `storage.json` into its working directory. Production profiles require mutual TLS and refuse the development token issuer.
+The script is also the reference for configuring the three roles: it writes `decision.json`, `keys.json` and `storage.json` into its working directory. Production profiles require mutual TLS and refuse the development token issuer. The mutual-TLS transport between the roles is covered by a test with a throwaway certificate authority (`internal/roleconfig`); the smoke run itself uses the development profile on loopback.
 
 ## Run the decision role alone
 
