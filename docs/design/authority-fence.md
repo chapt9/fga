@@ -55,6 +55,24 @@ Authority changers lock one fact row each (an identity, a delegation, a recipien
 | Object overwritten, deleted, relabeled | `resources.generation` or `metadata_revision` + 1 | Mismatch on step 6 |
 | Restore or recovery | `authority_state.incarnation` + 1, `admission_open` false | Mismatch on step 1 |
 
+## Values chosen before the decision
+
+The fence checks the facts a decision bound: revisions, generations, the label order, the incarnation. It cannot check a value the adapter read *before* asking for the decision and then used to choose the checks or to compute what it writes. Each such value is checked again inside the fence, or the operation is refused with a conflict and planned again. Review v3 found three places where this was missed:
+
+| Value read before the decision | Checked again at commit |
+|---|---|
+| The label a change is classified against (label or relabel), and the label order | Current label and order generation equal (`setLabel`, F01) |
+| A derived version's label inputs: the output's label, the sources' labels, the order | Label recomputed in the fence from current state and compared with the plan (`publishDerived`, F06) |
+| The head that tells a current version from a historical one | `headHolds` for reads and exports; one snapshot with the head for version listings (F10) |
+
+Other choices are bound in other ways:
+- create versus new version, by the generation compare or a unique insert;
+- the base of an append (v2 finding 3);
+- the grantee's identity revision (v2 finding 2);
+- the bucket's mode, by `modeHolds`.
+
+A whole-document disclosure is authorized against every unit the version lists, never against the subset that happens to be live, and an empty check set is never permission (F05).
+
 ## Recovery incarnation (AVL-008, DEC-011)
 
 `authority_state` holds the deployment's current recovery incarnation and whether admission is open. The decision role refuses to decide while admission is closed and binds the current incarnation into every signed decision. A restore closes admission, restores the backup, issues a new incarnation that is higher than both the backup's and every incarnation recorded in the security journal, reconciles security-critical changes made after the backup (see [storage-r1b](storage-r1b.md), "Backup and restore"), and only then reopens admission. A decision signed before the restore names the old incarnation and fails step 1 even if its consumption record was lost with the restored database.
