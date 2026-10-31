@@ -7,7 +7,7 @@ The MCP service (R2) is a separate role, `fga-mcp`. It holds no permission rules
 ## The hop
 
 1. **The user's client to the MCP role.** The MCP client presents the user's token for audience `fga-mcp`, and the MCP role verifies it.
-2. **The MCP role to the decision role.** For each MCP tool call, the MCP role asks the decision role for `mcp.tool.invoke`: `invoke` on the tool, an `agent.tool` resource such as `documents.read`. It sends the user's token as evidence (TB2), and the decision role verifies the token for audience `fga-mcp` (the MCP adapter's `adapter_audiences`). The decision is addressed to the storage role (`fga-storage`), so policy can allow or deny MCP use apart from content access (MCP-003).
+2. **The MCP role to the decision role.** For each MCP tool call, the MCP role asks the decision role for `mcp.tool.invoke`: `invoke` on the tool, an `agent.tool` resource such as `documents.read`. It sends the user's token as evidence (TB2), and the decision role verifies the token for audience `fga-mcp` (the MCP adapter's `adapter_audiences`). The decision is addressed to the storage role (`fga-storage`), so policy can allow or deny MCP use apart from content access (MCP-003). The MCP role keeps no identity store, so it names identity revision 0; for a configured gateway's own MCP operations the decision role binds the user's current revision, and every other request must still name it (ID-004).
 3. **The MCP role to the storage role (TB3).** The MCP role calls the native API with its workload identity (its client certificate) and the decision in the `Fga-Decision` header, in `signing.Evidence` form. It sends no bearer token. The storage role accepts the call (`httpapi.Gateway`) only if all of these hold:
    - the workload is one of its `mcp_adapters`;
    - the decision verifies for its own audience and is still valid;
@@ -44,7 +44,7 @@ In the development profile without TLS, every caller has the one development ada
 
 ## Not yet
 
-- The `fga-mcp` role and its operations (M2), client mode and the local bridge (M3).
+- Client mode and the local bridge (M3). The MCP role itself is built (M2): [mcp-role.md](mcp-role.md).
 - Agents acting for users through delegations (the decision may then name a delegation and subject).
 
 ## Tests

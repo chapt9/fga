@@ -23,9 +23,10 @@ A caught panic is logged with its stack and fails closed: the request is refused
 |---|---|---|
 | The HTTP server of the storage and keys roles (`roleconfig.Serve`) and of the decision role | `guard.Handler` | The request is answered `500 UNAVAILABLE`; a response that had already begun is aborted, so the client sees a broken response rather than a short one. The role serves the next request. |
 | The storage role's stream lease recheck (`content` `leased.watch`) | `guard.Go` | The stream ends as on a failed recheck: no byte is delivered without a passing recheck (CNT-008). |
+| The MCP role's HTTP handler, and every MCP request inside the SDK (`mcpsvc` `contain`, the outermost SDK middleware) | `guard.Handler`, `guard.Recover` | The request fails with an internal error; the SDK runs handlers in its own goroutines, beyond the HTTP server's recovery, so without this one request's panic would end every user's session. |
 
 Not guarded:
-- goroutines inside third-party code that we do not start;
+- goroutines inside third-party code that we do not start, such as the MCP SDK's transport;
 - the Go SDK client's upload goroutines, which run in the user's own process.
 
 The guard does not undo work. Code releases locks and transactions with `defer`, so a panic leaves nothing held.
@@ -36,7 +37,8 @@ The guard does not undo work. Code releases locks and transactions with `defer`,
 |---|---|
 | decision | Every enforcing role fails closed: requests are refused (`503 UNAVAILABLE`), and nothing is allowed |
 | keys | Server-mode reads and writes and client-mode envelope delivery fail; listings and decisions go on |
-| storage | No content is stored or delivered; decisions go on |
+| storage | No content is stored or delivered; decisions go on; the MCP role answers that a backing service is unavailable |
+| mcp | Its sessions end and MCP clients reconnect; nothing else is affected, and it keeps no state to lose |
 | PostgreSQL | Every role fails closed |
 
 ## Deployment
@@ -55,7 +57,9 @@ One caller must not be able to exhaust a role that others depend on.
 | storage, keys | Concurrent requests per tenant and in total, concurrent streams per tenant (`internal/admission`, AVL-006); a request over a bound is answered `429 OVERLOADED` |
 | decision | Request size, checks per request and time per decision (DEC-009). Concurrent requests per calling workload (the public facade counts as one) and in total: `admission` in the role's configuration, `adapter_requests` 128 and `total_requests` 512 when absent, so no workload holds more than a quarter of the role. A request over a bound is answered `429` at once, and its connection closed; callers treat it as the role being unavailable, so nothing is allowed |
 
-Not yet: a bound per calling workload at the storage role.
+| mcp | Concurrent calls and open sessions per user and in total, content per request, units per read, request body (see [mcp-role.md](mcp-role.md)); over a bound, `429` at once |
+
+Not yet: a bound per calling workload at the storage role. The MCP role's own bounds and the decision role's bound per workload limit what a runaway MCP role can send.
 
 ## Tests
 
@@ -66,3 +70,4 @@ Not yet: a bound per calling workload at the storage role.
 | `internal/content` `TestLeaseCheckPanic` | A panicking recheck ends the stream; without the guard it ends the process |
 | `internal/decisionsvc` `TestAdmission` | The decision role's bounds per workload and in total; a slow request body holds its slot; a refused request is answered before its body is read; slots are freed |
 | `cmd/fga-decision` `TestValidate` | Bad bounds are refused; without an `admission` section the defaults apply |
+| `internal/mcpsvc` `TestMCPPanicContained`, `TestMCPLimits` | A panicking MCP request fails alone, and without the guard ends the test process; the MCP role's session and call bounds |

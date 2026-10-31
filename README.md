@@ -19,7 +19,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
   - derived outputs with signed lineage.
 
   The fixes for the eight findings of the 31 October code review (`code_review_v1.txt`) each have a regression test.
-- **R2, MCP over encrypted storage:** in progress (MCP role, then the optional executor). The storage and decision roles accept the MCP role's calls for its users through a signed decision per MCP tool call ([mcp-gateway.md](docs/design/mcp-gateway.md), ruling 8); the `fga-mcp` role itself is not built yet.
+- **R2, MCP over encrypted storage:** in progress (MCP role, then the optional executor). The storage and decision roles accept the MCP role's calls for its users through a signed decision per MCP tool call ([mcp-gateway.md](docs/design/mcp-gateway.md), ruling 8); the `fga-mcp` role serves MCP resources and the read tools for server-mode content over the native API, with unit filtering, user-bound sessions and its own bounds ([mcp-role.md](docs/design/mcp-role.md), stretch M2). Client mode and the local bridge come next (M3).
 - **R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
@@ -40,6 +40,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile against the KEK ring, reclaim with data-key destruction), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006, SSE-006 |
 | Operations | `internal/auditexport` (outbox to durable files), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
 | Fault isolation | One process per role; `internal/guard` keeps a panic inside its request or goroutine ([fault-isolation.md](docs/design/fault-isolation.md)) | MOD-002, AVL-006 |
+| MCP | `internal/mcpsvc`, `cmd/fga-mcp` on the official MCP Go SDK: resources and read tools over the native API, decisions per call through the gateway hop ([mcp-role.md](docs/design/mcp-role.md), [mcp-gateway.md](docs/design/mcp-gateway.md)) | MCP-001 to MCP-008 |
 | Labels | `internal/labels` (order arithmetic); ranks in `internal/decision`; the label order published to the catalog on activation; label, relabel and proposals in `internal/content` ([labels-and-approvals.md](docs/design/labels-and-approvals.md)) | LAB-001 to LAB-005, FLW-004 (storage objects so far) |
 | Approvals | `internal/approval` with neutral operation plans (`internal/opplan`). The decision role opens and verifies approvals, the fence consumes them, and finalize, delete, version delete and label changes use them | APR-001 to APR-005 |
 

@@ -1,0 +1,31 @@
+# Packages the MCP role may link (MOD-004, MCP-008). One import-path prefix
+# per line. Adding a line needs review: it widens the role's attack surface.
+# No catalog, blob, key, payload, policy, decision-service, client
+# decryption or executor package belongs here.
+fga/cmd/fga-mcp
+fga/internal/mcpsvc
+# Concurrent-call bounds (AVL-006) and panic containment
+# (docs/design/fault-isolation.md); standard library only.
+fga/internal/admission
+fga/internal/guard
+# Token verification (TB1) and the decision's evidence form (TB3).
+fga/internal/authn
+fga/internal/signing
+fga/internal/strictjson
+github.com/go-jose/go-jose/
+# Reviewed 2026-10-31 (MCP-001, LIB-002, docs/dependencies/mcp-go-sdk.md):
+# the official MCP Go SDK v1.8.0, its transport and bearer-token
+# middleware, and the packages it links.
+github.com/modelcontextprotocol/go-sdk/auth
+github.com/modelcontextprotocol/go-sdk/internal/
+github.com/modelcontextprotocol/go-sdk/jsonrpc
+github.com/modelcontextprotocol/go-sdk/mcp
+github.com/modelcontextprotocol/go-sdk/oauthex
+github.com/google/jsonschema-go/jsonschema
+github.com/segmentio/asm/
+github.com/segmentio/encoding/
+github.com/yosida95/uritemplate/v3
+golang.org/x/oauth2
+golang.org/x/sync/errgroup
+golang.org/x/sys/cpu
+golang.org/x/time/rate

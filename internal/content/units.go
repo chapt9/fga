@@ -23,6 +23,15 @@ var (
 
 // unitsOf returns the unit types of a document whose kind attribute is
 // kind.
+// kind names the listing a UnitPage is: a collection's entries or a
+// document's units.
+func (u unitTypes) kind() string {
+	if u.typ == textEntries.typ {
+		return "collection"
+	}
+	return "document"
+}
+
 func unitsOf(kind string) unitTypes {
 	if kind == "collection" {
 		return textEntries

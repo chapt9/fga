@@ -1,9 +1,9 @@
 #!/bin/bash
 # Smoke test of the R1-B roles, with R1-C labels, approvals and document
-# publication and the 2.6 encryption modes, on one host
+# publication, the 2.6 encryption modes and the R2 MCP role, on one host
 # (development profile): builds the binaries, creates a throwaway database,
-# starts fga-decision, fga-keys and fga-storage on loopback, and drives them
-# with fga and fga-admin.
+# starts fga-decision, fga-keys, fga-storage and fga-mcp on loopback, and
+# drives them with fga, fga-admin and a minimal MCP client.
 #
 #   scripts/smoke.sh WORKDIR
 #
@@ -31,7 +31,8 @@ cat > decision.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:17443","dev_adapter_id":"local-dev","database_url":"$URL",
  "bundle_dir":"bundle","publisher_keys":{"publisher-1":"$PUB"},"signing_key_file":"decision.key","signing_key_id":"decision-1",
  "audiences":["fga-storage","fga-keys"],"decision_max_age":"30s","outbox_capacity":100000,
- "token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"adapter_audiences":{"local-dev":["fga-storage","fga-keys"]}}
+ "token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"adapter_audiences":{"local-dev":["fga-storage","fga-keys","fga-mcp"]},
+ "gateways":{"local-dev":["fga-storage"]}}
 J
 COMMON="\"database_url\":\"$URL\",\"dev_adapter_id\":\"local-dev\",\"token_issuer\":{\"issuer\":\"fga-dev\",\"keys\":{\"tok-1\":\"$ISS\"}},\"decision\":{\"url\":\"http://127.0.0.1:17443\"},\"decision_keys\":{\"decision-1\":\"$DEC\"}"
 cat > keys.json <<J
@@ -41,7 +42,12 @@ cat > keys.json <<J
 J
 cat > storage.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18441",$COMMON,"blob_dir":"blobs","journal_dir":"journal",
- "keys":{"url":"http://127.0.0.1:18442"},"token_key_file":"token.key","outbox_capacity":100000}
+ "keys":{"url":"http://127.0.0.1:18442"},"token_key_file":"token.key","outbox_capacity":100000,"mcp_adapters":["local-dev"]}
+J
+cat > mcp.json <<J
+{"version":1,"profile":"development","listen":"127.0.0.1:18446","token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},
+ "audience":"fga-mcp","storage_audience":"fga-storage","decision":{"url":"http://127.0.0.1:17443"},
+ "storage":{"url":"http://127.0.0.1:18441"},"buckets":["shared"]}
 J
 $B/fga-decision -config decision.json > decision.log 2>&1 & echo $! > pids
 sleep 2
@@ -57,9 +63,10 @@ $B/fga-admin -db $URL kek rotate -tenant t-acme -file keks
 grep -q '"format":"fga.keyfile/v1"' keks && echo "KEK ring is passphrase-protected"
 $B/fga-keys -config keys.json > keys.log 2>&1 & echo $! >> pids
 $B/fga-storage -config storage.json > storage.log 2>&1 & echo $! >> pids
+$B/fga-mcp -config mcp.json > mcp.log 2>&1 & echo $! >> pids
 trap 'kill $(cat pids) 2>/dev/null; sleep 1; dropdb -h localhost --if-exists '$DB'' EXIT
 sleep 2
-curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && echo "roles ready"
+curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && curl -sf http://127.0.0.1:18446/healthz && echo "roles ready"
 
 ADMIN="$B/fga-admin -db $URL -journal journal -blobs blobs"
 export FGA_BACKUP_KEY_PASSPHRASE="smoke backup passphrase"
@@ -235,6 +242,59 @@ as carl;  check $B/fga get -bucket shared -key q4/plan.bin -out carl-shared.out;
 as alice; check $B/fga ungrant -bucket shared -key q4/plan.bin -grantee carl
 as carl;  if $B/fga get -bucket shared -key q4/plan.bin -out x.out 2>err.txt; then echo "UNEXPECTED: carl read after the grant was removed"; exit 1; fi
 echo "share grant: carl reads alice's object only while granted; afterwards: $(cat err.txt)"
+# The MCP role (R2 stretch M2): a generic MCP client reads through the
+# same storage checks as the native API, for the user whose fga-mcp token
+# it presents. Server-mode content comes back as plaintext, client-mode
+# content not at all, and a session is bound to its user.
+$ADMIN mcp enable -tenant t-acme
+cat > mcp_client.py <<'P'
+import base64, json, sys, urllib.error, urllib.request
+URL = "http://127.0.0.1:18446/mcp"
+open_url = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+def post(tok, body, sid=None):
+    h = {"Authorization": "Bearer " + tok, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if sid:
+        h.update({"Mcp-Session-Id": sid, "Mcp-Protocol-Version": "2025-06-18"})
+    try:
+        with open_url(urllib.request.Request(URL, data=json.dumps(body).encode(), headers=h, method="POST")) as r:
+            raw = r.read()
+            return r.status, r.headers.get("Mcp-Session-Id"), json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        return e.code, None, None
+def session(tok):
+    st, sid, res = post(tok, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18",
+                    "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}})
+    assert st == 200 and sid, ("initialize", st, res)
+    post(tok, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+    return sid
+def rpc(tok, sid, method, params):
+    st, _, res = post(tok, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, sid)
+    assert st == 200, (method, st)
+    return res
+def read_doc(tok, sid):
+    return rpc(tok, sid, "tools/call", {"name": "documents.read", "arguments": {"bucket": "shared", "key": "q4/notes.md"}})["result"]
+bob, alice, carl = sys.argv[1:4]
+b = session(bob)
+tools = sorted(t["name"] for t in rpc(bob, b, "tools/list", {})["result"]["tools"])
+assert tools == ["documents.read", "documents.search", "text.read"], tools
+doc = read_doc(bob, b)
+assert not doc.get("isError") and doc["content"][0]["text"] == open("bob-shared-notes.txt").read().rstrip("\n"), doc
+obj = rpc(bob, b, "resources/read", {"uri": "fga://shared/q4/plan.bin"})["result"]["contents"][0]
+assert base64.b64decode(obj["blob"]) == open("shared.bin", "rb").read(), "the server-mode object differs"
+print("MCP: bob reads a server-mode document and object as through the native API")
+c = session(carl)
+denied = read_doc(carl, c)
+assert denied.get("isError") and "not found" in denied["content"][0]["text"], denied
+print("MCP: carl, of another project:", denied["content"][0]["text"])
+a = session(alice)
+cm = rpc(alice, a, "resources/read", {"uri": "fga://reports/q3/report.bin"})
+assert "error" in cm and "client-mode" in cm["error"]["message"], cm
+print("MCP: a client-mode object is refused:", cm["error"]["message"][:60] + "...")
+st, _, _ = post(alice, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}, b)
+assert st == 403, ("alice in bob's session", st)
+print("MCP: alice's token in bob's session:", st)
+P
+check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)"
 # Final removal of a server-mode version destroys its data key (S6,
 # SSE-006): reclaim retires the withdrawn version and reports that backups
 # taken before still hold the key.

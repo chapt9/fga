@@ -240,6 +240,20 @@ func (g *Gate) current(ctx context.Context, tenant string, ref decision.Ref) (id
 	return id, nil
 }
 
+// CurrentRevision returns an identity's current revision, for a gateway
+// that keeps no identity store and so cannot name one (TB3). The batch
+// it goes into is still admitted against that revision (ID-004).
+func (g *Gate) CurrentRevision(ctx context.Context, tenant, id string) (uint64, error) {
+	ident, err := g.identities.Get(ctx, tenant, id)
+	switch {
+	case errors.Is(err, identity.ErrUnknown):
+		return 0, reject(ReasonIdentityUnknown)
+	case err != nil:
+		return 0, fmt.Errorf("gate: identity: %w", err)
+	}
+	return ident.Revision, nil
+}
+
 // chain resolves and admits the envelope's delegation.
 func (g *Gate) chain(ctx context.Context, env decision.Envelope) (delegation.Chain, error) {
 	chain, err := delegation.Resolve(ctx, g.delegations, env.Tenant, delegation.ID(env.Delegation), g.now())

@@ -297,6 +297,21 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !ok {
 		return deny(ReasonUnknownOperation)
 	}
+	// A gateway keeps no identity store: for its own MCP operations, on
+	// the user's token, it asks with revision 0 and the decision binds the
+	// actor's current revision (TB3).
+	if req.Actor.Revision == 0 && len(s.d.Gateways[adapter]) > 0 && chainedIncarnation == 0 && req.Evidence != "" &&
+		req.Delegation == "" && req.Subject == nil && (req.Operation == registry.OpMCPInvoke || req.Operation == registry.OpMCPDiscover) {
+		rev, err := s.d.Gate.CurrentRevision(ctx, req.Tenant, req.Actor.ID)
+		var rej *decision.Rejection
+		switch {
+		case errors.As(err, &rej):
+			return deny(rej.Reason)
+		case err != nil:
+			return fail(ReasonCatalogUnavailable)
+		}
+		req.Actor.Revision = rev
+	}
 	// Recovery closes admission until security-critical changes are
 	// reconciled; no decision is made meanwhile, and every decision binds
 	// the incarnation it was made in (AVL-008, DEC-011).

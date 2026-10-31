@@ -40,6 +40,10 @@ type UnitPage struct {
 	// DocumentVersion is the version listed, so that a reader can read
 	// every unit from it.
 	DocumentVersion string `json:"document_version_id,omitempty"`
+	// Kind is "collection" for a text collection's entries, otherwise
+	// "document" (DOC-005); the MCP role reads each only through its own
+	// tool (MCP-003).
+	Kind string `json:"kind"`
 }
 
 type docVersion struct {
@@ -253,7 +257,7 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	if err != nil {
 		return UnitPage{}, ErrInvalid
 	}
-	page := UnitPage{Units: []UnitEntry{}, DocumentVersion: d.id.String()}
+	page := UnitPage{Units: []UnitEntry{}, DocumentVersion: d.id.String(), Kind: d.units.kind()}
 	scanned, exhausted := 0, false
 	for len(page.Units) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted {
 		n := min(maxBatch-1, s.d.Limits.ListScanBudget-scanned)

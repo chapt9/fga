@@ -967,6 +967,7 @@ components:
               descriptor_signature: { type: string }
         continuation: { type: string }
         document_version_id: { type: string, format: uuid, description: The version listed }
+        kind: { type: string, enum: [document, collection], description: "A document's units or a text collection's entries (listUnits only)" }
     DocumentPublished:
       type: object
       properties:
