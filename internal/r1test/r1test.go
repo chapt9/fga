@@ -22,6 +22,7 @@ import (
 	"fga/internal/envelope"
 	"fga/internal/fence"
 	"fga/internal/gate"
+	"fga/internal/journal"
 	"fga/internal/pgtest"
 	"fga/internal/policy/engine"
 	"fga/internal/registry"
@@ -94,6 +95,11 @@ type Stack struct {
 	Envelopes  *envelope.Service
 	Keys       content.EnvelopeDelivery
 	ReceiptKey ed25519.PublicKey
+	// Journal is the security journal; BlobDir and JournalDir are the
+	// directories of the blob store and the journal.
+	Journal    *journal.Journal
+	BlobDir    string
+	JournalDir string
 }
 
 // Now is the fixture clock's start.
@@ -180,7 +186,11 @@ func New(t testing.TB) *Stack {
 		t.Fatal(err)
 	}
 	st.Fence = fence.New(pool, time.Second, now)
-	if st.Blobs, err = blob.Open(t.TempDir()); err != nil {
+	st.BlobDir, st.JournalDir = t.TempDir(), t.TempDir()
+	if st.Blobs, err = blob.Open(st.BlobDir); err != nil {
+		t.Fatal(err)
+	}
+	if st.Journal, err = journal.Open(st.JournalDir, now); err != nil {
 		t.Fatal(err)
 	}
 	tokenKey := make([]byte, 32)
@@ -196,7 +206,7 @@ func New(t testing.TB) *Stack {
 	receiptPub, receiptPriv, _ := ed25519.GenerateKey(rand.Reader)
 	st.ReceiptKey = receiptPub
 	st.Envelopes, err = envelope.New(envelope.Deps{Catalog: st.Catalog, Fence: st.Fence, Decider: Decider{Service: st.Decisions, Adapter: "keys-1"},
-		Verifier: st.Verifier(content.KeysAudience), ReceiptKeyID: "receipt-1", ReceiptKey: receiptPriv, Now: now})
+		Verifier: st.Verifier(content.KeysAudience), ReceiptKeyID: "receipt-1", ReceiptKey: receiptPriv, Journal: st.Journal, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
