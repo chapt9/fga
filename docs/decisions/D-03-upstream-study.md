@@ -8,8 +8,8 @@
 
 | Upstream | Expected license | Consequence if code were copied |
 |---|---|---|
-| MinIO | AGPL-3.0 | Copyleft, including the network-use clause, would apply to the derived work |
-| Cerbos | Apache-2.0 | Allowed with notices; not used anyway, by choice |
+| MinIO | AGPL-3.0, confirmed at the studied revision on 31 October 2026 from its `LICENSE` ([similarity check](../research/similarity-check.md)) | Copyleft, including the network-use clause, would apply to the derived work |
+| Cerbos | Apache-2.0, confirmed at the studied revision on 31 October 2026 from its `LICENSE`, `NOTICE.txt` and SPDX headers ([similarity check](../research/similarity-check.md)) | Allowed with notices; not used anyway, by choice |
 
 ## Practice
 
@@ -18,3 +18,4 @@
 - Independent implementation does not protect against patents, and names are trademarks: neither "MinIO" nor "Cerbos" is used in product names.
 - General-purpose libraries are separate dependencies. Each gets the license and maintenance record of LIB-002.
 - Before distribution, a qualified person reviews the license record (SRC-004, GATE-001).
+- A code similarity check against both studied revisions, run outside the repository, found no Cerbos or MinIO code ([similarity-check.md](../research/similarity-check.md)).

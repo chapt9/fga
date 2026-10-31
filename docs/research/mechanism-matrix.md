@@ -7,7 +7,7 @@ This is the record of ideas taken from studying MinIO and Cerbos, and of the dec
 | MinIO | `7aac2a2c5b7c882e68c1ce017d8256be2feea27f` |
 | Cerbos | `ae014ba2ea919771216bc666c4f654d18a1c1a52` |
 
-Only the map's behavioral descriptions were read. No upstream source file was opened or copied (D-03).
+Only the map's behavioral descriptions were read. No upstream source file was opened or copied (D-03). A later code similarity check, on 31 October 2026, read the Cerbos and MinIO trees mechanically and displayed about 80 lines of Cerbos and none of MinIO's code; it found no code of either here ([similarity-check.md](similarity-check.md)).
 
 ## Policy evaluation (studied: Cerbos)
 
