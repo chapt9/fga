@@ -98,6 +98,21 @@ func (c KeysClient) ReleaseUnitKey(ctx context.Context, d signing.Signed, docume
 	return out.Key, nil
 }
 
+// ReleaseOriginalKey asks the keys role for a server-mode original file's
+// data key, against a decision for storage.key.release-original and the
+// complete-content decisions extra (CNT-003, SSE-003).
+func (c KeysClient) ReleaseOriginalKey(ctx context.Context, d signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error) {
+	body := keysapi.DataKeyRequest{Payload: d.Payload, JWS: d.JWS, VersionID: documentVersionID}
+	for _, x := range extra {
+		body.Extra = append(body.Extra, keysapi.SignedBody{Payload: x.Payload, JWS: x.JWS})
+	}
+	var out keysapi.DataKeyBody
+	if err := post(ctx, c.HTTP, c.BaseURL+"/internal/v1/data-keys/release-original", body, &out); err != nil {
+		return nil, keysError(err)
+	}
+	return out.Key, nil
+}
+
 // keysError maps the keys role's not-found to the shared one, so a denied
 // and an absent target look the same to the caller (CNT-004).
 func keysError(err error) error {

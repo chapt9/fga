@@ -132,10 +132,14 @@ func (s *Service) stageServer(ctx context.Context, c Caller, in storedIntent, le
 // encryptStaged encrypts exactly length bytes of src under key into in's
 // staged blob, whose size it knows in advance, and marks the intent STAGED
 // with its ciphertext digest and length and its plaintext length (SSE-005).
-// No plaintext reaches a blob, temporary file or spill.
+// With length -1 it encrypts all of src, within the ciphertext bound. No
+// plaintext reaches a blob, temporary file or spill.
 func (s *Service) encryptStaged(ctx context.Context, c Caller, in storedIntent, key []byte, length int64, src io.Reader) error {
-	size := payload.CiphertextSize(length)
-	w, err := s.d.Blobs.Begin(blob.Ref{Tenant: in.Tenant, Blob: in.Blob}, size)
+	limit, size := s.d.Limits.MaxCiphertext, payload.CiphertextSize(length)
+	if length >= 0 {
+		limit = size
+	}
+	w, err := s.d.Blobs.Begin(blob.Ref{Tenant: in.Tenant, Blob: in.Blob}, limit)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -145,13 +149,19 @@ func (s *Service) encryptStaged(ctx context.Context, c Caller, in storedIntent, 
 		w.Abort()
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	n, err := io.Copy(enc, io.LimitReader(src, length+1))
-	if err == nil && n != length {
-		err = fmt.Errorf("%w: the body is not %d bytes", ErrInvalid, length)
+	var n int64
+	if length >= 0 {
+		n, err = io.Copy(enc, io.LimitReader(src, length+1))
+		if err == nil && n != length {
+			err = fmt.Errorf("%w: the body is not %d bytes", ErrInvalid, length)
+		}
+	} else if n, err = io.Copy(enc, src); err == nil && payload.CiphertextSize(n) > s.d.Limits.MaxCiphertext {
+		err = blob.ErrTooLarge
 	}
 	if err == nil {
 		err = enc.Close()
 	}
+	length, size = n, payload.CiphertextSize(n)
 	if err != nil {
 		w.Abort()
 		switch {

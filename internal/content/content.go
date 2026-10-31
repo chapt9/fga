@@ -92,6 +92,9 @@ type DataKeys interface {
 	// ReleaseUnitKey releases one unit's key in one document version.
 	SealDocumentKeys(ctx context.Context, decision signing.Signed, docIntentID string) ([]DataKey, error)
 	ReleaseUnitKey(ctx context.Context, decision signing.Signed, documentVersionID, unitID string) ([]byte, error)
+	// ReleaseOriginalKey releases an original file's key with the
+	// complete-content decisions extra.
+	ReleaseOriginalKey(ctx context.Context, decision signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error)
 }
 
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are

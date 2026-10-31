@@ -21,6 +21,9 @@ fga/internal/payload
 # Reviewed 2026-10-31 (D-12, S4a, DOC-004): the text ingestion profile the
 # storage role applies to server-mode text; Unicode normalization only.
 fga/internal/textunits
+# Reviewed 2026-10-31 (S4b): decision checks for key releases, linked
+# through the envelope package; verification only, no key material.
+fga/internal/keycheck
 github.com/tink-crypto/tink-go/v2/aead
 github.com/tink-crypto/tink-go/v2/core
 github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess

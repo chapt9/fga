@@ -985,7 +985,19 @@ func (s *Service) publishOriginal(ctx context.Context, tx pgx.Tx, c Caller, in s
 	if _, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, '', 'original')`, c.Tenant, o.Unit, in.bucket); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	if o.staged.encryption == "server" {
+		// The original's sealed data key moves from its intent to its
+		// version (SSE-002); there is no client descriptor.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+			                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
+			SELECT $1, $2, $3, $4, $5, 'LIVE', i.ciphertext_length, i.ciphertext_sha256, $6, $7, $8, $8, 'server', i.sealed_key, i.kek_version,
+			       i.plaintext_length
+			  FROM upload_intents i WHERE i.tenant = $1 AND i.id = $9 AND i.sealed_key IS NOT NULL AND i.plaintext_length IS NOT NULL`,
+			c.Tenant, o.UnitVersion, o.Unit, o.CryptoVersion, o.Blob, int(payload.Suite), int(payload.Format), now, o.staged.IntentID); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
 		                             signer, descriptor, descriptor_signature, created_at, published_at, encryption)
 		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)`,

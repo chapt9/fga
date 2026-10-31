@@ -62,7 +62,8 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
   - **Keys role:** it holds each tenant's key-encryption keys and seals and releases data keys under exact decisions ([server-keys.md](docs/design/server-keys.md), S2).
   - **Objects:** in a server-mode bucket, objects are uploaded and read as plaintext, which the storage role encrypts and decrypts, and policy alone decides who reads ([server-objects.md](docs/design/server-objects.md), S3).
   - **Documents and collections:** text is split, encrypted per unit and read unit by unit under each unit's own checks ([server-documents.md](docs/design/server-documents.md), S4a).
-  - **Not yet:** original files, unit exports and derived outputs in server mode (S4b), share grants (S5) and server-mode recovery (S6). Their routes answer `409 ENCRYPTION_MODE` or refuse the request in a server-mode bucket.
+  - **Originals and exports:** an original file uploaded beside the text, released only with complete-content permission checked in the keys role's fence, and exports of selected units (S4b).
+  - **Not yet:** derived outputs in server mode (the rest of S4b), share grants (S5) and server-mode recovery (S6). Derived routes answer `409 ENCRYPTION_MODE` in a server-mode bucket.
   - **Key custody:** KEKs are kept in a development ring file, which production refuses; KEK custody (D-13) is open.
 - **D-04 (identity providers) is open.** Only the development token profile exists. Production refuses the development issuer, and no production issuer has been configured or tested.
 - **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.

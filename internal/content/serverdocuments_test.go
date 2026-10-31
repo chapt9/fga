@@ -1,12 +1,15 @@
 package content_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"testing"
 
 	"fga/internal/content"
+	"fga/internal/decisionsvc"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 )
 
 // readUnitPlain reads one server-mode unit through the content service.
@@ -176,5 +179,77 @@ func TestServerCollection(t *testing.T) {
 	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "chat", IdempotencyKey: "c4", Append: true},
 		[]byte("anyone?")); !errors.Is(err, content.ErrConflict) {
 		t.Fatalf("an append over a withdrawn entry: %v", err)
+	}
+}
+
+// TestServerOriginal covers CNT-003 in server mode (S4b): an original file
+// uploaded beside the text is encrypted under its own data key and read
+// only with raw-read and read on every unit; the keys role admits the
+// complete-content decisions in the fence of the release, so a unit change
+// between the storage role's checks and the release yields no key (V-163);
+// selected units are exported whole or not at all.
+func TestServerOriginal(t *testing.T) {
+	st := r1test.New(t)
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	original := bytes.Repeat([]byte{0, 1, 2, 3, 250}, 300_000)
+	p, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "report.md", IdempotencyKey: "o1",
+		Original: bytes.NewReader(original)}, []byte("Summary.\n\nDetails."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	var plainLen int64
+	if err := st.Pool.QueryRow(ctx, `SELECT v.encryption, v.plaintext_length FROM document_versions d JOIN object_versions v ON v.id = d.original_version
+	                                  WHERE d.id::text = $1 AND v.sealed_key IS NOT NULL`, p.DocumentVersion).Scan(&mode, &plainLen); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "server" || plainLen != int64(len(original)) {
+		t.Fatalf("original: mode %s, length %d", mode, plainLen)
+	}
+	read := func(c content.Caller) ([]byte, error) {
+		s, err := st.Content.ReadOriginalPlain(ctx, c, "vault", "report.md", "")
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		return io.ReadAll(s)
+	}
+	if got, err := read(alice.Caller); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("alice reads the original: %d bytes, %v", len(got), err)
+	}
+	if _, err := read(bob.Caller); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("bob without raw-read: %v", err)
+	}
+
+	// V-163: a unit changes after the storage role's checks and before the
+	// keys role releases the original's key.
+	units := unitIDs(t, st, alice.Caller, "vault", "report.md", "")
+	st.BeforeDecide = func(req decisionsvc.Request) {
+		if req.Operation == registry.OpKeyReleaseOriginal {
+			if _, err := st.Pool.Exec(ctx, `UPDATE resources SET metadata_revision = metadata_revision + 1 WHERE id = $1`, units[1]); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	if got, err := read(alice.Caller); err == nil || got != nil {
+		t.Fatalf("the original was released after a unit changed: %d bytes, %v", len(got), err)
+	}
+	st.BeforeDecide = nil
+	if got, err := read(alice.Caller); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("a fresh read: %v", err)
+	}
+
+	// Export of selected units.
+	x, err := st.Content.ExportUnitsPlain(ctx, alice.Caller, "vault", "report.md", "", units)
+	if err != nil || len(x.Units) != 2 || x.Units[0].Text != "Summary." || x.Units[1].Text != "Details." {
+		t.Fatalf("export: %+v %v", x, err)
+	}
+	if _, err := st.Content.ExportUnitsPlain(ctx, bob.Caller, "vault", "report.md", "", units); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("bob exports: %v", err)
+	}
+	if _, err := st.Content.ReadOriginalPlain(ctx, alice.Caller, "vault", "report.md", "x"); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("an unknown version: %v", err)
 	}
 }

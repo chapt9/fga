@@ -86,11 +86,19 @@ const ServerFormat uint16 = 2
 // it, and ParseManifest, which clients use, refuses it.
 func (m Manifest) MarshalServer() ([]byte, error) {
 	m.Version = ManifestVersion
-	if len(m.Units) == 0 || len(m.Units) > MaxUnits || m.NormalizationVersion == "" || m.Original != nil {
+	if len(m.Units) == 0 || len(m.Units) > MaxUnits || m.NormalizationVersion == "" {
 		return nil, formatErr("server manifest")
 	}
 	if err := uuids(m.TenantID, m.DocumentID, m.DocumentVersionID); err != nil {
 		return nil, err
+	}
+	if o := m.Original; o != nil {
+		if err := uuids(o.ObjectID, o.VersionID); err != nil {
+			return nil, err
+		}
+		if _, err := ParseDigest(o.CiphertextSHA256); err != nil || o.CiphertextLength == 0 {
+			return nil, formatErr("server manifest original")
+		}
 	}
 	seen := map[string]bool{}
 	for _, u := range m.Units {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,10 @@ import (
 // TextRequest is a server-mode text upload.
 type TextRequest struct {
 	Bucket, Key, IdempotencyKey string
+	// Original, when set, is the original file the text was taken from,
+	// published encrypted beside the units and disclosed only with
+	// complete-content permission (CNT-003). A collection has none.
+	Original io.Reader
 	// Collection makes a new key a text collection (DOC-005). Append adds
 	// the text's paragraphs to the collection at Key as a new version
 	// that keeps every current entry; the caller must be allowed to read
@@ -69,7 +74,7 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 			return DocumentPublished{}, err
 		}
 		if in, err = s.beginDocument(ctx, c, DocumentBeginRequest{Bucket: r.Bucket, Key: r.Key, IdempotencyKey: r.IdempotencyKey,
-			Units: specs, Collection: r.Collection || r.Append}, "server"); err != nil {
+			Units: specs, Collection: r.Collection || r.Append, Original: r.Original != nil}, "server"); err != nil {
 			return DocumentPublished{}, err
 		}
 	}
@@ -82,19 +87,23 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 			fresh = append(fresh, u)
 		}
 	}
-	if len(fresh) != len(paragraphs) {
+	if len(fresh) != len(paragraphs) || (in.Original != nil) != (r.Original != nil) {
 		return DocumentPublished{}, fmt.Errorf("%w: the idempotency key was used for another text", ErrConflict)
+	}
+	want := len(fresh)
+	if in.Original != nil {
+		want++
 	}
 	staged, sealed, err := s.unitStates(ctx, c, in)
 	if err != nil {
 		return DocumentPublished{}, err
 	}
 	switch {
-	case staged == len(fresh):
+	case staged == want:
 	case sealed > 0:
 		return DocumentPublished{}, fmt.Errorf("%w: an earlier attempt of this upload did not finish; begin again under a new idempotency key", ErrConflict)
 	default:
-		if err := s.stageText(ctx, c, in, fresh, paragraphs); err != nil {
+		if err := s.stageText(ctx, c, in, fresh, paragraphs, r.Original); err != nil {
 			return DocumentPublished{}, err
 		}
 	}
@@ -142,20 +151,22 @@ func (s *Service) textSpecs(ctx context.Context, c Caller, r TextRequest, paragr
 	return specs, nil
 }
 
-// unitStates counts the new units of a document intent that are staged,
-// and those that have a data key.
+// unitStates counts the new units and the original of a document intent
+// that are staged, and those that have a data key.
 func (s *Service) unitStates(ctx context.Context, c Caller, in storedDocIntent) (staged, sealed int, err error) {
 	err = s.d.Catalog.Pool().QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE state = 'STAGED'), count(*) FILTER (WHERE sealed_key IS NOT NULL)
-		  FROM upload_intents WHERE tenant = $1 AND document_intent::text = $2 AND kind = 'unit'`, c.Tenant, in.IntentID).Scan(&staged, &sealed)
+		  FROM upload_intents WHERE tenant = $1 AND document_intent::text = $2 AND kind IN ('unit', 'original')`, c.Tenant, in.IntentID).
+		Scan(&staged, &sealed)
 	return staged, sealed, err
 }
 
-// stageText has the keys role seal the new units' data keys, under one
-// decision for the document's write, and encrypts each paragraph into its
-// unit's blob. Staging is admitted by a fresh single-use decision for the
-// same right, as for client units (ruling 7, DAT-007).
-func (s *Service) stageText(ctx context.Context, c Caller, in storedDocIntent, fresh []UnitIntent, paragraphs []string) error {
+// stageText has the keys role seal the new units' and the original's data
+// keys, under one decision for the document's write, encrypts each
+// paragraph into its unit's blob and the original into its own. Staging is
+// admitted by a fresh single-use decision for the same right, as for
+// client units (ruling 7, DAT-007).
+func (s *Service) stageText(ctx context.Context, c Caller, in storedDocIntent, fresh []UnitIntent, paragraphs []string, original io.Reader) error {
 	op, ch := docChecks(in, registry.OpKeySealDocCreate, registry.OpKeySealDocVersion)
 	signed, _, err := s.decide(ctx, c, op, KeysAudience, true, []check{ch})
 	if err != nil {
@@ -197,6 +208,17 @@ func (s *Service) stageText(ctx context.Context, c Caller, in storedDocIntent, f
 			return err
 		}
 	}
+	if o := in.Original; o != nil {
+		id, _ := cryptowire.ParseUUID(o.IntentID)
+		st, err := s.intent(ctx, s.d.Catalog.Pool(), c, id, false)
+		if err != nil {
+			return err
+		}
+		if byIntent[o.IntentID] == nil {
+			return fmt.Errorf("%w: the keys role sealed no key for the original", ErrUnavailable)
+		}
+		return s.encryptStaged(ctx, c, st, byIntent[o.IntentID], -1, original)
+	}
 	return nil
 }
 
@@ -208,9 +230,6 @@ func (s *Service) stageText(ctx context.Context, c Caller, in storedDocIntent, f
 func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in storedDocIntent, r DocumentFinalizeRequest) (DocumentPublished, error) {
 	if len(r.Manifest) > 0 || r.ManifestSignature != "" || len(r.Units) > 0 || r.Original != nil {
 		return DocumentPublished{}, fmt.Errorf("%w: a server-mode document has no client manifest, descriptors or envelopes", ErrInvalid)
-	}
-	if in.Original != nil {
-		return DocumentPublished{}, fmt.Errorf("%w: server-mode original files are not supported yet", ErrInvalid)
 	}
 	m := cryptowire.Manifest{TenantID: in.Tenant, DocumentID: in.Document, DocumentVersionID: in.DocumentVersion,
 		NormalizationVersion: textunits.NormalizationVersion}
@@ -234,16 +253,33 @@ func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in store
 		m.Units = append(m.Units, cryptowire.ManifestUnit{UnitID: u.Unit, UnitVersionID: u.UnitVersion, CryptoVersionID: u.CryptoVersion,
 			CiphertextSHA256: sum, CiphertextLength: uint64(length), Suite: payload.Suite, Format: payload.Format})
 	}
+	var original *checkedUnit
+	final := DocumentFinalizeRequest{Units: make([]UnitFinal, len(units))}
+	if o := in.Original; o != nil {
+		id, _ := cryptowire.ParseUUID(o.IntentID)
+		st, err := s.intent(ctx, s.d.Catalog.Pool(), c, id, false)
+		if err != nil {
+			return DocumentPublished{}, err
+		}
+		if st.state != "STAGED" || st.encryption != "server" {
+			return DocumentPublished{}, fmt.Errorf("%w: the original is %s", ErrConflict, st.state)
+		}
+		original = &checkedUnit{UnitIntent: *o, staged: st}
+		m.Original = &cryptowire.ManifestOriginal{ObjectID: o.Unit, VersionID: o.UnitVersion, CiphertextSHA256: st.ciphertextSHA256,
+			CiphertextLength: uint64(st.ciphertextLength)}
+		final.Original = &UnitFinal{}
+	}
 	raw, err := m.MarshalServer()
 	if err != nil {
 		return DocumentPublished{}, err
 	}
+	final.Manifest = raw
 	digest := cryptowire.ManifestDigest(raw)
-	recs, err := s.documentDecisions(ctx, c, in, units, nil, digest)
+	recs, err := s.documentDecisions(ctx, c, in, units, original, digest)
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	return s.commitDocument(ctx, c, in, DocumentFinalizeRequest{Manifest: raw, Units: make([]UnitFinal, len(units))}, m, digest, "", units, nil, recs)
+	return s.commitDocument(ctx, c, in, final, m, digest, "", units, original, recs)
 }
 
 // ReadUnitPlain reads one unit or entry of a server-mode document version

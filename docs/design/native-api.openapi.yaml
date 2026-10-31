@@ -101,10 +101,54 @@ paths:
         - { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 128 } }
       requestBody:
         required: true
-        content: { text/plain: { schema: { type: string, maxLength: 67108864 } } }
+        content:
+          text/plain: { schema: { type: string, maxLength: 67108864 } }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, description: The first part }
+                original: { type: string, format: binary, description: The original file, streamed after the text }
       responses:
         "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentPublished" } } } }
         "202": { $ref: "#/components/responses/ApprovalRequired" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/original/content:
+    get:
+      operationId: readServerOriginal
+      description: The plaintext of a server-mode document version's original file; needs raw-read on the version and read on every unit (CNT-003).
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: Plaintext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/export/content:
+    post:
+      operationId: exportServerUnits
+      description: The plaintext of selected units of a server-mode document version; export and read-units on the version, read and export-key on every unit.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [units], properties: { units: { type: array, maxItems: 100, items: { type: string, format: uuid } } } }
+      responses:
+        "200":
+          description: Exported units
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_version_id: { type: string, format: uuid }
+                  units:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        unit_id: { type: string, format: uuid }
+                        unit_version_id: { type: string, format: uuid }
+                        text: { type: string }
         default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/document/unit/content:
     get:

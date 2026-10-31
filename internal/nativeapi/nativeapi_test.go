@@ -304,4 +304,25 @@ func TestServerDocumentsHTTP(t *testing.T) {
 	if _, err := bob.AppendText(ctx, "vault", "chat", []byte("me too")); !errors.As(err, &apiErr) || apiErr.Status != 404 {
 		t.Fatalf("bob appends: %v", err)
 	}
+
+	// An original file, streamed beside the text (S4b).
+	original := bytes.Repeat([]byte("original bytes "), 100_000)
+	if _, err := alice.PutDocumentTextWithOriginal(ctx, "vault", "q3/report.md", []byte("Short.\n\nText."), bytes.NewReader(original)); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := alice.GetOriginalPlain(ctx, "vault", "q3/report.md", "", &out); err != nil || !bytes.Equal(out.Bytes(), original) {
+		t.Fatalf("alice reads the original: %d bytes, %v", out.Len(), err)
+	}
+	if err := bob.GetOriginalPlain(ctx, "vault", "q3/report.md", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("bob without raw-read: %v", err)
+	}
+	units, err := alice.Units(ctx, "vault", "q3/report.md", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := alice.ExportUnitsPlain(ctx, "vault", "q3/report.md", "", []string{units[1].Unit})
+	if err != nil || len(x) != 1 || x[0].Text != "Text." {
+		t.Fatalf("export: %+v %v", x, err)
+	}
 }

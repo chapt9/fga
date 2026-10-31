@@ -417,13 +417,21 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		if serverMode(ctx, c, *bucket) {
-			if *to != "" || *originalFile != "" {
-				return errors.New("a server-mode bucket takes no recipients, and server-mode original files come later")
+			if *to != "" {
+				return errors.New("a server-mode bucket takes no recipients: policy decides who reads")
 			}
 			var p client.DocumentPublished
-			if cmd == "append" {
+			switch {
+			case cmd == "append":
 				p, err = c.AppendText(ctx, *bucket, *key, text)
-			} else {
+			case *originalFile != "":
+				f, ferr := os.Open(*originalFile)
+				if ferr != nil {
+					return ferr
+				}
+				defer f.Close()
+				p, err = c.PutDocumentTextWithOriginal(ctx, *bucket, *key, text, f)
+			default:
 				p, err = c.PutDocumentText(ctx, *bucket, *key, text, *collection)
 			}
 			var need *client.ApprovalRequired
@@ -482,7 +490,17 @@ func clientCommand(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		err = c.GetOriginal(ctx, *bucket, *key, *version, f)
+		// The server-mode route first; a client-mode original answers it
+		// ENCRYPTION_MODE, after authorization.
+		server := true
+		err = c.GetOriginalPlain(ctx, *bucket, *key, *version, f)
+		var apiErr *client.Error
+		if errors.As(err, &apiErr) && apiErr.Code == "ENCRYPTION_MODE" {
+			server = false
+			if _, err = f.Seek(0, io.SeekStart); err == nil {
+				err = c.GetOriginal(ctx, *bucket, *key, *version, f)
+			}
+		}
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
@@ -490,7 +508,11 @@ func clientCommand(cmd string, args []string) error {
 			os.Remove(tmp)
 			return err
 		}
-		fmt.Println("verified and decrypted the original file")
+		if server {
+			fmt.Println("read the original file (server-encrypted)")
+		} else {
+			fmt.Println("verified and decrypted the original file")
+		}
 		return os.Rename(tmp, *out)
 	case "get-document":
 		tmp := *out + ".partial"

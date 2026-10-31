@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -471,6 +472,45 @@ func TestReleaseUnit(t *testing.T) {
 	}
 	if _, err := f.svc.ReleaseUnit(ctx, f.decide(t, f.alice, registry.OpDocReadUnit, readUnit(a)...), p.DocumentVersion, a.Unit); !errors.Is(err, datakeys.ErrDecision) {
 		t.Fatalf("the unit read's own decision: %v", err)
+	}
+	noKeyInAudit(t, f.st, "DATA_KEY_RELEASED", 1, key)
+}
+
+// TestReleaseOriginal covers CNT-003 for the keys role (S4b): an
+// original's data key is released only with complete-content decisions
+// that name read on every unit of the version, exactly once.
+func TestReleaseOriginal(t *testing.T) {
+	f := setup(t)
+	p, err := f.st.Content.PutDocumentText(ctx, f.alice.Caller, content.TextRequest{Bucket: "vault", Key: "r.md", IdempotencyKey: "o1",
+		Original: strings.NewReader("the original file")}, []byte("one\n\ntwo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.st.Content.ListUnits(ctx, f.alice.Caller, "vault", "r.md", "", 10, "")
+	if err != nil || len(page.Units) != 2 {
+		t.Fatalf("units: %+v %v", page, err)
+	}
+	version := decisionsvc.Alias{Type: "document.version", ID: p.DocumentVersion}
+	rawRead := decisionsvc.Check{ID: "version", Role: registry.RoleVersion, Action: "raw-read", Resource: version}
+	complete := func(units ...content.UnitEntry) signing.Signed {
+		checks := []decisionsvc.Check{rawRead}
+		for i, u := range units {
+			checks = append(checks, decisionsvc.Check{ID: "unit-" + strconv.Itoa(i), Role: registry.RoleUnit, Action: "read",
+				Resource: decisionsvc.Alias{Type: "document.text_unit", ID: u.Unit}, Version: u.UnitVersion})
+		}
+		return f.decide(t, f.alice, registry.OpDocRawRead, checks...)
+	}
+	primary := func() signing.Signed { return f.decide(t, f.alice, registry.OpKeyReleaseOriginal, rawRead) }
+	if _, err := f.svc.ReleaseOriginal(ctx, primary(), []signing.Signed{complete(page.Units[0])}, p.DocumentVersion); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("a release without read on every unit: %v", err)
+	}
+	if _, err := f.svc.ReleaseOriginal(ctx, primary(), []signing.Signed{complete(page.Units[0]), complete(page.Units[0])},
+		p.DocumentVersion); !errors.Is(err, datakeys.ErrDecision) {
+		t.Fatalf("a unit named twice: %v", err)
+	}
+	key, err := f.svc.ReleaseOriginal(ctx, primary(), []signing.Signed{complete(page.Units...)}, p.DocumentVersion)
+	if err != nil || len(key) != kek.DataKeySize {
+		t.Fatalf("release with every unit: %v", err)
 	}
 	noKeyInAudit(t, f.st, "DATA_KEY_RELEASED", 1, key)
 }

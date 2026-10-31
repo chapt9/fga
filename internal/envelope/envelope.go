@@ -21,6 +21,7 @@ import (
 	"fga/internal/cryptowire"
 	"fga/internal/enforce"
 	"fga/internal/fence"
+	"fga/internal/keycheck"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -375,57 +376,11 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 // raw-read on this document version and read on units of it; together
 // they name every unit version of the version exactly once.
 func (s *Service) completeContent(ctx context.Context, primary signing.Record, documentVersion cryptowire.UUID, extra []signing.Signed) ([]fence.Binding, error) {
-	members := map[string]string{}
-	rows, err := s.d.Catalog.Pool().Query(ctx, `SELECT unit::text, unit_version::text FROM document_units WHERE tenant = $1 AND document_version = $2`,
-		primary.Tenant, documentVersion)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var unit, version string
-		if err := rows.Scan(&unit, &version); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		members[unit] = version
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	covered := map[string]bool{}
-	var out []fence.Binding
-	for _, x := range extra {
-		rec, err := s.d.Verifier.Check(x)
-		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
-			return nil, ErrDecision
-		}
-		version := false
-		for _, c := range rec.Checks {
-			switch {
-			case c.Kind != string(registry.KindOperation):
-				return nil, ErrDecision
-			case c.ResourceType == "document.version" && c.Action == "raw-read" && c.ResourceID == documentVersion.String():
-				version = true
-			case c.ResourceType == "document.text_unit" && c.Action == "read" && members[c.ResourceID] == c.Version && !covered[c.ResourceID]:
-				covered[c.ResourceID] = true
-			default:
-				return nil, ErrDecision
-			}
-		}
-		if !version {
-			return nil, ErrDecision
-		}
-		b, err := fence.FromRecord(rec)
-		if err != nil {
-			return nil, ErrDecision
-		}
-		out = append(out, b)
-	}
-	if len(covered) != len(members) {
+	out, err := keycheck.CompleteContent(ctx, s.d.Catalog.Pool(), s.d.Verifier, primary, documentVersion, extra)
+	if errors.Is(err, keycheck.ErrDecision) {
 		return nil, ErrDecision
 	}
-	return out, nil
+	return out, err
 }
 
 // recipientPath verifies the recipient-path decisions of a derived

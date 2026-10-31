@@ -43,11 +43,21 @@ The unit listing (`/document/units`) now names the document version it lists, so
 - **Server-mode routes** refuse client-mode buckets and units in the same way.
 - **Unit reuse** stays within one mode.
 
-## Not yet (S4b)
+## Original files and exports (S4b)
 
-- Original files in server mode (`put-document -original` is refused).
-- Exports of server-mode units.
-- Server-mode derived outputs.
+**Original files**
+
+- **Upload.** The same route takes `multipart/form-data`: a `text` part, then an optional `original` part streamed straight into encryption (SDK `PutDocumentTextWithOriginal`, CLI `fga put-document -original`). The begin reserves an original intent. The document seal gives it its own data key, it is encrypted into its own blob with no length known in advance, and the manifest names it. A collection has none.
+- **Read.** `GET .../document/original/content` (SDK `GetOriginalPlain`, CLI `fga get-original`, which tries the server route first and falls back on `ENCRYPTION_MODE`) needs `raw-read` on the version and `read` on every unit (CNT-003).
+  1. The storage role's own complete-content decisions admit the read.
+  2. A second set is made for the keys role and goes with the release decision (`storage.key.release-original`).
+  3. The keys role checks in `internal/keycheck` that the second set names every unit of the version exactly once. That is the code envelope delivery now uses too. It admits them in the fence of the release, so a unit changed between the storage role's checks and the release yields no key (review finding 3, V-163).
+
+**Exports.** `POST .../document/export/content` with `{"units": [...]}` (SDK `ExportUnitsPlain`) needs `export` and `read-units` on the version and `read` and `export-key` on every unit, all allowed or none (`document.export`). The admission is recorded. Each unit's key is then released under its read checks, and the plaintext returns as JSON, bounded like client exports (32 MiB). Text entries cannot be exported.
+
+## Not yet
+
+- Server-mode derived outputs (the second part of S4b).
 
 ## Tests
 
@@ -56,5 +66,7 @@ The unit listing (`/document/units`) now names the document version it lists, so
 | `internal/content` `TestServerDocument` | Splitting, sealing and publishing without signatures or descriptors; reads by policy alone; a unit raised to `restricted` leaving another member's view while the owner still reads it; a retry; a second version; mode refusals in both directions |
 | `TestServerCollection` | Create, append keeping entries, an append retry, a member without `new-version`, appending to a document, a withdrawn entry |
 | `internal/datakeys` `TestReleaseUnit` | A unit's decision opens no other unit; a unit outside the version; another operation; audit |
-| `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end |
-| `scripts/smoke.sh` | A server-mode document and an appended collection read by another member |
+| `TestServerOriginal` | Original upload and read, a member without `raw-read`, V-163, exports |
+| `internal/datakeys` `TestReleaseOriginal` | A release without every unit, or with a unit named twice, is refused |
+| `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end, including a multipart upload with an original and an export |
+| `scripts/smoke.sh` | A server-mode document and an appended collection read by another member; an original the owner reads and another member may not |

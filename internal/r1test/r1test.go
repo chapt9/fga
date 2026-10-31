@@ -391,6 +391,17 @@ func (d dataKeys) ReleaseUnitKey(ctx context.Context, decision signing.Signed, d
 	return k, err
 }
 
+func (d dataKeys) ReleaseOriginalKey(ctx context.Context, decision signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error) {
+	if d.st.DataKeysVia != nil {
+		return d.st.DataKeysVia.ReleaseOriginalKey(ctx, decision, extra, documentVersionID)
+	}
+	k, err := d.st.DataKeys.ReleaseOriginal(ctx, decision, extra, documentVersionID)
+	if errors.Is(err, datakeys.ErrNotFound) {
+		return nil, content.ErrNotFound
+	}
+	return k, err
+}
+
 func (d dataKeys) ReleaseDataKey(ctx context.Context, decision signing.Signed, versionID string) ([]byte, error) {
 	if d.st.DataKeysVia != nil {
 		return d.st.DataKeysVia.ReleaseDataKey(ctx, decision, versionID)

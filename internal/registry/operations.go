@@ -66,6 +66,10 @@ const (
 	OpKeySealDocVersion = "storage.key.seal-document-version"
 	OpKeyReleaseUnit    = "storage.key.release-unit"
 	OpKeyReleaseEntry   = "storage.key.release-entry"
+	// OpKeyReleaseOriginal releases an original file's data key under
+	// raw-read on its document version; the release also needs the
+	// complete-content decisions (CNT-003, internal/keycheck).
+	OpKeyReleaseOriginal = "storage.key.release-original"
 	// Documents (DOC-001 to DOC-004). A publication's checks are split
 	// into batches of at most 50 (DEC-009): the document itself, explicit
 	// unit labels, reused units, the document version per recipient, and
@@ -292,6 +296,7 @@ func baseOperations() []Operation {
 		one(OpPublishServerVersion, RoleObject, "storage.object", "new-version"),
 		one(OpKeySealDocCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpKeySealDocVersion, RoleDocument, "storage.object", "new-version"),
+		one(OpKeyReleaseOriginal, RoleVersion, "document.version", "raw-read"),
 		{Name: OpKeyReleaseUnit, Checks: []CheckSpec{{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"}}},
 		one(OpDocBeginCreate, RoleBucket, "storage.bucket", "create-object"),

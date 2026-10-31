@@ -208,6 +208,12 @@ as alice; check $B/fga put-document -bucket shared -key q4/chat.log -in chat1.tx
 as alice; check $B/fga append -bucket shared -key q4/chat.log -in chat2.txt
 as bob;   check $B/fga get-document -bucket shared -key q4/chat.log -out bob-shared-chat.txt; check cmp chat.expected bob-shared-chat.txt
 echo "server mode: a document and an appended collection read by bob"
+# Server-mode original files (S4b): encrypted under their own key and read
+# only with raw-read and read on every unit, which bob lacks.
+as alice; check $B/fga put-document -bucket shared -key q4/report.md -in notes.txt -original shared.bin
+as alice; check $B/fga get-original -bucket shared -key q4/report.md -out shared-original.out; check cmp shared.bin shared-original.out
+as bob;   if $B/fga get-original -bucket shared -key q4/report.md -out x.out 2>err.txt; then echo "UNEXPECTED: bob read the original"; exit 1; fi
+echo "server-mode original: owner reads it; bob without raw-read: $(cat err.txt)"
 
 
 $ADMIN audit export -dir audit

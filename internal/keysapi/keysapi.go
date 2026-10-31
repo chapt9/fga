@@ -92,6 +92,9 @@ type (
 		VersionID string `json:"version_id,omitempty"`
 		// UnitID names a unit of the document version VersionID.
 		UnitID string `json:"unit_id,omitempty"`
+		// Extra holds further decisions the release needs, such as the
+		// complete-content decisions of an original file.
+		Extra []SignedBody `json:"extra,omitempty"`
 	}
 	// DataKeyBody is a data key, and when sealed for an intent its sealed
 	// form and KEK version. It travels only between the keys and storage

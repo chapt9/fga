@@ -27,8 +27,8 @@ func classify(err error) (int, string, bool) {
 	return 0, "", false
 }
 
-// Register adds POST /internal/v1/data-keys/seal, seal-document, release
-// and release-unit to mux.
+// Register adds POST /internal/v1/data-keys/seal, seal-document, release,
+// release-unit and release-original to mux.
 func Register(svc *datakeys.Service, adapterOf func(*http.Request) (string, error), storageAdapter string) func(*http.ServeMux) {
 	return func(mux *http.ServeMux) {
 		handle := func(path string, serve func(r *http.Request, b keysapi.DataKeyRequest) (any, error)) {
@@ -81,6 +81,17 @@ func Register(svc *datakeys.Service, adapterOf func(*http.Request) (string, erro
 				return nil, datakeys.ErrNotFound
 			}
 			k, err := svc.Release(r.Context(), decision(b), b.VersionID)
+			return keysapi.DataKeyBody{Key: k}, err
+		})
+		handle("/internal/v1/data-keys/release-original", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {
+			if b.VersionID == "" || b.UnitID != "" || b.IntentID != "" {
+				return nil, datakeys.ErrNotFound
+			}
+			var extra []signing.Signed
+			for _, x := range b.Extra {
+				extra = append(extra, signing.Signed{Payload: x.Payload, JWS: x.JWS})
+			}
+			k, err := svc.ReleaseOriginal(r.Context(), decision(b), extra, b.VersionID)
 			return keysapi.DataKeyBody{Key: k}, err
 		})
 		handle("/internal/v1/data-keys/release-unit", func(r *http.Request, b keysapi.DataKeyRequest) (any, error) {

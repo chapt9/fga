@@ -48,6 +48,7 @@ fga/internal/httpapi
 fga/internal/gate
 fga/internal/identity
 fga/internal/journal
+fga/internal/keycheck
 fga/internal/keysapi
 # Reviewed 2026-10-31: label order arithmetic only (D-06).
 fga/internal/labels

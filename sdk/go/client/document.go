@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -390,6 +391,68 @@ func (c *Client) PutDocumentText(ctx context.Context, bucket, key string, text [
 		extra.Set("collection", "1")
 	}
 	return c.putText(ctx, bucket, key, text, extra)
+}
+
+// PutDocumentTextWithOriginal is PutDocumentText with the original file the
+// text was taken from, sent as multipart/form-data and streamed: the
+// storage role encrypts it under its own data key, and discloses it only
+// with complete-content permission (CNT-003).
+func (c *Client) PutDocumentTextWithOriginal(ctx context.Context, bucket, key string, text []byte, original io.Reader) (DocumentPublished, error) {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		err := func() error {
+			tw, err := mw.CreateFormField("text")
+			if err != nil {
+				return err
+			}
+			if _, err := tw.Write(text); err != nil {
+				return err
+			}
+			ow, err := mw.CreateFormFile("original", "original")
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(ow, original); err != nil {
+				return err
+			}
+			return mw.Close()
+		}()
+		pw.CloseWithError(err)
+	}()
+	q := url.Values{"key": {key}}
+	var out DocumentPublished
+	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/documents/text?"+q.Encode(), c.StorageToken, pr, -1,
+		map[string]string{"Content-Type": mw.FormDataContentType(), "Idempotency-Key": cryptowire.NewUUID().String()}, &out)
+	pr.CloseWithError(err)
+	return out, err
+}
+
+// GetOriginalPlain writes a server-mode document version's original file
+// to dst; it needs raw-read on the version and read on every unit.
+func (c *Client) GetOriginalPlain(ctx context.Context, bucket, key, version string, dst io.Writer) error {
+	_, err := c.plain(ctx, documentURL(c.StorageURL, bucket, "/original/content", key, version, nil), dst)
+	return err
+}
+
+// UnitText is one exported server-mode unit.
+type UnitText struct {
+	Unit        string `json:"unit_id"`
+	UnitVersion string `json:"unit_version_id"`
+	Text        string `json:"text"`
+}
+
+// ExportUnitsPlain exports the plaintext of selected units of a
+// server-mode document version; it needs export and read-units on the
+// version and read and export-key on every unit, or nothing is exported.
+func (c *Client) ExportUnitsPlain(ctx context.Context, bucket, key, version string, units []string) ([]UnitText, error) {
+	var out struct {
+		Units []UnitText `json:"units"`
+	}
+	body, n := jsonBody(map[string][]string{"units": units})
+	_, err := c.do(ctx, http.MethodPost, documentURL(c.StorageURL, bucket, "/export/content", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	return out.Units, err
 }
 
 // AppendText appends the paragraphs of text to the server-mode text

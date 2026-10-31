@@ -549,15 +549,39 @@ func (s *Service) ReadOriginal(ctx context.Context, c Caller, bucketName, key, v
 	if err != nil {
 		return nil, err
 	}
+	if err := clientMode(v.Encryption); err != nil {
+		return nil, err
+	}
+	merged, tenantID, err := s.admitOriginal(ctx, c, d, object, v, recs)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	return &Stream{ReadCloser: s.lease(r, merged), Version: info(v, true)}, nil
+}
+
+// admitOriginal admits the read of an original file under the fence over
+// its complete-content decisions recs, recording the admission, and
+// returns their merged binding for the read lease.
+func (s *Service) admitOriginal(ctx context.Context, c Caller, d docVersion, object cryptowire.UUID, v version,
+	recs []signing.Record) (fence.Binding, cryptowire.UUID, error) {
 	bindings := make([]fence.Binding, len(recs))
+	var err error
 	for i, rec := range recs {
 		if bindings[i], err = fence.FromRecord(rec); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+			return fence.Binding{}, cryptowire.UUID{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 	}
 	tenantID, err := s.tenantID(ctx, c.Tenant)
 	if err != nil {
-		return nil, err
+		return fence.Binding{}, tenantID, err
 	}
 	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
 		var originalState, docState string
@@ -578,22 +602,11 @@ func (s *Service) ReadOriginal(ctx context.Context, c Caller, bucketName, key, v
 			audit.Target{Type: "document.version", ID: d.id.String()}))
 	}))
 	if err != nil {
-		return nil, err
+		return fence.Binding{}, tenantID, err
 	}
 	merged, err := fence.Merge(bindings)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fence.Binding{}, tenantID, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if err := clientMode(v.Encryption); err != nil {
-		return nil, err
-	}
-	digest, err := cryptowire.ParseDigest(v.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
-	}
-	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
-	if err != nil {
-		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
-	}
-	return &Stream{ReadCloser: s.lease(r, merged), Version: info(v, true)}, nil
+	return merged, tenantID, nil
 }

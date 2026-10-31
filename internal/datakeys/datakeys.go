@@ -25,6 +25,7 @@ import (
 	"fga/internal/cryptowire"
 	"fga/internal/fence"
 	"fga/internal/kek"
+	"fga/internal/keycheck"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -283,7 +284,8 @@ func (s *Service) Release(ctx context.Context, decision signing.Signed, versionI
 	return key, nil
 }
 
-// SealDocument gives every new unit of a server-mode document intent its
+// SealDocument gives every new unit of a server-mode document intent, and
+// its original file if it reserved one, its
 // data key (SSE-001, SSE-003). The decision is for
 // storage.key.seal-document-create with create-object on the intent's
 // bucket, or storage.key.seal-document-version with new-version on its
@@ -363,17 +365,18 @@ func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, doc
 			state  string
 			sealed bool
 			mode   string
+			kind   string
 		}
 		rows, err := tx.Query(ctx, `
-			SELECT id, object, version, crypto_version, blob, state, sealed_key IS NOT NULL, encryption FROM upload_intents
-			 WHERE tenant = $1 AND document_intent = $2 AND kind = 'unit' ORDER BY id FOR UPDATE`, rec.Tenant, id)
+			SELECT id, object, version, crypto_version, blob, state, sealed_key IS NOT NULL, encryption, kind FROM upload_intents
+			 WHERE tenant = $1 AND document_intent = $2 AND kind IN ('unit', 'original') ORDER BY id FOR UPDATE`, rec.Tenant, id)
 		if err != nil {
 			return err
 		}
 		var units []unit
 		for rows.Next() {
 			u := unit{b: kek.Binding{Tenant: tenant}}
-			if err := rows.Scan(&u.id, &u.b.Object, &u.b.Version, &u.b.CryptoVersion, &u.b.Blob, &u.state, &u.sealed, &u.mode); err != nil {
+			if err := rows.Scan(&u.id, &u.b.Object, &u.b.Version, &u.b.CryptoVersion, &u.b.Blob, &u.state, &u.sealed, &u.mode, &u.kind); err != nil {
 				rows.Close()
 				return err
 			}
@@ -402,7 +405,11 @@ func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, doc
 				rec.Tenant, u.id, sealed, int64(version)); err != nil {
 				return err
 			}
-			targets = append(targets, audit.Target{Type: unitType, ID: u.b.Object.String(), Version: u.b.Version.String(), KEKVersion: version})
+			typ := unitType
+			if u.kind == "original" {
+				typ = "document.original"
+			}
+			targets = append(targets, audit.Target{Type: typ, ID: u.b.Object.String(), Version: u.b.Version.String(), KEKVersion: version})
 		}
 		ev := s.event(rec, "DATA_KEY_SEALED", kek.Binding{Object: document}, version)
 		ev.Targets = append([]audit.Target{{Type: "storage.object", ID: document.String(), KEKVersion: version}}, targets...)
@@ -470,6 +477,79 @@ func (s *Service) ReleaseUnit(ctx context.Context, decision signing.Signed, docu
 		}
 		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
 		ev.Targets[0].Type = rec.Checks[1].ResourceType
+		ev.Targets = append(ev.Targets, audit.Target{Type: "document.version", ID: documentVersionID})
+		return s.d.Catalog.AppendTx(ctx, tx, ev)
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	key, err := s.d.KEKs.Open(rec.Tenant, uint32(kekVersion), sealed, bnd)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return key, nil
+}
+
+// ReleaseOriginal opens the data key of a LIVE server-mode document
+// version's original file (CNT-003, SSE-003). The decision is for
+// storage.key.release-original with raw-read on that document version;
+// extra are the complete-content decisions, raw-read on the version and
+// read on every unit (internal/keycheck). All are single-use and admitted
+// in one fence with the release, so a change to any unit between the
+// storage role's checks and the release blocks it (review finding 3,
+// V-163). The release is audited; the caller owns the key.
+func (s *Service) ReleaseOriginal(ctx context.Context, decision signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error) {
+	rec, err := s.verify(decision, registry.OpKeyReleaseOriginal)
+	if err != nil {
+		return nil, err
+	}
+	dv, err := cryptowire.ParseUUID(documentVersionID)
+	if err != nil || rec.Checks[0].ResourceID != documentVersionID {
+		return nil, ErrDecision
+	}
+	var bnd kek.Binding
+	var docMode, origMode string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `
+		SELECT t.id, v.object, v.id, coalesce(v.crypto_version, '00000000-0000-0000-0000-000000000000'),
+		       coalesce(v.blob, '00000000-0000-0000-0000-000000000000'), d.encryption, coalesce(v.encryption, '')
+		  FROM document_versions d JOIN object_versions v ON v.tenant = d.tenant AND v.id = d.original_version
+		  JOIN tenants t ON t.name = d.tenant
+		 WHERE d.tenant = $1 AND d.id = $2`, rec.Tenant, dv).
+		Scan(&bnd.Tenant, &bnd.Object, &bnd.Version, &bnd.CryptoVersion, &bnd.Blob, &docMode, &origMode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if docMode != "server" || origMode != "server" {
+		return nil, ErrDecision
+	}
+	b, err := fence.FromRecord(rec)
+	if err != nil {
+		return nil, ErrDecision
+	}
+	more, err := keycheck.CompleteContent(ctx, s.d.Catalog.Pool(), s.d.Verifier, rec, dv, extra)
+	if errors.Is(err, keycheck.ErrDecision) {
+		return nil, ErrDecision
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	var sealed []byte
+	var kekVersion int64
+	err = s.d.Fence.RunAll(ctx, append([]fence.Binding{b}, more...), nil, func(ctx context.Context, tx pgx.Tx) error {
+		var docState, origState string
+		if err := tx.QueryRow(ctx, `SELECT d.state, v.state, v.sealed_key, v.kek_version FROM document_versions d, object_versions v
+		                             WHERE d.tenant = $1 AND d.id = $2 AND v.tenant = $1 AND v.id = $3 FOR SHARE`,
+			rec.Tenant, dv, bnd.Version).Scan(&docState, &origState, &sealed, &kekVersion); err != nil {
+			return err
+		}
+		if docState != "LIVE" || origState != "LIVE" {
+			return ErrNotFound
+		}
+		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
+		ev.Targets[0].Type = "document.original"
 		ev.Targets = append(ev.Targets, audit.Target{Type: "document.version", ID: documentVersionID})
 		return s.d.Catalog.AppendTx(ctx, tx, ev)
 	})

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"fga/internal/admission"
 	"fga/internal/content"
@@ -271,21 +272,21 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		b, k, v, ok := object(r)
 		q := r.URL.Query()
 		h := r.Header
-		if !ok || v != "" || r.ContentLength < 0 || r.ContentLength > textunits.MaxText || len(h.Get("Idempotency-Key")) > 128 {
+		if !ok || v != "" || len(h.Get("Idempotency-Key")) > 128 {
 			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
-		text, err := io.ReadAll(http.MaxBytesReader(w, r.Body, r.ContentLength))
-		if err != nil || int64(len(text)) != r.ContentLength {
+		req := content.TextRequest{Bucket: b, Key: k, IdempotencyKey: h.Get("Idempotency-Key"), Collection: q.Get("collection") == "1",
+			Append: q.Get("append") == "1"}
+		if req.IdempotencyKey == "" {
+			req.IdempotencyKey = cryptowire.NewUUID().String()
+		}
+		text, ok := textBody(w, r, &req)
+		if !ok {
 			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
-		idem := h.Get("Idempotency-Key")
-		if idem == "" {
-			idem = cryptowire.NewUUID().String()
-		}
-		p, err := svc.PutDocumentText(r.Context(), c, content.TextRequest{Bucket: b, Key: k, IdempotencyKey: idem,
-			Collection: q.Get("collection") == "1", Append: q.Get("append") == "1"}, text)
+		p, err := svc.PutDocumentText(r.Context(), c, req, text)
 		var staged *content.StagedApproval
 		if errors.As(err, &staged) {
 			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,
@@ -646,6 +647,39 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		defer st.Close()
 		streamBody(w, r, st)
 	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/original/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadOriginalPlain(r.Context(), c, b, k, v)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		plainBody(w, st)
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/document/export/content", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		var body struct {
+			Units []string `json:"units"`
+		}
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		x, err := svc.ExportUnitsPlain(r.Context(), c, b, k, v, body.Units)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, x)
+	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/document/unit/content", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := document(r)
 		q := r.URL.Query()
@@ -864,6 +898,40 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			Receipt:  x.Envelope.Receipt, ReceiptSignature: x.Envelope.ReceiptSignature}, x.Ciphertext})
 	}))
 	return mux
+}
+
+// textBody reads a server-mode text upload: a text/plain body of known
+// length, or multipart/form-data with a "text" part followed by an
+// optional "original" part, which req.Original then streams from.
+func textBody(w http.ResponseWriter, r *http.Request, req *content.TextRequest) ([]byte, bool) {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if r.ContentLength < 0 || r.ContentLength > textunits.MaxText {
+			return nil, false
+		}
+		text, err := io.ReadAll(http.MaxBytesReader(w, r.Body, r.ContentLength))
+		return text, err == nil && int64(len(text)) == r.ContentLength
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, false
+	}
+	part, err := mr.NextPart()
+	if err != nil || part.FormName() != "text" {
+		return nil, false
+	}
+	text, err := io.ReadAll(io.LimitReader(part, textunits.MaxText+1))
+	if err != nil || len(text) > textunits.MaxText {
+		return nil, false
+	}
+	part, err = mr.NextPart()
+	switch {
+	case err == io.EOF:
+	case err != nil || part.FormName() != "original":
+		return nil, false
+	default:
+		req.Original = part
+	}
+	return text, true
 }
 
 // plainBody writes an admitted server-mode plaintext stream. A failed
