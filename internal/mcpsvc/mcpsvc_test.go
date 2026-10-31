@@ -45,6 +45,16 @@ func connect(t *testing.T, d *mcptest.Deployment, user, recipient string) *mcp.C
 	return s
 }
 
+// stateful opens a session at the newest protocol version that has them.
+func stateful(t *testing.T, d *mcptest.Deployment, user string) *mcp.ClientSession {
+	t.Helper()
+	s, err := d.ConnectWith(t, mcptest.Conn{User: user, Protocol: mcptest.Stateful})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func toolNames(t *testing.T, s *mcp.ClientSession) []string {
 	t.Helper()
 	res, err := s.ListTools(ctx, nil)
@@ -342,7 +352,7 @@ func TestMCPSessions(t *testing.T) {
 	if err := d.St.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
-	s := connect(t, d, "alice", "")
+	s := stateful(t, d, "alice")
 	if s.ID() == "" {
 		t.Fatal("no session ID")
 	}
@@ -447,12 +457,12 @@ func TestMCPLimits(t *testing.T) {
 			}
 		})
 	serverDocument(t, d)
-	a1, a2 := connect(t, d, "alice", ""), connect(t, d, "alice", "")
-	if _, err := d.Connect(t, "alice", ""); err == nil {
+	a1, a2 := stateful(t, d, "alice"), stateful(t, d, "alice")
+	if _, err := d.ConnectWith(t, mcptest.Conn{User: "alice", Protocol: mcptest.Stateful}); err == nil {
 		t.Fatal("alice opened a third session")
 	}
-	b := connect(t, d, "bob", "")
-	if _, err := d.Connect(t, "carol", ""); err == nil {
+	b := stateful(t, d, "bob")
+	if _, err := d.ConnectWith(t, mcptest.Conn{User: "carol", Protocol: mcptest.Stateful}); err == nil {
 		t.Fatal("a session over the total")
 	}
 
@@ -482,7 +492,7 @@ func TestMCPLimits(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := d.Connect(t, "alice", ""); err == nil {
+		if _, err := d.ConnectWith(t, mcptest.Conn{User: "alice", Protocol: mcptest.Stateful}); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -616,6 +626,17 @@ func TestMCPClientMode(t *testing.T) {
 	if got, err := openObject(t, bob, &pkg); err != nil || !bytes.Equal(got, plain) {
 		t.Fatalf("bob opens the object: %v", err)
 	}
+	// An older client declares the capability under experimental, in a
+	// session; it is served alike.
+	older, err := d.ConnectWith(t, mcptest.Conn{User: "bob", Recipient: bob.Recipient.Fingerprint().String(), LegacyCapability: true,
+		Protocol: mcptest.Stateful})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := older.ReadResource(ctx, &mcp.ReadResourceParams{URI: "fga://reports/plan.bin"}); err != nil ||
+		len(res.Contents) != 1 || res.Contents[0].MIMEType != mcpwire.MIMEType {
+		t.Fatalf("the object for an older capable client: %+v %v", res, err)
+	}
 
 	var out mcpsvc.ReadOutput
 	text, err := call(s, mcpsvc.ToolReadDocument, map[string]any{"bucket": "reports", "key": "q3.md"}, &out)
@@ -722,5 +743,70 @@ func TestMCPExport(t *testing.T) {
 	if _, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "reports", "key": "plan.bin",
 		"recipient": carol.Recipient.Fingerprint().String()}, nil); err == nil {
 		t.Fatal("an export for a recipient without an envelope")
+	}
+}
+
+// TestMCPTransport covers the MCP transport and authorization rules the
+// role follows: a client of protocol 2026-07-28 is served without a
+// session and an earlier one in a session; the protected resource
+// metadata (RFC 9728) names the endpoint and its authorization servers,
+// and a request without a token is pointed to it; a browser request from
+// an origin not allowed is refused before its token is looked at.
+func TestMCPTransport(t *testing.T) {
+	const public = "https://mcp.example/mcp"
+	d := mcptest.DeployWith(t, mcptest.Options{Limits: mcpsvc.DefaultLimits, Edit: func(deps *mcpsvc.Deps) {
+		deps.PublicURL, deps.AuthorizationServers = public, []string{"https://idp.example"}
+		deps.AllowedOrigins = []string{"https://app.example"}
+	}})
+	serverDocument(t, d)
+	if s := connect(t, d, "alice", ""); s.InitializeResult().ProtocolVersion != "2026-07-28" || s.ID() != "" {
+		t.Fatalf("the newest protocol: %q, session %q", s.InitializeResult().ProtocolVersion, s.ID())
+	}
+	if s := stateful(t, d, "alice"); s.InitializeResult().ProtocolVersion != mcptest.Stateful || s.ID() == "" {
+		t.Fatalf("a protocol with sessions: %q, session %q", s.InitializeResult().ProtocolVersion, s.ID())
+	}
+
+	resp, err := http.Get(d.MCP.URL + "/.well-known/oauth-protected-resource/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&meta)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || meta.Resource != public || !slices.Equal(meta.AuthorizationServers, []string{"https://idp.example"}) {
+		t.Fatalf("metadata: %d %+v %v", resp.StatusCode, meta, err)
+	}
+
+	post := func(origin, token string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, d.MCP.URL+"/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"initialize",`+
+			`"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	if r := post("", ""); r.StatusCode != http.StatusUnauthorized ||
+		!strings.Contains(r.Header.Get("WWW-Authenticate"), `resource_metadata="https://mcp.example/.well-known/oauth-protected-resource/mcp"`) {
+		t.Fatalf("no token: %d %q", r.StatusCode, r.Header.Get("WWW-Authenticate"))
+	}
+	token := d.Token(t, "alice")
+	if r := post("http://rebound.example", token); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("another origin: %d", r.StatusCode)
+	}
+	if r := post("https://app.example", token); r.StatusCode != http.StatusOK {
+		t.Fatalf("the allowed origin: %d", r.StatusCode)
 	}
 }

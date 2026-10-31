@@ -172,7 +172,7 @@ func (s *Service) readResource(ctx context.Context, req *mcp.ReadResourceRequest
 	text := func(s string) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, MIMEType: "text/plain", Text: s}}}, nil
 	}
-	recipient := recipientOf(req.Session)
+	recipient := recipientOf(req.ClientCapabilities())
 	units := func(out ReadOutput) (*mcp.ReadResourceResult, error) {
 		if out.Package != nil {
 			return packaged(uri, out.Package)

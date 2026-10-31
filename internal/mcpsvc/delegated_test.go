@@ -48,9 +48,11 @@ func TestMCPDelegatedAgent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	session := func(agent, dlg string) *mcp.ClientSession {
+	// narrow is a session (MCP-007); the others speak the sessionless
+	// protocol, naming the delegation on every request.
+	session := func(agent, dlg, protocol string) *mcp.ClientSession {
 		t.Helper()
-		s, err := d.ConnectDelegated(t, agent, dlg)
+		s, err := d.ConnectWith(t, mcptest.Conn{User: agent, Delegation: dlg, Protocol: protocol})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -60,12 +62,12 @@ func TestMCPDelegatedAgent(t *testing.T) {
 		return call(s, mcpsvc.ToolReadDocument, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, nil)
 	}
 
-	all := session("agent-7", "dlg-all")
+	all := session("agent-7", "dlg-all", "")
 	if text, err := readNotes(all); err != nil || !strings.Contains(text, "First paragraph.") {
 		t.Fatalf("the agent for alice reads her document: %q %v", text, err)
 	}
 
-	narrow := session("agent-7", "dlg-tools")
+	narrow := session("agent-7", "dlg-tools", mcptest.Stateful)
 	if _, err := readNotes(narrow); err == nil {
 		t.Fatal("a delegation without read access read the document")
 	}
@@ -89,8 +91,8 @@ func TestMCPDelegatedAgent(t *testing.T) {
 	}
 
 	for name, s := range map[string]*mcp.ClientSession{
-		"another agent under alice's delegation": session("agent-8", "dlg-all"),
-		"the agent without a delegation":         session("agent-7", ""),
+		"another agent under alice's delegation": session("agent-8", "dlg-all", ""),
+		"the agent without a delegation":         session("agent-7", "", ""),
 	} {
 		if _, err := readNotes(s); err == nil {
 			t.Errorf("%s read the document", name)

@@ -11,17 +11,15 @@ import (
 	"fga/internal/mcpwire"
 )
 
-// recipientOf returns the recipient key the session's client declared
-// with the encrypted-package capability, or "" (MCP-005).
-func recipientOf(ss *mcp.ServerSession) string {
-	if ss == nil {
+// recipientOf returns the recipient key the client declared with the
+// encrypted-package extension, or "" (MCP-005): at initialize, or on the
+// request itself from protocol 2026-07-28 on (req.ClientCapabilities reads
+// either).
+func recipientOf(caps *mcp.ClientCapabilities) string {
+	if caps == nil {
 		return ""
 	}
-	p := ss.InitializeParams()
-	if p == nil || p.Capabilities == nil {
-		return ""
-	}
-	c, ok := mcpwire.ParseCapability(p.Capabilities.Experimental)
+	c, ok := mcpwire.ParseCapability(caps.Extensions, caps.Experimental)
 	if !ok {
 		return ""
 	}

@@ -13,6 +13,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
 	"fga/internal/admission"
 	"fga/internal/authn"
@@ -123,6 +126,17 @@ type Deps struct {
 	Limits  Limits
 	// SessionTimeout closes idle MCP sessions; zero means 30 minutes.
 	SessionTimeout time.Duration
+	// PublicURL is the MCP endpoint as clients reach it, such as
+	// https://mcp.example/mcp. When set, the role serves its protected
+	// resource metadata (RFC 9728) naming AuthorizationServers, and a 401
+	// points to it (MCP authorization).
+	PublicURL            string
+	AuthorizationServers []string
+	// AllowedOrigins are the browser origins, such as https://app.example,
+	// whose requests the role serves. A request with any other Origin is
+	// refused, which defeats DNS rebinding; one without Origin is not a
+	// browser's (MCP transports, security).
+	AllowedOrigins []string
 	Logger         *slog.Logger
 }
 
@@ -165,6 +179,7 @@ func New(d Deps) (*Service, error) {
 		// serve it to another, or serve it again later (SDK default:
 		// public).
 		SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) { c.TTLMs, c.CacheScope = 0, "private" },
+		Capabilities: serverCapabilities(),
 	})
 	// contain is added last, so it is the outermost middleware.
 	s.server.AddReceivingMiddleware(s.filter)
@@ -185,18 +200,76 @@ func (s *Service) contain(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
+// serverCapabilities are the SDK's defaults plus the encrypted-package
+// extension the role serves.
+func serverCapabilities() *mcp.ServerCapabilities {
+	c := &mcp.ServerCapabilities{Logging: &mcp.LoggingCapabilities{}}
+	c.AddExtension(mcpwire.Extension, map[string]any{"version": mcpwire.Version})
+	return c
+}
+
+// sessionless is the first protocol version without sessions (SEP-2575,
+// SEP-2567): from it on, a client names its capabilities on each request.
+const sessionless = "2026-07-28"
+
 // Handler serves MCP over the streamable HTTP transport at /mcp, and GET
-// /healthz. Every MCP request needs the user's bearer token for Audience.
-// A session is bound to the token's tenant and user: a request with
-// another user's token is refused, and a session ID is never authority on
-// its own (MCP-007, V-115).
+// /healthz. Every MCP request needs a bearer token for Audience. A request
+// for protocol 2026-07-28 or later is served without a session; an earlier
+// one in a session bound to the token's tenant and identity and the
+// delegation, so a request with another token is refused, and a session
+// ID is never authority on its own (MCP-007, V-115). With PublicURL set,
+// the protected resource metadata is served at its well-known paths.
 func (s *Service) Handler() http.Handler {
-	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s.server },
+	server := func(*http.Request) *mcp.Server { return s.server }
+	stateful := mcp.NewStreamableHTTPHandler(server,
 		&mcp.StreamableHTTPOptions{SessionTimeout: s.d.SessionTimeout, MaxRequestBodyBytes: 1 << 20, JSONResponse: true, Logger: s.d.Logger})
+	stateless := mcp.NewStreamableHTTPHandler(server,
+		&mcp.StreamableHTTPOptions{Stateless: true, MaxRequestBodyBytes: 1 << 20, JSONResponse: true, Logger: s.d.Logger})
+	byVersion := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Mcp-Protocol-Version") >= sessionless {
+			stateless.ServeHTTP(w, r)
+			return
+		}
+		stateful.ServeHTTP(w, r)
+	})
+	var opts *auth.RequireBearerTokenOptions
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", auth.RequireBearerToken(s.verify, nil)(s.bound(h)))
+	if s.d.PublicURL != "" {
+		meta, path := s.metadata()
+		opts = &auth.RequireBearerTokenOptions{ResourceMetadataURL: meta}
+		prm := auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{Resource: s.d.PublicURL,
+			AuthorizationServers: s.d.AuthorizationServers, BearerMethodsSupported: []string{"header"}})
+		mux.Handle(path, prm)
+		mux.Handle("/.well-known/oauth-protected-resource", prm)
+	}
+	mux.Handle("/mcp", s.origin(auth.RequireBearerToken(s.verify, opts)(s.bound(byVersion))))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return guard.Handler(s.d.Logger, mux)
+}
+
+// metadata returns the URL of the protected resource metadata and its
+// path here: the well-known prefix inserted before the endpoint's path
+// (RFC 9728, section 3.1).
+func (s *Service) metadata() (string, string) {
+	u, err := url.Parse(s.d.PublicURL)
+	if err != nil {
+		return "", "/.well-known/oauth-protected-resource"
+	}
+	path := "/.well-known/oauth-protected-resource" + strings.TrimSuffix(u.Path, "/")
+	return u.Scheme + "://" + u.Host + path, path
+}
+
+// origin refuses a browser request from an origin not in AllowedOrigins
+// (403), before any token is looked at: a page that rebinds a name to this
+// server reaches it with its own origin (MCP transports, security).
+func (s *Service) origin(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" && !slices.Contains(s.d.AllowedOrigins, o) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // bound admits an MCP call (a POST) within the user's and the total
@@ -215,7 +288,9 @@ func (s *Service) bound(h http.Handler) http.Handler {
 			return
 		}
 		defer release()
-		if r.Header.Get("Mcp-Session-Id") != "" {
+		// A request in a session, or of a protocol without sessions, opens
+		// none.
+		if r.Header.Get("Mcp-Session-Id") != "" || r.Header.Get("Mcp-Protocol-Version") >= sessionless {
 			h.ServeHTTP(w, r)
 			return
 		}

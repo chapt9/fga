@@ -50,7 +50,7 @@ The configured buckets choose what `resources/list` goes through, never what may
 
 ## Client mode (M3, MCP-005)
 
-**Capability.** A client that verifies and decrypts client-mode content itself declares the experimental capability `fga.encrypted-package` at initialize: `{"version": 1, "recipient": "sha256:…"}`, naming the recipient key it decrypts with. The profile is `internal/mcpwire`, which the MCP role and a client-side bridge share; it holds formats only, no keys or cryptography.
+**Capability.** A client that verifies and decrypts client-mode content itself declares the extension `io.github.chapt9/fga-encrypted-package` under its capabilities' `extensions` (SEP-2133's `{vendor-prefix}/{extension-name}` form): `{"version": 1, "recipient": "sha256:…"}`, naming the recipient key it decrypts with. It does so at initialize, or on every request from protocol 2026-07-28 on; the role reads it per request either way. The earlier form, `fga.encrypted-package` under `experimental`, is still accepted. The server declares the extension with its version. The vendor prefix is the repository's namespace until the product is named (D-11). The profile is `internal/mcpwire`, which the MCP role and a client-side bridge share; it holds formats only, no keys or cryptography.
 
 **Reads.** For such a client, a client-mode object or document read returns a `Package`:
 - an object version: its signed descriptor, the envelope the keys role delivered for the recipient with its receipt, and the exact ciphertext (`GET …/object/package`, then `GET …/object/ciphertext` of that version);
@@ -63,6 +63,12 @@ The storage role decides the read and the envelope delivery exactly as for a nat
 **Export.** `documents.export` exports for the `recipient` argument, or the declared key when it is absent, so a generic client may also export for someone else: it receives ciphertext it cannot open.
 
 **The local bridge.** `fga mcp-bridge` is the client that declares the capability and opens the packages with the user's keys ([mcp-bridge.md](mcp-bridge.md)).
+
+## Protocol versions and transport
+
+- **Versions.** A request for protocol 2026-07-28 or later (`MCP-Protocol-Version`) is served without a session (SEP-2567, SEP-2575): the client names its capabilities, and an agent its delegation, on every request, and each request is authenticated and decided on its own. Earlier versions are served in sessions (below). Clients of either kind reach the same tools and resources.
+- **Authorization metadata.** With `public_url` set, the role serves its protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource` and at the path-specific `/.well-known/oauth-protected-resource/mcp`: the resource, its `authorization_servers` and bearer tokens in the header. A request without a valid token is answered `401` with `WWW-Authenticate: Bearer resource_metadata="…"`. Production requires both settings; the issuer named there is the OIDC provider of D-04.
+- **Origins.** A request carrying an `Origin` not in `allowed_origins` is refused `403` before its token is looked at, which defeats DNS rebinding. A request without `Origin` is not a browser's and goes on to authentication.
 
 ## Sessions (MCP-007, V-115)
 
@@ -91,7 +97,9 @@ The SDK runs handlers in its own goroutines, outside the HTTP server's panic rec
 | `decision`, `storage` | URLs and the client certificate that is the MCP workload's identity |
 | `tools`, `tools_audience` | Optional: the tools role and `fga-tools` |
 | `buckets` | For `resources/list` |
-| `max_bytes`, `max_units`, `user_requests`, `total_requests`, `user_sessions`, `total_sessions`, `session_timeout` | Bounds; absent keeps the default |
+| `max_bytes`, `max_units`, `user_requests`, `total_requests`, `user_sessions`, `total_sessions`, `session_timeout` | Bounds; absent keeps the default. Session bounds apply to protocols with sessions |
+| `public_url`, `authorization_servers` | The endpoint as clients reach it and the token issuers, for the protected resource metadata; required in production |
+| `allowed_origins` | Browser origins served; others `403` |
 
 The decision role needs the MCP workload in `adapter_audiences` (for `fga-mcp`) and in `gateways` (for `fga-storage`, and `fga-tools` with the tools role), and the storage role and the tools role need it in `mcp_adapters` ([mcp-gateway.md](mcp-gateway.md)). `fga-admin mcp enable` registers the tools for a tenant.
 
@@ -106,13 +114,14 @@ The tests deploy through `internal/mcptest`: a decision role and a storage role 
 | `TestMCPSessions` | V-115: another user's token in a session `403`; a token for another audience or none `401` |
 | `TestMCPPanicContained` | A panic in one request fails only that request; other sessions go on. Without `contain` it ends the test process |
 | `TestMCPLimits` | Session and call bounds per user and in total; a closed session frees its place |
-| `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
+| `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units, at protocol 2026-07-28 with the capability on each request, and an older client with the `experimental` form in a session; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
 | `TestMCPExport` | Server-mode export of an object and a document; export needs its own permission (a reader who may not export gets "not found"); client-mode export for another recipient, which only that recipient opens; none without a recipient, or for a recipient without an envelope |
 | `TestMCPRegisteredTools` | AGT-002, AGT-003 through MCP: a member lists the registered tool with its schema and calls it; the tools role carries it out once with the member as actor; a required approval is asked for, then used; a user who may use MCP but not the tool sees and calls nothing; arguments outside the schema, another version and an unknown field are refused |
 | `TestGatewayRevision` | Revision 0 is filled in only for a gateway's own MCP operations |
 | `TestMCPUntrustedContent` | V-029: a document that tells the agent to register a tool and widen its delegation is read as data, and no tool, delegation or identity changes; V-120: the follow-up calls it asks for are refused |
 | `TestSharedNames`, `TestWireFormat`, `TestResourceURIs` | The copied names and wire format; `fga://` URIs round trip, and malformed ones are refused |
-| `internal/mcpwire` `TestCapability` | The capability round trips; another version or a missing recipient is not the capability |
+| `internal/mcpwire` `TestCapability` | The capability round trips under `extensions` and `experimental`; another version or a missing recipient is not the capability |
+| `TestMCPTransport` | Protocol 2026-07-28 without a session, 2025-11-25 in one; the protected resource metadata; `401` with `resource_metadata`; a foreign origin `403`, an allowed one served |
 | `cmd/fga-mcp` `TestImportAllowlist`, `TestValidate` | MCP-008 and MOD-004: no catalog, blob, key, payload, policy or decision-service package; configuration rules |
 | `scripts/smoke.sh` | A generic MCP client (JSON-RPC over HTTP): tools, a server-mode document and object equal to the native reads, another project's member refused, client-mode content refused, a session bound to its user; a client that declares its recipient key gets the client-mode object as a package |
 

@@ -30,6 +30,7 @@ func TestValidate(t *testing.T) {
 		c.Profile, c.TLS, c.Listen = "production", &ServerTLS{CertFile: "c", KeyFile: "k"}, "0.0.0.0:443"
 		c.TokenIssuer.Issuer = "idp"
 		c.Decision, c.Storage = mtls("https://decision"), mtls("https://storage")
+		c.PublicURL, c.AuthorizationServers = "https://mcp.example/mcp", []string{"https://idp.example"}
 	}
 	for _, tt := range []struct {
 		name, want string
@@ -46,6 +47,8 @@ func TestValidate(t *testing.T) {
 		{"a total below its per-user limit", "limits", func(c *Config) { c.UserRequests, c.TotalRequests = 10, 5 }},
 		{"a bad session timeout", "session_timeout", func(c *Config) { c.SessionTimeout = "forever" }},
 		{"the tools role without its audience", "tools_audience", func(c *Config) { c.Tools = &Peer{URL: "http://127.0.0.1:17448"} }},
+		{"production without resource metadata", "public_url", func(c *Config) { prod(c); c.AuthorizationServers = nil }},
+		{"an origin with a path", "allowed_origins", func(c *Config) { c.AllowedOrigins = []string{"https://app.example/x"} }},
 		{"production calling tools over plain HTTP", "tools role over mutual TLS",
 			func(c *Config) { prod(c); c.Tools, c.ToolsAudience = &Peer{URL: "http://tools"}, "fga-tools" }},
 	} {

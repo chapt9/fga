@@ -47,7 +47,8 @@ J
 cat > mcp.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18446","token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},
  "audience":"fga-mcp","storage_audience":"fga-storage","decision":{"url":"http://127.0.0.1:17443"},
- "storage":{"url":"http://127.0.0.1:18441"},"buckets":["shared"],"tools":{"url":"http://127.0.0.1:18448"},"tools_audience":"fga-tools"}
+ "storage":{"url":"http://127.0.0.1:18441"},"buckets":["shared"],"tools":{"url":"http://127.0.0.1:18448"},"tools_audience":"fga-tools",
+ "public_url":"http://127.0.0.1:18446/mcp","authorization_servers":["http://127.0.0.1:18446/dev-issuer"],"allowed_origins":["http://127.0.0.1:18446"]}
 J
 $B/fga-decision -config decision.json > decision.log 2>&1 & echo $! > pids
 sleep 2
@@ -307,6 +308,14 @@ assert st == 403, ("alice in bob's session", st)
 print("MCP: alice's token in bob's session:", st)
 P
 check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)" "$BOBFP"
+# MCP authorization and transport rules: the protected resource metadata
+# (RFC 9728), a 401 pointing to it, and a browser origin not allowed.
+curl -sf http://127.0.0.1:18446/.well-known/oauth-protected-resource/mcp | grep -q '"resource":"http://127.0.0.1:18446/mcp"' \
+  || { echo "SMOKE FAILED: protected resource metadata"; exit 1; }
+curl -s -o /dev/null -D h401 -X POST http://127.0.0.1:18446/mcp; grep -qi 'resource_metadata=' h401 || { echo "SMOKE FAILED: 401 without resource_metadata"; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://rebound.example' -H "Authorization: Bearer $(tok bob fga-mcp)" http://127.0.0.1:18446/mcp)
+[ "$code" = 403 ] || { echo "SMOKE FAILED: a foreign origin answered $code"; exit 1; }
+echo "MCP: resource metadata served, 401 points to it, a foreign browser origin refused"
 # A delegated agent (DLG-001): agent-7 acts for bob through the MCP role
 # under a delegation that names agent-7, bob and the MCP workload; it reads
 # what bob may read, and nothing without the delegation.

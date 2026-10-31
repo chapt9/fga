@@ -6,20 +6,30 @@ import (
 )
 
 // TestCapability covers the capability's form: it round trips through the
-// JSON of an MCP initialize request, and another version or a value
-// without a recipient fingerprint is not the capability.
+// JSON of MCP client capabilities, under extensions and under the earlier
+// experimental key, and another version or a value without a recipient
+// fingerprint is not the capability.
 func TestCapability(t *testing.T) {
 	want := ClientCapability{Version: Version, Recipient: "sha256:ab12"}
-	b, err := json.Marshal(want.Experimental())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var experimental map[string]any
-	if err := json.Unmarshal(b, &experimental); err != nil {
-		t.Fatal(err)
-	}
-	if got, ok := ParseCapability(experimental); !ok || got != want {
-		t.Fatalf("round trip: %+v %v", got, ok)
+	for name, m := range map[string]map[string]any{
+		"extensions":   {Extension: want.Settings()},
+		"experimental": want.Experimental(),
+	} {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(b, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		ext, exp := decoded, map[string]any(nil)
+		if name == "experimental" {
+			ext, exp = nil, decoded
+		}
+		if got, ok := ParseCapability(ext, exp); !ok || got != want {
+			t.Fatalf("%s round trip: %+v %v", name, got, ok)
+		}
 	}
 	for name, v := range map[string]any{
 		"another version":  map[string]any{"version": 2, "recipient": "sha256:ab12"},
@@ -32,7 +42,7 @@ func TestCapability(t *testing.T) {
 		if name == "another key only" {
 			exp = map[string]any{"other": true}
 		}
-		if got, ok := ParseCapability(exp); ok {
+		if got, ok := ParseCapability(nil, exp); ok {
 			t.Errorf("%s: parsed %+v", name, got)
 		}
 	}

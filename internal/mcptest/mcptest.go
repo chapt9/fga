@@ -47,6 +47,8 @@ type Options struct {
 	// Tools, if set, returns the tools role over the stack, which the MCP
 	// role then reaches over HTTP as its gateway.
 	Tools func(st *r1test.Stack) *executor.Service
+	// Edit, if set, changes the MCP role's dependencies before it starts.
+	Edit func(*mcpsvc.Deps)
 }
 
 // Deploy deploys with limits. beforeDecision, if set, runs in the MCP
@@ -85,6 +87,9 @@ func DeployWith(t *testing.T, o Options) *Deployment {
 			admission.New(admission.DefaultLimits), toolsGW))
 		t.Cleanup(tools.Close)
 		deps.Tools, deps.ToolsAudience = mcpsvc.Peer{URL: tools.URL, HTTP: asMCP}, executor.Audience
+	}
+	if o.Edit != nil {
+		o.Edit(&deps)
 	}
 	svc, err := mcpsvc.New(deps)
 	if err != nil {
@@ -140,32 +145,51 @@ func (d *Deployment) Token(t *testing.T, user string) string {
 	return tok
 }
 
-// Connect opens an MCP session for user. With a recipient fingerprint, the
-// client declares the encrypted-package capability; otherwise it is a
-// generic MCP client. The session closes when the test ends.
-func (d *Deployment) Connect(t *testing.T, user, recipient string) (*mcp.ClientSession, error) {
-	t.Helper()
-	var opts *mcp.ClientOptions
-	if recipient != "" {
-		opts = &mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{
-			Experimental: mcpwire.ClientCapability{Version: mcpwire.Version, Recipient: recipient}.Experimental()}}
-	}
-	c := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, opts)
-	s, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: d.MCP.URL + "/mcp",
-		HTTPClient: &http.Client{Transport: Bearer(d.Token(t, user))}, MaxRetries: -1}, nil)
-	if err == nil {
-		t.Cleanup(func() { s.Close() })
-	}
-	return s, err
+// Stateful is the newest protocol version with sessions; a test that
+// checks sessions asks for it. Without it, a client speaks the SDK's
+// newest version, which has none.
+const Stateful = "2025-11-25"
+
+// Conn describes a test connection: its identity, for an agent the
+// delegation it acts under, the recipient fingerprint a client-mode client
+// declares (under extensions, or under experimental as older clients do),
+// and the protocol version ("" for the newest).
+type Conn struct {
+	User, Delegation, Recipient string
+	LegacyCapability            bool
+	Protocol                    string
 }
 
-// ConnectDelegated opens an MCP session for agent under the delegation dlg
-// (mcpwire.DelegationHeader). The session closes when the test ends.
-func (d *Deployment) ConnectDelegated(t *testing.T, agent, dlg string) (*mcp.ClientSession, error) {
+// Connect opens an MCP connection for user, at the newest protocol. With
+// a recipient fingerprint, the client declares the encrypted-package
+// extension; otherwise it is a generic MCP client.
+func (d *Deployment) Connect(t *testing.T, user, recipient string) (*mcp.ClientSession, error) {
 	t.Helper()
-	c := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "1"}, nil)
-	s, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: d.MCP.URL + "/mcp",
-		HTTPClient: &http.Client{Transport: Delegated{Token: d.Token(t, agent), Delegation: dlg}}, MaxRetries: -1}, nil)
+	return d.ConnectWith(t, Conn{User: user, Recipient: recipient})
+}
+
+// ConnectWith opens an MCP connection as c says. It closes when the test
+// ends.
+func (d *Deployment) ConnectWith(t *testing.T, c Conn) (*mcp.ClientSession, error) {
+	t.Helper()
+	var opts *mcp.ClientOptions
+	if c.Recipient != "" {
+		capability := mcpwire.ClientCapability{Version: mcpwire.Version, Recipient: c.Recipient}
+		caps := &mcp.ClientCapabilities{}
+		if c.LegacyCapability {
+			caps.Experimental = capability.Experimental()
+		} else {
+			caps.AddExtension(mcpwire.Extension, capability.Settings())
+		}
+		opts = &mcp.ClientOptions{Capabilities: caps}
+	}
+	var rt http.RoundTripper = Bearer(d.Token(t, c.User))
+	if c.Delegation != "" {
+		rt = Delegated{Token: d.Token(t, c.User), Delegation: c.Delegation}
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, opts)
+	s, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: d.MCP.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: rt}, MaxRetries: -1}, &mcp.ClientSessionOptions{ProtocolVersion: c.Protocol})
 	if err == nil {
 		t.Cleanup(func() { s.Close() })
 	}

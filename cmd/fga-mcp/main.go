@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -67,6 +68,15 @@ type Config struct {
 	TotalSessions int   `json:"total_sessions,omitempty"`
 	// SessionTimeout closes idle MCP sessions (Go duration; default 30m).
 	SessionTimeout string `json:"session_timeout,omitempty"`
+	// PublicURL is the MCP endpoint as clients reach it; with it the role
+	// serves its protected resource metadata (RFC 9728) naming
+	// AuthorizationServers, the issuers of the MCP tokens. Production
+	// needs both.
+	PublicURL            string   `json:"public_url,omitempty"`
+	AuthorizationServers []string `json:"authorization_servers,omitempty"`
+	// AllowedOrigins are the browser origins served; a request with
+	// another Origin is refused (DNS rebinding).
+	AllowedOrigins []string `json:"allowed_origins,omitempty"`
 }
 
 // ServerTLS is the server certificate.
@@ -105,6 +115,9 @@ func (c Config) Validate() error {
 		if c.TokenIssuer.Issuer == "fga-dev" {
 			fail("the development token issuer is not allowed in production")
 		}
+		if !strings.HasPrefix(c.PublicURL, "https://") || len(c.AuthorizationServers) == 0 {
+			fail("production serves its protected resource metadata: public_url (https) and authorization_servers")
+		}
 		peers := map[string]Peer{"decision": c.Decision, "storage": c.Storage}
 		if c.Tools != nil {
 			peers["tools"] = *c.Tools
@@ -126,6 +139,16 @@ func (c Config) Validate() error {
 	}
 	if c.Listen == "" || c.Audience == "" || c.StorageAudience == "" || c.Decision.URL == "" || c.Storage.URL == "" {
 		fail("listen, audience, storage_audience, decision.url and storage.url are required")
+	}
+	if c.PublicURL != "" {
+		if u, err := url.Parse(c.PublicURL); err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			fail("public_url must be an absolute URL without query or fragment")
+		}
+	}
+	for _, o := range c.AllowedOrigins {
+		if u, err := url.Parse(o); err != nil || u.Host == "" || u.Path != "" || u.String() != o {
+			fail("allowed_origins holds origins, such as https://app.example: %q is not one", o)
+		}
 	}
 	if c.Tools != nil && (c.Tools.URL == "" || c.ToolsAudience == "") {
 		fail("tools needs a url and tools_audience")
@@ -261,6 +284,7 @@ func run(path string) error {
 	svc, err := mcpsvc.New(mcpsvc.Deps{Tokens: tokens, Audience: cfg.Audience, StorageAudience: cfg.StorageAudience,
 		Decision: mcpsvc.Peer{URL: cfg.Decision.URL, HTTP: decisionHTTP}, Storage: mcpsvc.Peer{URL: cfg.Storage.URL, HTTP: storageHTTP},
 		Tools: tools, ToolsAudience: cfg.ToolsAudience, Buckets: cfg.Buckets, Limits: cfg.limits(), SessionTimeout: timeout,
+		PublicURL: cfg.PublicURL, AuthorizationServers: cfg.AuthorizationServers, AllowedOrigins: cfg.AllowedOrigins,
 		Logger: slog.Default()})
 	if err != nil {
 		return err

@@ -15,9 +15,17 @@ import (
 	"strings"
 )
 
-// Capability is the experimental MCP client capability, declared at
-// initialize, of a client that verifies and decrypts client-mode content
-// itself. Its value is a ClientCapability.
+// Extension is the MCP extension of a client that verifies and decrypts
+// client-mode content itself, declared under the client capabilities'
+// "extensions" in the "{vendor-prefix}/{extension-name}" form (SEP-2133):
+// at initialize, or on each request from protocol 2026-07-28 on. Its value
+// is a ClientCapability. The server declares it too, with the version.
+// The vendor prefix is the project's repository namespace until the
+// product is named (D-11).
+const Extension = "io.github.chapt9/fga-encrypted-package"
+
+// Capability is the earlier name of Extension, under the client
+// capabilities' "experimental"; it is still accepted from older clients.
 const Capability = "fga.encrypted-package"
 
 // Version is the profile version this package describes.
@@ -56,17 +64,25 @@ type ClientCapability struct {
 	Recipient string `json:"recipient"`
 }
 
-// Experimental returns the capability as an entry of the MCP client
-// capabilities' experimental map.
-func (c ClientCapability) Experimental() map[string]any {
-	return map[string]any{Capability: map[string]any{"version": c.Version, "recipient": c.Recipient}}
+// Settings returns the capability as the settings of Extension.
+func (c ClientCapability) Settings() map[string]any {
+	return map[string]any{"version": c.Version, "recipient": c.Recipient}
 }
 
-// ParseCapability reads the capability from a client's experimental
-// capabilities. It reports false unless the client declared this version
-// with a recipient fingerprint.
-func ParseCapability(experimental map[string]any) (ClientCapability, bool) {
-	raw, ok := experimental[Capability]
+// Experimental returns the capability as an entry of the MCP client
+// capabilities' experimental map, the form older servers read.
+func (c ClientCapability) Experimental() map[string]any {
+	return map[string]any{Capability: c.Settings()}
+}
+
+// ParseCapability reads the capability from a client's extensions, or else
+// its experimental capabilities. It reports false unless the client
+// declared this version with a recipient fingerprint.
+func ParseCapability(extensions, experimental map[string]any) (ClientCapability, bool) {
+	raw, ok := extensions[Extension]
+	if !ok {
+		raw, ok = experimental[Capability]
+	}
 	if !ok {
 		return ClientCapability{}, false
 	}

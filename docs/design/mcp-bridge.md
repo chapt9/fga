@@ -9,7 +9,7 @@ Status: design record, 31 October 2026. Our own design; no upstream mapping.
 The user configures the application to start `fga mcp-bridge` as its MCP server command. The bridge then:
 
 - **serves that one application** over the process's stdin and stdout (the SDK's stdio transport). It opens no network listener, so nothing else can talk to it. Starting it with the user's key directory is the user's explicit authorization of that application (MCP-005);
-- **connects to the MCP role** as the user with the user's `fga-mcp` token. It declares the `fga.encrypted-package` capability with the fingerprint of the user's recipient key;
+- **connects to the MCP role** as the user with the user's `fga-mcp` token. It declares the encrypted-package extension (`io.github.chapt9/fga-encrypted-package`, and the earlier `experimental` form for older servers) with the fingerprint of the user's recipient key, at the newest protocol both sides speak;
 - **forwards** `tools/list`, `tools/call`, `resources/list`, `resources/templates/list` and `resources/read`, and answers `initialize` and `ping` itself.
   - It forwards only each request's own fields (cursor, tool name and arguments, URI), never the application's `_meta`. Under protocol 2026-07-28 that `_meta` carries the client's own protocol version and capabilities.
   - It drops the MCP role's tool output schemas, since its results hold plaintext where the MCP role's held packages.

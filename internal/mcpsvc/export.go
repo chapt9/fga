@@ -54,7 +54,7 @@ func (s *Service) export(ctx context.Context, req *mcp.CallToolRequest, in Expor
 	t := target{bucket: in.Bucket, key: in.Key, version: in.Version}
 	recipient := in.Recipient
 	if recipient == "" {
-		recipient = recipientOf(req.Session)
+		recipient = recipientOf(req.ClientCapabilities())
 	}
 	result := func(out ExportOutput, text string) (*mcp.CallToolResult, ExportOutput, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil

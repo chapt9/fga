@@ -62,8 +62,9 @@ func New(ctx context.Context, d Deps) (*Bridge, error) {
 		d.Logger = slog.Default()
 	}
 	capability := mcpwire.ClientCapability{Version: mcpwire.Version, Recipient: d.Key.Fingerprint().String()}
-	client := mcp.NewClient(&mcp.Implementation{Name: "fga-mcp-bridge", Version: "r2"},
-		&mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{Experimental: capability.Experimental()}})
+	caps := &mcp.ClientCapabilities{Experimental: capability.Experimental()}
+	caps.AddExtension(mcpwire.Extension, capability.Settings())
+	client := mcp.NewClient(&mcp.Implementation{Name: "fga-mcp-bridge", Version: "r2"}, &mcp.ClientOptions{Capabilities: caps})
 	up, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: d.UpstreamURL, HTTPClient: d.HTTP}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcpbridge: connecting to the MCP role: %w", err)

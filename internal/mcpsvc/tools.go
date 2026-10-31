@@ -135,7 +135,7 @@ func (s *Service) readTool(tool, kind string) mcp.ToolHandlerFor[ReadInput, Read
 		if err != nil {
 			return nil, ReadOutput{}, err
 		}
-		out, err := s.readUnits(ctx, ev, target{bucket: in.Bucket, key: in.Key, version: in.Version}, in.Units, kind, recipientOf(req.Session))
+		out, err := s.readUnits(ctx, ev, target{bucket: in.Bucket, key: in.Key, version: in.Version}, in.Units, kind, recipientOf(req.ClientCapabilities()))
 		if err != nil {
 			return nil, ReadOutput{}, err
 		}
