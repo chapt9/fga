@@ -43,7 +43,12 @@ type BeginRequest struct {
 	// bucket's default. It must be in the active label order and not below
 	// the bucket's floor, and publishing it needs label on the planned
 	// object. An existing key keeps its label; it is changed with SetLabel.
+	// For a derived output it is a proposal that can only raise the label
+	// its lineage gives (DRV-007).
 	Label string
+	// Derived begins a derived output (derived-outputs.md): always a new
+	// key, published with FinalizeDerived and its signed lineage.
+	Derived bool
 }
 
 // Intent is an upload intent's identities (BeginEncryptedUpload, KEY-003).
@@ -93,6 +98,9 @@ func (r BeginRequest) digest() string {
 	if r.Label != "" {
 		fmt.Fprintf(h, "label %q\n", r.Label)
 	}
+	if r.Derived {
+		fmt.Fprintf(h, "derived\n")
+	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
@@ -137,7 +145,21 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime),
 		bucket: b.ID, key: r.Key, ifMatch: r.IfMatch, ifNoneMatch: r.IfNoneMatch, principal: c.Principal, label: r.Label}
 
+	in.kind = "object"
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, r.Key)
+	if r.Derived {
+		// A derived output is a new key of its own kind; no key of any
+		// kind may exist.
+		var taken bool
+		if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM objects WHERE tenant = $1 AND bucket = $2 AND key = $3
+		                                               AND kind IN ('object', 'document', 'derived'))`, c.Tenant, b.ID, r.Key).Scan(&taken); err != nil {
+			return Intent{}, err
+		}
+		if taken || r.IfMatch != "" {
+			return Intent{}, fmt.Errorf("%w: a derived output is a new key", ErrConflict)
+		}
+		err, in.kind = ErrNotFound, "derived"
+	}
 	var op string
 	var checks []check
 	switch {
@@ -145,13 +167,21 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		in.Object, in.newObject = cryptowire.NewUUID(), true
 		in.scope = b.Scope
 		in.attributes = map[string]any{"bucket": b.Name, "owner": c.Principal, "project": b.Project, "label": b.Label}
+		if r.Derived {
+			in.attributes["kind"] = "derived"
+		}
 		if r.Label != "" {
 			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
 				return Intent{}, err
 			}
-			in.attributes["label"] = r.Label
+			if !r.Derived {
+				in.attributes["label"] = r.Label
+			}
 		}
 		op = registry.OpBeginCreate
+		if r.Derived {
+			op = registry.OpDerivedBegin
+		}
 		checks = []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", b.ID.String())}}
 	case err != nil:
 		return Intent{}, err
@@ -173,11 +203,11 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 		_, err := tx.Exec(ctx, `
 			INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
 			  version, crypto_version, blob, attempt, expected_generation, if_match, if_none_match, planned_scope, planned_attributes,
-			  state, expires_at, created_at, label)
-			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20,$21)`,
+			  state, expires_at, created_at, label, kind)
+			VALUES ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'RESERVED',$19,$20,$21,$22)`,
 			c.Tenant, in.IntentID, c.Principal, r.IdempotencyKey, r.digest(), b.ID, r.Key, in.Object, in.newObject,
 			in.LogicalVersion, in.CryptoVersion, in.Blob, in.Attempt, in.expectedGen, r.IfMatch, r.IfNoneMatch, in.scope, attrs,
-			in.ExpiresAt, s.d.Now(), in.label)
+			in.ExpiresAt, s.d.Now(), in.label, in.kind)
 		if isUnique(err) {
 			return fmt.Errorf("%w: the idempotency key is in use", ErrConflict)
 		}
@@ -192,7 +222,10 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 // intentChecks are the checks that authorize an intent's upload: create on
 // the bucket for a new key, new-version on the object otherwise.
 func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
-	if in.kind != "object" {
+	if in.kind == "derived" && create == registry.OpBeginCreate {
+		create = registry.OpDerivedBegin
+	}
+	if in.kind == "unit" || in.kind == "original" {
 		if in.docNew {
 			return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
 		}

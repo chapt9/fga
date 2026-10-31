@@ -236,6 +236,35 @@ paths:
       responses:
         "200": { description: The original's exact ciphertext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/derived/package:
+    get:
+      operationId: getDerivedPackage
+      description: A derived output's descriptor and the caller's envelope; needs deliver and the recipient's read on the whole lineage, or declassify.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { name: recipient, in: query, required: true, schema: { $ref: "#/components/schemas/Digest" } }]
+      responses:
+        "200": { description: Package, content: { application/json: { schema: { $ref: "#/components/schemas/Package" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/derived/ciphertext:
+    get:
+      operationId: getDerivedCiphertext
+      description: Ends with an aborted body (LINEAGE_AUTHORITY_CHANGED) when a lineage source changes during the stream.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { name: recipient, in: query, required: true, schema: { $ref: "#/components/schemas/Digest" } }]
+      responses:
+        "200": { description: The derived version's exact ciphertext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/derived/envelopes:
+    post:
+      operationId: shareDerived
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" },
+                   { name: version, in: query, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+      responses:
+        "201": { description: Shared, content: { application/json: { schema: { $ref: "#/components/schemas/EnvelopeRef" } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/approvals:
     get:
       operationId: listApprovals
@@ -393,6 +422,7 @@ components:
         if_match: { type: string }
         if_none_match: { type: string, enum: ["*"] }
         label: { type: string, maxLength: 64, description: Explicit label of a new key; needs label on the planned object }
+        derived: { type: boolean, description: Begin a derived output; finalize then carries lineage and lineage_signature }
     Intent:
       type: object
       properties:

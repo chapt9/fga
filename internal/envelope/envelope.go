@@ -194,7 +194,8 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
 	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope, rec.Operation == registry.OpDocGetOriginalEnvelope
-	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original) ||
+	derived := rec.Operation == registry.OpDerivedGetEnvelope
+	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived) ||
 		!s.exactly(rec) {
 		return Delivered{}, ErrDecision
 	}
@@ -226,6 +227,8 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			ok = unit && c.ResourceID == e.DocumentVersion.String() && holder
 		case "document.version raw-read":
 			ok = original && c.ResourceID == e.DocumentVersion.String() && holder
+		case "document.derived deliver":
+			ok = derived && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
 		case "crypto.recipient receive-key":
 			ok = c.ResourceID == e.Recipient && c.PrincipalBinding == e.Recipient
 		}
@@ -238,16 +241,20 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 		return Delivered{}, ErrDecision
 	}
 	bindings := []fence.Binding{b}
-	if original != (len(extra) > 0) {
+	if (original || derived) != (len(extra) > 0) {
 		return Delivered{}, ErrDecision
 	}
-	if original {
-		more, err := s.completeContent(ctx, rec, *e.DocumentVersion, extra)
-		if err != nil {
-			return Delivered{}, err
-		}
-		bindings = append(bindings, more...)
+	var more []fence.Binding
+	switch {
+	case original:
+		more, err = s.completeContent(ctx, rec, *e.DocumentVersion, extra)
+	case derived:
+		more, err = s.recipientPath(ctx, rec, e, extra)
 	}
+	if err != nil {
+		return Delivered{}, err
+	}
+	bindings = append(bindings, more...)
 	var tenantID cryptowire.UUID
 	var recipientPrincipal string
 	err = s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
@@ -374,6 +381,75 @@ func (s *Service) completeContent(ctx context.Context, primary signing.Record, d
 	}
 	if len(covered) != len(members) {
 		return nil, ErrDecision
+	}
+	return out, nil
+}
+
+// recipientPath verifies the recipient-path decisions of a derived
+// output's delivery (DRV-002): either one declassify decision for this
+// output, version and recipient, or recipient-source decisions whose
+// checks, all for this recipient, name the version's transitive lineage
+// exactly. Each is single-use, of the same tenant and actor as the
+// delivery, and is admitted in the same fence (DRV-009).
+func (s *Service) recipientPath(ctx context.Context, primary signing.Record, e stored, extra []signing.Signed) ([]fence.Binding, error) {
+	var recs []signing.Record
+	for _, x := range extra {
+		rec, err := s.d.Verifier.Check(x)
+		if err != nil || !rec.SingleUse || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+			return nil, ErrDecision
+		}
+		recs = append(recs, rec)
+	}
+	forRecipient := func(c signing.Check) bool {
+		return c.Kind == string(registry.KindRecipientEligibility) && c.PrincipalBinding == e.Recipient
+	}
+	if len(recs) == 1 && recs[0].Operation == registry.OpDerivedDeclassify {
+		declassified := false
+		for _, c := range recs[0].Checks {
+			same := c.ResourceType == "document.derived" && c.ResourceID == e.Object.String() && c.Version == e.Version.String()
+			switch {
+			case same && c.Action == "declassify" && forRecipient(c):
+				declassified = true
+			case same && c.Action == "deliver" && c.Kind == string(registry.KindOperation):
+			default:
+				return nil, ErrDecision
+			}
+		}
+		if !declassified {
+			return nil, ErrDecision
+		}
+	} else {
+		want, err := catalog.TransitiveLineage(ctx, s.d.Catalog.Pool(), primary.Tenant, e.Version, 32)
+		if err != nil {
+			return nil, err
+		}
+		need := map[cryptowire.LineageSource]bool{}
+		for _, src := range want {
+			need[src] = true
+		}
+		for _, rec := range recs {
+			if rec.Operation != registry.OpDerivedRecipientSources {
+				return nil, ErrDecision
+			}
+			for _, c := range rec.Checks {
+				src := cryptowire.LineageSource{Type: c.ResourceType, ID: c.ResourceID, Version: c.Version}
+				if !forRecipient(c) || !need[src] {
+					return nil, ErrDecision
+				}
+				delete(need, src)
+			}
+		}
+		if len(need) != 0 {
+			return nil, ErrDecision
+		}
+	}
+	out := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		b, err := fence.FromRecord(rec)
+		if err != nil {
+			return nil, ErrDecision
+		}
+		out[i] = b
 	}
 	return out, nil
 }

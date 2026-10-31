@@ -41,7 +41,7 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		if err != nil {
 			return registry.Resource{}, err
 		}
-		if object.Type != "storage.object" && object.Type != "document.text_unit" && object.Type != "document.version" {
+		if object.Type != "storage.object" && object.Type != "document.text_unit" && object.Type != "document.version" && object.Type != "document.derived" {
 			return registry.Resource{}, registry.ErrUnknownResource
 		}
 		var principal string
@@ -89,6 +89,8 @@ func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (regis
 	switch kind {
 	case "unit":
 		r.Type = "document.text_unit"
+	case "derived":
+		r.Type = "document.derived"
 	case "original":
 		// An original has no resource of its own (CNT-003).
 		return registry.Resource{}, registry.ErrUnknownResource

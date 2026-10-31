@@ -309,6 +309,9 @@ type CheckSpec struct {
 	Action       string
 	Kind         CheckKind
 	Repeated     bool
+	// Optional lets a request leave the role unfilled, for operations whose
+	// checks depend on the data, such as lineage sources of three types.
+	Optional bool
 }
 
 // CheckKind returns the check's kind, OPERATION when unset.
@@ -384,7 +387,11 @@ func (o *Operations) Digest() string {
 	for _, name := range slices.Sorted(maps.Keys(o.byName)) {
 		fmt.Fprintf(h, "op %s\n", name)
 		for _, c := range o.byName[name].Checks {
-			fmt.Fprintf(h, "check %s %s %s %s %t\n", c.Role, c.ResourceType, c.Action, c.kind(), c.Repeated)
+			fmt.Fprintf(h, "check %s %s %s %s %t", c.Role, c.ResourceType, c.Action, c.kind(), c.Repeated)
+			if c.Optional {
+				h.Write([]byte(" optional"))
+			}
+			h.Write([]byte("\n"))
 		}
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
@@ -418,7 +425,7 @@ func (o *Operations) Plan(name string, bound map[string]Resource) ([]decision.Ch
 		return nil, fmt.Errorf("%w: %q", ErrUnknownOperation, name)
 	}
 	for _, c := range op.Checks {
-		if c.Repeated || c.kind() != KindOperation {
+		if c.Repeated || c.Optional || c.kind() != KindOperation {
 			return nil, fmt.Errorf("registry: operation %q has repeated or recipient checks; plan it by role", name)
 		}
 	}

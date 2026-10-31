@@ -340,3 +340,45 @@ func (c *Client) GetDocument(ctx context.Context, bucket, key, version string, d
 	}
 	return len(units), nil
 }
+
+// GetDerived downloads, verifies and decrypts a derived output's version
+// (the current one when version is "") for the client's own key. The
+// server delivers it only if the client may read every source of its
+// lineage or it was declassified to the client (DRV-002).
+func (c *Client) GetDerived(ctx context.Context, bucket, key, version string, dst io.Writer) (VersionInfo, error) {
+	fp := c.Recipient.Fingerprint().String()
+	derivedURL := func(path, version string) string {
+		q := url.Values{"key": {key}, "recipient": {fp}}
+		if version != "" {
+			q.Set("version", version)
+		}
+		return c.StorageURL + "/v1/buckets/" + url.PathEscape(bucket) + "/derived" + path + "?" + q.Encode()
+	}
+	var p packageJSON
+	if _, err := c.do(ctx, http.MethodGet, derivedURL("/package", version), c.StorageToken, nil, -1, nil, &p); err != nil {
+		return VersionInfo{}, err
+	}
+	if err := checkVersion(p.Descriptor, p.Version.Version, version); err != nil {
+		return VersionInfo{}, err
+	}
+	resp, err := c.do(ctx, http.MethodGet, derivedURL("/ciphertext", p.Version.Version), c.StorageToken, nil, -1, nil, nil)
+	if err != nil {
+		return VersionInfo{}, err
+	}
+	defer resp.Body.Close()
+	tmp, err := os.CreateTemp(c.TempDir, "fga-derived-*")
+	if err != nil {
+		return VersionInfo{}, err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	n, err := io.Copy(tmp, io.LimitReader(resp.Body, p.Version.CiphertextLength+1))
+	if err != nil || n != p.Version.CiphertextLength {
+		return VersionInfo{}, fmt.Errorf("fga: incomplete ciphertext transfer: %v", err)
+	}
+	trust := crypto.StatusTrust{TrustStore: c.Trust, Status: func(fp cryptowire.Digest) (string, error) { return c.SignerStatus(ctx, fp) }}
+	err = crypto.Decrypt(dst, tmp, crypto.Package{Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
+		Envelope: crypto.Envelope{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext, Signature: p.Envelope.Signature}},
+		c.Recipient, trust)
+	return p.Version, err
+}

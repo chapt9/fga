@@ -80,18 +80,28 @@ as bob; check $B/fga keys protect; check grep -q fga.keyfile/v1 bob/signing.key;
 if grep -q fga.keyfile/v1 bob/signing.key bob/recipient.key; then echo "SMOKE FAILED: unprotect left a protected file"; exit 1; fi
 echo "bob's keys protected and unprotected"
 as alice; if FGA_KEY_PASSPHRASE=wrong $B/fga ls -bucket reports 2>err.txt; then echo "UNEXPECTED: wrong passphrase accepted"; exit 1; else echo "wrong passphrase: $(cat err.txt)"; fi
-as alice; $B/fga put -bucket reports -key q3/report.bin -in plain.bin -if-none-match
+as alice; PUT_OUT=$($B/fga put -bucket reports -key q3/report.bin -in plain.bin -if-none-match); echo "$PUT_OUT"
 as alice; $B/fga get -bucket reports -key q3/report.bin -out alice.out && cmp plain.bin alice.out && echo "alice round trip OK"
 as bob;   if $B/fga get -bucket reports -key q3/report.bin -out bob.out 2>err.txt; then echo "UNEXPECTED: bob read without an envelope"; exit 1; else echo "bob before sharing: $(cat err.txt)"; fi
 as alice; $B/fga share -bucket reports -key q3/report.bin -to $BOBFP -key-version 1
 as bob;   $B/fga get -bucket reports -key q3/report.bin -out bob.out && cmp plain.bin bob.out && echo "bob after sharing OK"
 as bob;   $B/fga ls -bucket reports
+
+# Derived outputs (R1-C): a summary derived from the report carries signed
+# lineage; it is delivered only to readers of every source or by
+# declassification.
+SRC=$(echo "$PUT_OUT" | awk '{print "storage.object:" $4 ":" $6}')
+echo "summary of the quarterly report" > summary.txt
+as alice; check $B/fga put -bucket reports -key q3/summary.txt -in summary.txt -sources $SRC
+as alice; check $B/fga get-derived -bucket reports -key q3/summary.txt -out summary.out; check cmp summary.txt summary.out
+as bob;   if $B/fga get-derived -bucket reports -key q3/summary.txt -out x.out 2>err.txt; then echo "UNEXPECTED: bob read a derived output without an envelope"; exit 1; fi
+echo "derived output: owner reads it; bob without an envelope: $(cat err.txt)"
 python3 -I -c '
 import glob,sys
 p=open("plain.bin","rb").read()
 blobs=[open(f,"rb").read() for f in glob.glob("blobs/blobs/*/*/*")]
-assert len(blobs)==1 and all(p[i:i+32] not in blobs[0] for i in range(0,len(p),65536)), "plaintext found in a blob"
-print("the blob holds no 32-byte plaintext sample")'
+assert len(blobs)>=1 and all(p[i:i+32] not in b for b in blobs for i in range(0,len(p),65536)), "plaintext found in a blob"
+print("no blob holds a 32-byte plaintext sample")'
 
 # Labels and approvals (R1-C): raising is label, lowering is relabel, which
 # the example policy allows only with an approval from a project lead.

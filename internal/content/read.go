@@ -205,7 +205,7 @@ var ErrLease = errors.New("content: read lease ended")
 // lease wraps r so that reads fail once the binding no longer holds or the
 // decision expires (CNT-008).
 func (s *Service) lease(r io.ReadCloser, b fence.Binding) io.ReadCloser {
-	return s.leaseUntil(r, b, b.ValidUntil)
+	return s.leaseUntil(r, b, b.ValidUntil, nil)
 }
 
 // upload wraps an admitted upload body: it fails once the bound authority
@@ -214,10 +214,12 @@ func (s *Service) lease(r io.ReadCloser, b fence.Binding) io.ReadCloser {
 // decision.
 func (s *Service) upload(r io.ReadCloser, b fence.Binding) io.ReadCloser {
 	b.ValidUntil = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
-	return s.leaseUntil(r, b, b.ValidUntil)
+	return s.leaseUntil(r, b, b.ValidUntil, nil)
 }
 
-func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time) io.ReadCloser {
+// leaseUntil wraps r in a lease that rechecks b every LeaseCheckEvery and
+// ends at until. classify, if set, names the error of a failed recheck.
+func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time, classify func(error) error) io.ReadCloser {
 	l := &leased{r: r, validUntil: until, now: s.d.Now, every: s.d.Limits.LeaseCheckEvery, done: make(chan struct{})}
 	l.lastOK = s.d.Now()
 	go func() {
@@ -232,9 +234,12 @@ func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time) 
 				err := s.d.Fence.Check(ctx, b)
 				cancel()
 				l.mu.Lock()
-				if err != nil {
+				switch {
+				case err != nil && classify != nil:
+					l.err = classify(err)
+				case err != nil:
 					l.err = fmt.Errorf("%w: %v", ErrLease, err)
-				} else {
+				default:
 					l.lastOK = s.d.Now()
 				}
 				l.mu.Unlock()

@@ -20,7 +20,9 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 
   - the encrypted original file, disclosed only with raw-read and read on every unit (CNT-003).
 
-  Derived outputs, export and metadata search are not built yet.
+  - derived outputs with signed lineage: label at least the lineage maximum, delivery only to readers of the whole transitive lineage or by declassification, streams ended when a source changes.
+
+  Export, metadata search and text entries are not built yet.
 - **R2 and R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
@@ -50,11 +52,10 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 
 | Case | Result |
 |---|---|
-| V-001, V-142, V-144, V-146, V-149 | Pass |
-| V-147 | Pass, bound to a storage object until document units exist |
+| V-001, V-142, V-144, V-145, V-146, V-148, V-149 | Pass |
+| V-147 | Pass, bound to a storage object |
 | V-143 | Passes with fence clock margin 0. One host clock in the local profile. With the default one-second margin, the admission one second before the cutoff is refused (more restrictive than the fixture). |
 | V-141 | Unbound. Its decision carries a `metadata_projection` obligation. R1 maps no obligations (POL-011 not built), so verifiers reject every obligation. |
-| V-145, V-148 | Not built yet (R1-C derived outputs) |
 
 ### Known gaps (not done or not verified)
 

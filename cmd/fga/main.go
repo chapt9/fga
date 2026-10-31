@@ -37,7 +37,7 @@ func main() {
 
 const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | fga policy sign -key FILE -key-id ID -epoch N DIR" +
 	" | fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]" +
-	" | fga keys init|keys enroll|keys protect|keys unprotect|trust add|put|put-document|get|get-document|get-original|ls|rm|share|finalize|label|propose-label|approvals [flags]" +
+	" | fga keys init|keys enroll|keys protect|keys unprotect|trust add|put|put-document|get|get-document|get-original|get-derived|ls|rm|share|finalize|label|propose-label|approvals [flags]" +
 	" | fga approve|reject [flags] ID (see cmd/fga/client.go)"
 
 func run(args []string) error {
@@ -48,7 +48,7 @@ func run(args []string) error {
 		return errors.New(usage)
 	}
 	switch args[0] {
-	case "put", "put-document", "get", "get-document", "get-original", "ls", "rm", "share", "finalize", "label", "propose-label", "approvals", "approve", "reject":
+	case "put", "put-document", "get", "get-document", "get-original", "get-derived", "ls", "rm", "share", "finalize", "label", "propose-label", "approvals", "approve", "reject":
 		return clientCommand(args[0], args[1:])
 	}
 	if len(args) < 2 {

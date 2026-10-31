@@ -1,0 +1,594 @@
+package content
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
+
+	"fga/internal/audit"
+	"fga/internal/blob"
+	"fga/internal/catalog"
+	"fga/internal/cryptowire"
+	"fga/internal/envelope"
+	"fga/internal/fence"
+	"fga/internal/labels"
+	"fga/internal/registry"
+	"fga/internal/signing"
+)
+
+// Derived outputs (docs/design/derived-outputs.md, DRV-001 to DRV-003,
+// DRV-007 to DRV-009). A derived output is an encrypted object of kind
+// derived with signed lineage. Delivering it needs deliver on it and, for
+// the recipient, read on every source in its transitive lineage or an
+// explicit declassify; every source binding is part of the decision, so a
+// change to any source ends admitted streams.
+
+// ErrLineageChanged ends a derived stream whose own authority holds but a
+// lineage source changed (LINEAGE_AUTHORITY_CHANGED, DRV-009, V-145).
+var ErrLineageChanged = fmt.Errorf("%w: LINEAGE_AUTHORITY_CHANGED", ErrLease)
+
+// MaxLineageDepth bounds a derived output's transitive lineage.
+const MaxLineageDepth = 32
+
+// source is one lineage source as the catalog holds it.
+type source struct {
+	cryptowire.LineageSource
+	label string
+	depth int
+}
+
+// sourceRole maps a source type to its check role and action.
+func sourceRole(typ string) (role, action string) {
+	switch typ {
+	case cryptowire.SourceObject:
+		return registry.RoleSourceObject, "read"
+	case cryptowire.SourceUnit:
+		return registry.RoleSourceUnit, "read"
+	default:
+		return registry.RoleSourceDerived, "deliver"
+	}
+}
+
+// lineageSources resolves direct sources: each must be a LIVE version of
+// an object, unit or derived output of the tenant. It returns them with
+// their labels and the output's depth.
+func (s *Service) lineageSources(ctx context.Context, q catalog.Querier, tenant string, l cryptowire.Lineage) ([]source, int, error) {
+	kinds := map[string]string{cryptowire.SourceObject: "object", cryptowire.SourceUnit: "unit", cryptowire.SourceDerived: "derived"}
+	depth := 1
+	out := make([]source, 0, len(l.Sources))
+	for _, src := range l.Sources {
+		var label string
+		var d *int
+		err := q.QueryRow(ctx, `
+			SELECT coalesce(r.attributes->>'label', ''), dv.depth FROM objects o
+			  JOIN object_versions v ON v.tenant = o.tenant AND v.object = o.id
+			  JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text AND r.type = $4
+			  LEFT JOIN derived_versions dv ON dv.tenant = v.tenant AND dv.version = v.id
+			 WHERE o.tenant = $1 AND o.id::text = $2 AND v.id::text = $3 AND o.kind = $5 AND v.state = 'LIVE' AND NOT v.delete_marker`,
+			tenant, src.ID, src.Version, src.Type, kinds[src.Type]).Scan(&label, &d)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, ErrNotFound
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		sd := 0
+		if d != nil {
+			sd = *d
+		}
+		depth = max(depth, sd+1)
+		out = append(out, source{LineageSource: src, label: label, depth: sd})
+	}
+	if depth > MaxLineageDepth {
+		return nil, 0, fmt.Errorf("%w: lineage deeper than %d", ErrInvalid, MaxLineageDepth)
+	}
+	return out, depth, nil
+}
+
+// transitive returns every source in a derived version's transitive
+// lineage, each once.
+func (s *Service) transitive(ctx context.Context, q catalog.Querier, tenant string, version cryptowire.UUID) ([]cryptowire.LineageSource, error) {
+	return catalog.TransitiveLineage(ctx, q, tenant, version, MaxLineageDepth)
+}
+
+// sourceGroups are the checks of op on sources, for the caller (recipient
+// "") or a recipient key.
+func sourceGroups(sources []cryptowire.LineageSource, recipient string) [][]check {
+	groups := make([][]check, len(sources))
+	for i, src := range sources {
+		role, action := sourceRole(src.Type)
+		groups[i] = []check{{id: "source-" + strconv.Itoa(i), role: role, action: action, ref: canonical(src.Type, src.ID), version: src.Version,
+			recipient: recipient}}
+	}
+	return groups
+}
+
+// decideBatches decides op over groups in batches; any denial is
+// ErrNotFound.
+func (s *Service) decideBatches(ctx context.Context, c Caller, op, audience string, singleUse bool, groups [][]check) ([]signing.Signed, []signing.Record, error) {
+	var signed []signing.Signed
+	var recs []signing.Record
+	for _, batch := range batches(groups, maxBatch) {
+		sg, rec, err := s.decide(ctx, c, op, audience, singleUse, batch)
+		if err != nil {
+			return nil, nil, err
+		}
+		signed, recs = append(signed, sg), append(recs, rec)
+	}
+	return signed, recs, nil
+}
+
+// FinalizeDerived publishes a derived output (DRV-001, DRV-007): the
+// staged ciphertext and descriptor as for an object, its lineage signed by
+// the same key and naming this output and version, and initial envelopes
+// for the caller's own keys only. The caller needs create-object on the
+// bucket and read (deliver for derived sources) on every direct source;
+// the stored label is the maximum of the bucket's floor and the sources'
+// labels, raised by an explicit proposal but never lowered by one (V-148).
+func (s *Service) FinalizeDerived(ctx context.Context, c Caller, intentID cryptowire.UUID, r FinalizeRequest, lineage []byte, lineageSig string) (Published, error) {
+	in, err := s.intent(ctx, s.d.Catalog.Pool(), c, intentID, false)
+	if err != nil {
+		return Published{}, err
+	}
+	if in.kind != "derived" {
+		return Published{}, ErrNotFound
+	}
+	if in.state != "STAGED" {
+		return Published{}, fmt.Errorf("%w: intent is %s", ErrConflict, in.state)
+	}
+	if len(r.Envelopes) == 0 || len(r.Envelopes) > s.d.Limits.MaxEnvelopes {
+		return Published{}, ErrInvalid
+	}
+	if err := s.stagedBlob(in); err != nil {
+		return Published{}, err
+	}
+	desc, signer, err := s.checkDescriptor(ctx, c, in, r)
+	if err != nil {
+		return Published{}, err
+	}
+	envs, err := s.checkEnvelopes(ctx, c, in, desc, signer, r.Envelopes)
+	if err != nil {
+		return Published{}, err
+	}
+	signerPub, err := s.signerActive(ctx, c.Tenant, c.Principal, signer)
+	if err != nil {
+		return Published{}, err
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeLineage, lineageSig, lineage, func(kid string) (ed25519.PublicKey, error) {
+		if kid != signer {
+			return nil, errors.New("lineage signed by another key")
+		}
+		return signerPub, nil
+	}); err != nil {
+		return Published{}, fmt.Errorf("%w: lineage signature", ErrInvalid)
+	}
+	l, err := cryptowire.ParseLineage(lineage)
+	if err != nil || l.TenantID != in.Tenant.String() || l.ObjectID != in.Object.String() || l.VersionID != in.LogicalVersion.String() || l.Signer != signer {
+		return Published{}, fmt.Errorf("%w: lineage does not match the intent", ErrInvalid)
+	}
+	sources, depth, err := s.lineageSources(ctx, s.d.Catalog.Pool(), c.Tenant, l)
+	if err != nil {
+		return Published{}, err
+	}
+	_, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
+	if err != nil {
+		return Published{}, fmt.Errorf("%w: no label order is active", ErrInvalid)
+	}
+	floor, _ := in.attributes["label"].(string)
+	effective, rank := floor, rankOf(order, floor)
+	for _, src := range sources {
+		if r := rankOf(order, src.label); r > rank {
+			effective, rank = order[r], r
+		}
+	}
+	raised := in.label != "" && rankOf(order, in.label) > rank
+	if raised {
+		effective = in.label
+	}
+
+	// Initial envelopes go to the caller's own keys only; others receive
+	// the output through ShareDerived, which checks their lineage.
+	ref := planned(registry.PlannedObject, in.IntentID.String())
+	checks := []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
+	if raised {
+		checks = append(checks, check{id: "label", role: registry.RoleLabel, action: "label", ref: ref})
+	}
+	for i, e := range envs {
+		var principal string
+		if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`,
+			c.Tenant, e.ctx.Recipient.String()).Scan(&principal); err != nil || principal != c.Principal {
+			return Published{}, fmt.Errorf("%w: initial envelopes of a derived output are for the caller's own keys", ErrInvalid)
+		}
+		fp, n := e.ctx.Recipient.String(), strconv.Itoa(i)
+		checks = append(checks,
+			check{id: "envelope-" + n, role: registry.RoleEnvelope, action: "create",
+				ref: planned(registry.PlannedEnvelope, "intent:"+in.IntentID.String()+"|"+fp+"|"+e.id.String())},
+			check{id: "recipient-key-" + n, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp})
+	}
+	_, base, err := s.decide(ctx, c, registry.OpDerivedPublish, Audience, true, checks)
+	if err != nil {
+		return Published{}, err
+	}
+	direct := make([]cryptowire.LineageSource, len(sources))
+	for i, src := range sources {
+		direct[i] = src.LineageSource
+	}
+	_, srcRecs, err := s.decideBatches(ctx, c, registry.OpDerivedSources, Audience, true, sourceGroups(direct, ""))
+	if err != nil {
+		return Published{}, err
+	}
+	recs := append([]signing.Record{base}, srcRecs...)
+	bindings := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		if bindings[i], err = fence.FromRecord(rec); err != nil {
+			return Published{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	}
+	var result Published
+	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		if raised {
+			if err := s.labelOrderHolds(ctx, tx, base, in.label, in.bucket); err != nil {
+				return err
+			}
+		}
+		if _, _, err := s.lineageSources(ctx, tx, c.Tenant, l); err != nil {
+			return fmt.Errorf("%w: a lineage source is no longer live", ErrConflict)
+		}
+		var st string
+		if err := tx.QueryRow(ctx, `SELECT state FROM upload_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, c.Tenant, in.IntentID).Scan(&st); err != nil {
+			return err
+		}
+		if st != "STAGED" || !s.d.Now().Before(in.ExpiresAt) {
+			return fmt.Errorf("%w: intent is %s or expired", ErrConflict, st)
+		}
+		attrs := map[string]any{"kind": "derived", "label": effective}
+		for _, k := range []string{"bucket", "owner", "project"} {
+			attrs[k] = in.attributes[k]
+		}
+		ab, _ := json.Marshal(attrs)
+		now := s.d.Now()
+		if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.derived', $3, 1, 1, 1, $4)`, c.Tenant, in.Object.String(), in.scope, ab); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, $4, 'derived')`, c.Tenant, in.Object, in.bucket, in.key)
+		if isUnique(err) {
+			return fmt.Errorf("%w: the key was created concurrently", ErrConflict)
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+			                             signer, descriptor, descriptor_signature, created_at, published_at)
+			VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+			c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int64(desc.CiphertextLength), desc.CiphertextSHA256,
+			int(desc.Suite), int(desc.Format), desc.Signer, r.Descriptor, r.DescriptorSignature, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, in.Object, in.LogicalVersion); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO derived_versions VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			c.Tenant, in.LogicalVersion, in.Object, lineage, lineageSig, effective, depth); err != nil {
+			return err
+		}
+		for i, src := range l.Sources {
+			if _, err := tx.Exec(ctx, `INSERT INTO lineage VALUES ($1, $2, $3, $4, $5, $6)`, c.Tenant, in.LogicalVersion, i, src.Type, src.ID, src.Version); err != nil {
+				return err
+			}
+		}
+		for _, e := range envs {
+			if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, in.scope, attrs, e.id, in.Object, in.LogicalVersion, e.ctx, e.keyVersion,
+				e.EnvelopeIn, e.digest, now); err != nil {
+				return err
+			}
+		}
+		result = Published{Object: in.Object.String(), Version: in.LogicalVersion.String(), ETag: ETag(in.LogicalVersion), Generation: 1}
+		stored, _ := json.Marshal(result)
+		if _, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'COMMITTED', result = $3 WHERE tenant = $1 AND id = $2`,
+			c.Tenant, in.IntentID, stored); err != nil {
+			return err
+		}
+		targets := []audit.Target{{Type: "document.derived", ID: in.Object.String(), Version: in.LogicalVersion.String(), Signer: signer,
+			Digest: desc.CiphertextSHA256}}
+		for _, src := range l.Sources {
+			targets = append(targets, audit.Target{Type: src.Type, ID: src.ID, Version: src.Version})
+		}
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindMutation, base, "DERIVED_PUBLISHED", targets...))
+	}))
+	if err != nil {
+		return Published{}, err
+	}
+	return result, nil
+}
+
+func rankOf(order []string, label string) int {
+	r, _ := labels.Rank(order, label)
+	return r
+}
+
+// derivedTarget resolves a derived output key and optional version.
+func (s *Service) derivedTarget(ctx context.Context, tenant, bucketName, key, versionSel string) (cryptowire.UUID, version, error) {
+	b, err := s.bucketByName(ctx, tenant, bucketName)
+	if err != nil {
+		return cryptowire.UUID{}, version{}, err
+	}
+	var id cryptowire.UUID
+	var current *cryptowire.UUID
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id, current_version FROM objects WHERE tenant = $1 AND bucket = $2 AND key = $3 AND kind = 'derived'`,
+		tenant, b.ID, key).Scan(&id, &current)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && current == nil {
+		return id, version{}, ErrNotFound
+	}
+	if err != nil {
+		return id, version{}, err
+	}
+	vid := *current
+	if versionSel != "" {
+		if vid, err = cryptowire.ParseUUID(versionSel); err != nil {
+			return id, version{}, ErrNotFound
+		}
+	}
+	v, err := s.versionByID(ctx, s.d.Catalog.Pool(), tenant, vid, false)
+	if err != nil || v.Object != id || v.State != "LIVE" {
+		return id, version{}, ErrNotFound
+	}
+	return id, v, nil
+}
+
+// recipientPath decides the recipient's eligibility for a derived version
+// (DRV-002): recipient read (deliver for derived outputs) on every
+// transitive source, or, failing that, an explicit declassify for this
+// output, version and recipient. Every source binding is part of the
+// decisions (DRV-009).
+func (s *Service) recipientPath(ctx context.Context, c Caller, output cryptowire.UUID, v version, recipient, audience string, singleUse bool) ([]signing.Signed, []signing.Record, error) {
+	sources, err := s.transitive(ctx, s.d.Catalog.Pool(), c.Tenant, v.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	signed, recs, err := s.decideBatches(ctx, c, registry.OpDerivedRecipientSources, audience, singleUse, sourceGroups(sources, recipient))
+	if !errors.Is(err, ErrNotFound) {
+		return signed, recs, err
+	}
+	ref := canonical("document.derived", output.String())
+	sg, rec, err := s.decide(ctx, c, registry.OpDerivedDeclassify, audience, singleUse, []check{
+		{id: "output", role: registry.RoleOutput, action: "deliver", ref: ref, version: v.ID.String()},
+		{id: "declassify", role: registry.RoleRecipientDeclass, action: "declassify", ref: ref, version: v.ID.String(), recipient: recipient}})
+	if err != nil {
+		return nil, nil, err
+	}
+	return []signing.Signed{sg}, []signing.Record{rec}, nil
+}
+
+// ownKey checks that recipient is one of the caller's own recipient keys.
+func (s *Service) ownKey(ctx context.Context, c Caller, recipient string) error {
+	var principal string
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT principal FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2`,
+		c.Tenant, recipient).Scan(&principal); err != nil || principal != c.Principal {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DerivedPackage returns a derived version's descriptor and the caller's
+// envelope for one of its own keys. The keys role releases it against
+// deliver, the envelope's release and receive-key, together with the
+// recipient-path decisions, all admitted in its fence.
+func (s *Service) DerivedPackage(ctx context.Context, c Caller, bucketName, key, versionSel, recipient string) (Package, error) {
+	if _, err := cryptowire.ParseDigest(recipient); err != nil {
+		return Package{}, ErrInvalid
+	}
+	if err := s.ownKey(ctx, c, recipient); err != nil {
+		return Package{}, err
+	}
+	output, v, err := s.derivedTarget(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return Package{}, err
+	}
+	path, _, err := s.recipientPath(ctx, c, output, v, recipient, KeysAudience, true)
+	if err != nil {
+		return Package{}, err
+	}
+	var envelopeID string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
+	                                         AND document_version IS NULL AND status = 'ACTIVE'`, c.Tenant, v.ID, recipient).Scan(&envelopeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Package{}, ErrNotFound
+	}
+	if err != nil {
+		return Package{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	signed, _, err := s.decide(ctx, c, registry.OpDerivedGetEnvelope, KeysAudience, true, []check{
+		{id: "output", role: registry.RoleOutput, action: "deliver", ref: canonical("document.derived", output.String()), version: v.ID.String()},
+		{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: v.ID.String()},
+		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient}})
+	if err != nil {
+		return Package{}, err
+	}
+	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID, path...)
+	if err != nil {
+		return Package{}, err
+	}
+	return Package{Version: info(v, true), Descriptor: v.Descriptor, DescriptorSignature: v.DescriptorSig, Envelope: env}, nil
+}
+
+// ReadDerivedCiphertext admits the read of a derived version's ciphertext
+// for the caller, as the recipient key recipient: deliver on the output and
+// the recipient path, admitted together, under a lease over all of them.
+// When a lineage source changes while the output's own authority holds,
+// the stream ends with ErrLineageChanged (V-145).
+func (s *Service) ReadDerivedCiphertext(ctx context.Context, c Caller, bucketName, key, versionSel, recipient string) (*Stream, error) {
+	if err := s.ownKey(ctx, c, recipient); err != nil {
+		return nil, err
+	}
+	output, v, err := s.derivedTarget(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return nil, err
+	}
+	_, own, err := s.decide(ctx, c, registry.OpDerivedDeliver, Audience, true,
+		[]check{{id: "output", role: registry.RoleOutput, action: "deliver", ref: canonical("document.derived", output.String()), version: v.ID.String()}})
+	if err != nil {
+		return nil, err
+	}
+	_, path, err := s.recipientPath(ctx, c, output, v, recipient, Audience, true)
+	if err != nil {
+		return nil, err
+	}
+	recs := append([]signing.Record{own}, path...)
+	bindings := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		if bindings[i], err = fence.FromRecord(rec); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	}
+	tenantID, err := s.tenantID(ctx, c.Tenant)
+	if err != nil {
+		return nil, err
+	}
+	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM object_versions WHERE tenant = $1 AND id = $2 FOR SHARE`, c.Tenant, v.ID).Scan(&state); err != nil {
+			return err
+		}
+		if state != "LIVE" {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO read_admissions VALUES ($1, $2, $3, $4, $5)`, c.Tenant, own.DecisionID, v.ID, s.d.Now(), own.ValidUntil); err != nil {
+			return err
+		}
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindReadAdmission, own, "ADMITTED",
+			audit.Target{Type: "document.derived", ID: output.String(), Version: v.ID.String(), Digest: v.SHA256, Recipient: recipient}))
+	}))
+	if err != nil {
+		return nil, err
+	}
+	merged, err := fence.Merge(bindings)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	ownBinding := bindings[0]
+	ownBinding.ValidUntil = merged.ValidUntil
+	l := s.leaseUntil(r, merged, merged.ValidUntil, func(err error) error {
+		// The output's own authority still holds: a source changed.
+		if s.d.Fence.Check(context.Background(), ownBinding) == nil {
+			return ErrLineageChanged
+		}
+		return fmt.Errorf("%w: %v", ErrLease, err)
+	})
+	return &Stream{ReadCloser: l, Version: info(v, true)}, nil
+}
+
+// ShareDerived publishes an envelope of a derived version for another
+// recipient (DRV-002): deliver for the caller, the envelope's create and
+// the recipient's receive-key, and the recipient path, committed together.
+// The envelope is the caller's client's own, made from a key it could
+// decrypt; the server never creates one.
+func (s *Service) ShareDerived(ctx context.Context, c Caller, bucketName, key, versionSel string, e EnvelopeIn) (envelope.EnvelopeRef, error) {
+	output, v, err := s.derivedTarget(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	ctxv, err := cryptowire.ParseEnvelopeContext(e.Context)
+	if err != nil || ctxv.Profile() != 1 || len(e.Ciphertext) == 0 || len(e.Ciphertext) > cryptowire.MaxHPKECiphertext {
+		return envelope.EnvelopeRef{}, ErrInvalid
+	}
+	signer := ctxv.Sharer.String()
+	signerPub, err := s.signerActive(ctx, c.Tenant, c.Principal, signer)
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, e.Signature, cryptowire.EnvelopeSigningInput(e.Context, e.Ciphertext),
+		func(kid string) (ed25519.PublicKey, error) {
+			if kid != signer {
+				return nil, errors.New("envelope signed by another key")
+			}
+			return signerPub, nil
+		}); err != nil {
+		return envelope.EnvelopeRef{}, fmt.Errorf("%w: envelope signature", ErrInvalid)
+	}
+	tenantID, err := s.tenantID(ctx, c.Tenant)
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	if ctxv.Tenant != tenantID || ctxv.Object != output || ctxv.LogicalVersion != v.ID || ctxv.CryptoVersion != v.CryptoVersion ||
+		ctxv.CiphertextSHA256.String() != v.SHA256 || int64(ctxv.CiphertextLength) != v.Length {
+		return envelope.EnvelopeRef{}, fmt.Errorf("%w: envelope bindings", ErrInvalid)
+	}
+	fp := ctxv.Recipient.String()
+	keyVersion, err := s.recipientKey(ctx, c.Tenant, fp)
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	if keyVersion != ctxv.RecipientKeyVersion {
+		return envelope.EnvelopeRef{}, fmt.Errorf("%w: recipient key version", ErrInvalid)
+	}
+	id := cryptowire.NewUUID()
+	ref := canonical("document.derived", output.String())
+	_, share, err := s.decide(ctx, c, registry.OpDerivedShare, Audience, true, []check{
+		{id: "output", role: registry.RoleOutput, action: "deliver", ref: ref, version: v.ID.String()},
+		{id: "envelope", role: registry.RoleEnvelope, action: "create", ref: planned(registry.PlannedEnvelope, output.String()+"|"+fp+"|"+id.String())},
+		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp}})
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	_, path, err := s.recipientPath(ctx, c, output, v, fp, Audience, true)
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	recs := append([]signing.Record{share}, path...)
+	bindings := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		if bindings[i], err = fence.FromRecord(rec); err != nil {
+			return envelope.EnvelopeRef{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	}
+	var attrs map[string]any
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT attributes FROM resources WHERE tenant = $1 AND id = $2`, c.Tenant, output.String()).Scan(&attrs); err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	out := envelope.EnvelopeRef{ID: id.String(), Generation: ctxv.Generation, Status: "ACTIVE"}
+	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := catalog.SignerActiveTx(ctx, tx, c.Tenant, c.Principal, signer); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		var next uint64
+		if err := tx.QueryRow(ctx, `SELECT coalesce(max(generation), 0) + 1 FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
+		                             AND document_version IS NULL`, c.Tenant, v.ID, fp).Scan(&next); err != nil {
+			return err
+		}
+		if ctxv.Generation != next {
+			return fmt.Errorf("%w: envelope generation %d, want %d", ErrConflict, ctxv.Generation, next)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND version = $2 AND recipient = $3
+		                            AND document_version IS NULL AND status = 'ACTIVE'`, c.Tenant, v.ID, fp); err != nil {
+			return err
+		}
+		if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, "", attrs, id, output, v.ID, ctxv, keyVersion, e,
+			cryptowire.EnvelopeDigest(e.Context, e.Ciphertext), s.d.Now()); err != nil {
+			return err
+		}
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindEnvelopePublication, share, "DERIVED_SHARED",
+			audit.Target{Type: "crypto.envelope", ID: output.String(), Version: v.ID.String(), Recipient: fp, Envelope: id.String(),
+				Generation: ctxv.Generation, Signer: signer}))
+	}))
+	if err != nil {
+		return envelope.EnvelopeRef{}, err
+	}
+	return out, nil
+}

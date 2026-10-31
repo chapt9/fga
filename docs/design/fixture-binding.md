@@ -13,6 +13,8 @@ Specification fixtures (`docs/spec/vectors/fixtures/*.json`, schema `fga.fixture
 | `delete_key`, `delete_version`, `read_version` | `content.Service` | V-146, needs PostgreSQL |
 | `retire_content_signing_key`, `mark_content_signer_compromised`, `verify_historical_content` | `envelope` signing-key registry and `cryptowire` verification | V-149 |
 | `propose_label` | `content.Service.ProposeLabel` on a storage object standing in for the unit until document units exist; `collection_floor` is the bucket's default label, `access_revision` our metadata revision | V-147, needs PostgreSQL |
+| `prepare_derived_publication`, `publish_derived` | Derived upload (begin, stage) and `content.Service.FinalizeDerived`; the fixture's units are document units with explicit labels | V-148, needs PostgreSQL |
+| `admit_derived_stream`, `check_stream_lease`, `raise_label` | `content.Service.ReadDerivedCiphertext`, reading the admitted stream after a lease interval, and the owner's label operation on the source | V-145, needs PostgreSQL |
 | `admit_recipient_envelope`, `take_catalog_backup`, `revoke_recipient_and_record_recovery`, `restore_backup`, `reconcile_security_journal`, `get_recipient_envelope` | `envelope.Service`, `cmd/fga-admin` backup/restore/reconcile functions | V-144, needs PostgreSQL |
 
 Fixture-only facts that our model expresses differently are mapped explicitly in the harness, one line per mapping, for example a fixture `access_revision` to our `metadata_revision`, and a fixture version label (`v1`) to a generated UUID kept in a name table.

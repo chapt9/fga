@@ -27,3 +27,28 @@ The owner's client must already have created the recipient's envelope. A `declas
 ## Freshness (DRV-009, V-145)
 
 Every lineage source's resource binding (generation and metadata revision) is a check of the delivery decision, so the authority fence and the stream lease recheck them. A label change, deletion or other change to any transitive source invalidates the decision and aborts an admitted stream at its next lease check. The reported reason is `LINEAGE_AUTHORITY_CHANGED` when the changed resource is a lineage source rather than the output itself. The traversal is bounded by the limits above.
+
+## Implementation (R1-C step 5)
+
+**Publication.** A derived output is a new key of kind `derived`, begun with `"derived": true` and staged like an object. Finalize also carries a signed lineage: `fga.lineage/v1`, strict JSON, JWS type `fga-lineage+jws`, signed by the same active key as the descriptor. It names this output and version and 1 to 1,000 distinct sources (`storage.object`, `document.text_unit` or `document.derived`, each at an exact LIVE version of the tenant). Bounds: transitive depth at most 32. Cycles cannot arise, because a lineage names only existing versions and an output is new.
+
+The caller needs:
+- `create-object` on the bucket (`derived.publish`, with the planned envelopes' `create` and `receive-key`);
+- `read` on each direct object or unit source, and `deliver` on each derived source (`derived.sources`; the three source roles are optional, a new `Optional` flag of registered operations).
+
+Initial envelopes are for the caller's own keys only. The commit, under the fence over all decisions:
+- rechecks the signer;
+- rechecks that every source is still LIVE;
+- stores `derived_versions` (lineage bytes, signature, label, depth) and the `lineage` edges.
+
+**Label.** The stored label is the maximum of the bucket's default (the floor) and every direct source's label. A proposed label above it applies, with `label` on the planned output. A proposal below it is ignored (V-148). A derived source contributes its own stored label, which already includes its lineage.
+
+**Delivery.** `GET /v1/buckets/{b}/derived/package?key=&recipient=`, `GET …/derived/ciphertext?key=&recipient=` and sharing (`POST …/derived/envelopes?key=&version=`) need `deliver` on the output plus the recipient path. The recipient path (`recipientPath`) is either of:
+- `derived.recipient-sources`: the recipient's `read` on every object or unit source in the transitive lineage and `deliver` on every intermediate derived output, in batches;
+- `derived.declassify`: `deliver` and the recipient's `declassify` on this output and version.
+
+Package and ciphertext are for one of the caller's own keys. For a package, the recipient-path decisions are issued for the keys role and sent with the release (`derived.get-envelope`). The keys role verifies that they are either one declassify decision for this output, version and recipient, or recipient-source decisions covering the version's transitive lineage exactly. It admits them in the same fence as the release. Sharing commits the caller's re-wrapped envelope at the next generation.
+
+**Freshness.** The ciphertext read is admitted over the merged binding of all decisions, and its lease rechecks that binding. If a recheck fails while the output's own binding still holds, the stream ends with `LINEAGE_AUTHORITY_CHANGED` (`content.ErrLineageChanged`, V-145).
+
+**Not yet.** Relabelling derived outputs, new versions of a derived output, and a recipient-bound declassify record for managed clients beyond the decision itself (DRV-008's reported label).

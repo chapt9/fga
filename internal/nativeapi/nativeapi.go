@@ -56,6 +56,7 @@ type (
 		IfMatch        string `json:"if_match,omitempty"`
 		IfNoneMatch    string `json:"if_none_match,omitempty"`
 		Label          string `json:"label,omitempty"`
+		Derived        bool   `json:"derived,omitempty"`
 	}
 	approvalRequiredBody struct {
 		Status     string `json:"status"`
@@ -132,6 +133,9 @@ type (
 		Descriptor          []byte                 `json:"descriptor"`
 		DescriptorSignature string                 `json:"descriptor_signature"`
 		Envelopes           []httpapi.EnvelopeBody `json:"envelopes"`
+		// Lineage and LineageSignature finalize a derived output.
+		Lineage          []byte `json:"lineage,omitempty"`
+		LineageSignature string `json:"lineage_signature,omitempty"`
 	}
 	receiptBody struct {
 		BlobID           string `json:"blob_id"`
@@ -169,7 +173,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		in, err := svc.Begin(r.Context(), c, content.BeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
-			IdempotencyKey: b.IdempotencyKey, IfMatch: b.IfMatch, IfNoneMatch: b.IfNoneMatch == "*", Label: b.Label})
+			IdempotencyKey: b.IdempotencyKey, IfMatch: b.IfMatch, IfNoneMatch: b.IfNoneMatch == "*", Label: b.Label, Derived: b.Derived})
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -207,7 +211,12 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		for _, e := range b.Envelopes {
 			req.Envelopes = append(req.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 		}
-		p, err := svc.Finalize(r.Context(), c, id, req)
+		var p content.Published
+		if b.Lineage != nil {
+			p, err = svc.FinalizeDerived(r.Context(), c, id, req, b.Lineage, b.LineageSignature)
+		} else {
+			p, err = svc.Finalize(r.Context(), c, id, req)
+		}
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -531,6 +540,59 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		defer st.Close()
 		streamBody(w, r, st)
+	}))
+	derived := func(r *http.Request) (bucket, key, version, recipient string, ok bool) {
+		q := r.URL.Query()
+		if len(q["key"]) != 1 || len(q["version"]) > 1 || !content.ValidKey(q.Get("key")) || len(q["recipient"]) > 1 || r.Header.Get("Range") != "" {
+			return "", "", "", "", false
+		}
+		return r.PathValue("bucket"), q.Get("key"), q.Get("version"), q.Get("recipient"), true
+	}
+	mux.HandleFunc("GET /v1/buckets/{bucket}/derived/package", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, fp, ok := derived(r)
+		if !ok || fp == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		p, err := svc.DerivedPackage(r.Context(), c, b, k, v, fp)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, packageBody{Version: p.Version, Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
+			EnvelopeID: p.Envelope.EnvelopeID, Envelope: httpapi.EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext,
+				Signature: p.Envelope.Signature}, Receipt: p.Envelope.Receipt, ReceiptSignature: p.Envelope.ReceiptSignature})
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/derived/ciphertext", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, fp, ok := derived(r)
+		if !ok || fp == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadDerivedCiphertext(r.Context(), c, b, k, v, fp)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		streamBody(w, r, st)
+	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/derived/envelopes", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, _, ok := derived(r)
+		var e httpapi.EnvelopeBody
+		if !ok || v == "" {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &e) {
+			return
+		}
+		ref, err := svc.ShareDerived(r.Context(), c, b, k, v, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusCreated, ref)
 	}))
 	return mux
 }

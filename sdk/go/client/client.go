@@ -157,8 +157,13 @@ type PutOptions struct {
 	IfNoneMatch    bool
 	IdempotencyKey string
 	// Label is an explicit label for a new key; empty takes the bucket's
-	// default.
+	// default. For a derived output it is a proposal that can only raise
+	// the label its lineage gives.
 	Label string
+	// Lineage, when set, publishes a derived output (DRV-001): the exact
+	// sources the content was derived from, signed with the client's key.
+	// A derived output is encrypted only for the client itself.
+	Lineage []cryptowire.LineageSource
 }
 
 type envelopeJSON struct {
@@ -173,7 +178,7 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 	if opts.IdempotencyKey == "" {
 		opts.IdempotencyKey = cryptowire.NewUUID().String()
 	}
-	begin := map[string]string{"key": key, "idempotency_key": opts.IdempotencyKey}
+	begin := map[string]any{"key": key, "idempotency_key": opts.IdempotencyKey}
 	if opts.IfMatch != "" {
 		begin["if_match"] = opts.IfMatch
 	}
@@ -182,6 +187,9 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 	}
 	if opts.Label != "" {
 		begin["label"] = opts.Label
+	}
+	if opts.Lineage != nil {
+		begin["derived"] = true
 	}
 	var in struct {
 		IntentID, TenantID, ObjectID, LogicalVersionID, CryptoVersionID, BlobID, AttemptID string
@@ -231,6 +239,18 @@ func (c *Client) Put(ctx context.Context, bucket, key string, src io.Reader, rec
 		envs = append(envs, envelopeJSON{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 	}
 	fin["envelopes"] = envs
+	if opts.Lineage != nil {
+		l, err := cryptowire.Lineage{TenantID: p.Tenant.String(), ObjectID: p.Object.String(), VersionID: p.LogicalVersion.String(),
+			Sources: opts.Lineage, Signer: c.Signer.Fingerprint.String(), CreatedAt: c.now()}.Marshal()
+		if err != nil {
+			return Published{}, err
+		}
+		sig, err := c.Signer.Sign(cryptowire.TypeLineage, l)
+		if err != nil {
+			return Published{}, err
+		}
+		fin["lineage"], fin["lineage_signature"] = l, sig
+	}
 	request, _ := json.Marshal(fin)
 	out, err := c.FinalizeUpload(ctx, in.IntentID, request)
 	var need *ApprovalRequired

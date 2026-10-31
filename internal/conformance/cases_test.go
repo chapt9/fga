@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -388,4 +389,116 @@ func TestV147(t *testing.T) {
 	}
 	label, meta := probe()
 	f.check(t, map[string]any{"unit.label": label, "unit.access_revision": meta, "proposal.authoritative": p.Authoritative})
+}
+
+// TestV148 binds prepare_derived_publication and publish_derived to the
+// derived upload (Begin with Derived, staging) and FinalizeDerived. The
+// fixture's units are document units labelled internal and restricted in
+// a collection whose default is public; the proposed label public is
+// ignored because no relabel allow exists.
+func TestV148(t *testing.T) {
+	f := load(t, "V-148")
+	st := r1test.New(t)
+	st.LabeledBucket("objects", "p1", "public")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	up, err := alice.PrepareDocumentSpecs(ctx, "objects", "sources", []string{"u1", "u2"},
+		[]content.DocumentUnitSpec{{Label: "internal"}, {Label: "restricted"}}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	var sources []cryptowire.LineageSource
+	names := map[string]string{}
+	for i, u := range up.Intent.Units {
+		sources = append(sources, cryptowire.LineageSource{Type: cryptowire.SourceUnit, ID: u.Unit, Version: u.UnitVersion})
+		names[u.Unit] = []string{"u1", "u2"}[i]
+	}
+	publish := f.input(t, "publish")
+	p, err := alice.PutDerived("objects", "d1", []byte("derived"), sources, publish["proposed_label"].(string))
+	obs := map[string]any{"prepare.outcome": outcome(err, "ALLOW"), "publish.outcome": outcome(err, "COMMITTED")}
+	if err == nil {
+		var label string
+		_ = st.Pool.QueryRow(ctx, `SELECT attributes->>'label' FROM resources WHERE id = $1`, p.Object).Scan(&label)
+		obs["d1.effective_label"] = label
+		var lineage []string
+		rows, _ := st.Pool.Query(ctx, `SELECT source_id FROM lineage WHERE derived_version = $1 ORDER BY position`, p.Version)
+		for rows.Next() {
+			var id string
+			_ = rows.Scan(&id)
+			lineage = append(lineage, names[id])
+		}
+		rows.Close()
+		obs["d1.lineage"] = lineage
+	}
+	f.check(t, obs)
+}
+
+// TestV145 binds admit_derived_stream to ReadDerivedCiphertext for the
+// reader's own key, check_stream_lease to reading from the admitted stream
+// after a lease interval, and raise_label to the owner's label operation
+// on the source (the fixture's label operator; here the owner holds
+// label). Alice reads under a policy that compares labels with her
+// clearance, internal.
+func TestV145(t *testing.T) {
+	f := load(t, "V-145")
+	policies := map[string]string{}
+	for k, v := range r1test.Policies {
+		policies[k] = v
+	}
+	within := `resource.attributes.label_rank <= principal.attributes.clearance_rank`
+	policies["objects.json"] = `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
+	  {"id":"owner-writes","effect":"allow","actions":["new-version","share","label","stat","discover"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"read-within-clearance","effect":"allow","actions":["read"],"roles":["*"],"when":"` + within + `"}]}`
+	policies["derived.json"] = `{"format":"fga.policy/v1","set":"business","resource":"document.derived","scope":"","rules":[
+	  {"id":"deliver-within-clearance","effect":"allow","actions":["deliver"],"roles":["*"],"when":"` + within + `"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.LabeledBucket("objects", "p1", "public")
+	alice := st.Client("alice", []string{"member", "reviewer"}, "p1")
+	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "alice", []string{"member", "reviewer"},
+		map[string]any{"projects": []string{"p1"}, "clearance": "internal"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	alice.Caller = st.Caller("alice")
+	src, err := alice.Prepare(content.BeginRequest{Bucket: "objects", Key: "s", Label: "internal"}, []byte("source"), alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := alice.Finalize(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1, err := alice.PutDerived("objects", "d1", []byte("d1"), []cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: s.Object, Version: s.Version}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.PutDerived("objects", "d2", bytes.Repeat([]byte("d2"), 2<<20),
+		[]cryptowire.LineageSource{{Type: cryptowire.SourceDerived, ID: d1.Object, Version: d1.Version}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	obs := map[string]any{}
+	stream, err := st.Content.ReadDerivedCiphertext(ctx, alice.Caller, "objects", "d2", "", alice.Recipient.Fingerprint().String())
+	obs["read.outcome"], obs["read.stream_admitted"] = outcome(err, "ALLOW"), err == nil
+	if err != nil {
+		f.check(t, obs)
+		return
+	}
+	defer stream.Close()
+	buf := make([]byte, 1024)
+	_, err = stream.Read(buf)
+	obs["lease_before.outcome"] = outcome(err, "ALLOW")
+	_, err = st.Content.SetLabel(ctx, alice.Caller, "objects", "s", "restricted")
+	obs["raise.committed"] = err == nil
+	time.Sleep(3 * r1test.LeaseCheckEvery)
+	_, err = io.ReadAll(stream)
+	obs["normal_stream_completion"] = err == nil
+	obs["lease.outcome"], obs["lease.reason"] = "CONTINUE", ""
+	if errors.Is(err, content.ErrLease) {
+		obs["lease.outcome"] = "ABORT_STREAM"
+	}
+	if errors.Is(err, content.ErrLineageChanged) {
+		obs["lease.reason"] = "LINEAGE_AUTHORITY_CHANGED"
+	}
+	f.check(t, obs)
 }

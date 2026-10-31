@@ -57,6 +57,9 @@ var LabelOrder = []string{"public", "internal", "confidential", "restricted"}
 //     an approval; members may propose labels; project leads approve.
 //   - A document's owner may use its versions and units; members may read
 //     units of their projects below restricted and the versions' units.
+//   - A derived output's owner may deliver, declassify and label it;
+//     members may receive it (subject to its lineage); project leads may
+//     receive declassified outputs.
 //   - The ceiling forbids receive-key for a key that is not active.
 var Policies = map[string]string{
 	"buckets.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
@@ -99,6 +102,13 @@ var Policies = map[string]string{
 	   "when":"resource.attributes.owner == principal.id"},
 	  {"id":"members-read-units-below-restricted","effect":"allow","actions":["read"],"roles":["member"],
 	   "when":"resource.attributes.project in principal.attributes.projects && resource.attributes.label_rank < 3"}]}`,
+	"derived.json": `{"format":"fga.policy/v1","set":"business","resource":"document.derived","scope":"","rules":[
+	  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label"],"roles":["*"],
+	   "when":"resource.attributes.owner == principal.id"},
+	  {"id":"members-receive-derived","effect":"allow","actions":["deliver"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-receive-declassified","effect":"allow","actions":["declassify"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
 	   "when":"resource.attributes.status != \"ACTIVE\""}]}`,
@@ -112,6 +122,7 @@ var UserActions = map[string][]string{
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},
+	"document.derived":   {"deliver", "declassify", "label", "relabel", "approve"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
 }

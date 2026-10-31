@@ -1,0 +1,7 @@
+{"format":"fga.policy/v1","set":"business","resource":"document.derived","scope":"","rules":[
+  {"id":"owner-derived","effect":"allow","actions":["deliver","declassify","label"],"roles":["*"],
+   "when":"resource.attributes.owner == principal.id"},
+  {"id":"members-receive-derived","effect":"allow","actions":["deliver"],"roles":["member"],
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"leads-receive-declassified","effect":"allow","actions":["declassify"],"roles":["lead"],
+   "when":"resource.attributes.project in principal.attributes.projects"}]}

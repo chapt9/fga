@@ -42,6 +42,8 @@ import (
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
+//	                   [-sources TYPE:ID:VERSION,...]   a derived output with that lineage, for the caller only
+//	fga get-derived    -bucket B -key K -out FILE [-version V]
 //	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE]   UTF-8 text, one unit per paragraph
 //	fga get-original   -bucket B -key K -out FILE [-version V]   needs raw-read and read on every unit
 //	fga get            -bucket B -key K -out FILE [-version V]
@@ -229,6 +231,7 @@ func clientCommand(cmd string, args []string) error {
 	intent := fs.String("intent", "", "upload intent to finalize")
 	request := fs.String("request", "", "file holding a kept finalize request")
 	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
+	sources := fs.String("sources", "", "put: publish a derived output with this lineage, type:id:version,...")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -320,7 +323,20 @@ func clientCommand(cmd string, args []string) error {
 			}
 			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
 		}
-		p, err := c.Put(ctx, *bucket, *key, f, recipients, client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label})
+		opts := client.PutOptions{IfNoneMatch: *ifNoneMatch, Label: *label}
+		if *sources != "" {
+			if *to != "" {
+				return errors.New("a derived output is encrypted for its owner only; share it afterwards")
+			}
+			for _, src := range split(*sources) {
+				parts := strings.Split(src, ":")
+				if len(parts) != 3 {
+					return fmt.Errorf("-sources entry %q is not type:id:version", src)
+				}
+				opts.Lineage = append(opts.Lineage, cryptowire.LineageSource{Type: parts[0], ID: parts[1], Version: parts[2]})
+			}
+		}
+		p, err := c.Put(ctx, *bucket, *key, f, recipients, opts)
 		var need *client.ApprovalRequired
 		if errors.As(err, &need) {
 			// The ciphertext stays staged; only the finalize request is
@@ -335,8 +351,24 @@ func clientCommand(cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("published %s version %s etag %s\n", *key, p.Version, p.ETag)
+		fmt.Printf("published %s object %s version %s etag %s\n", *key, p.Object, p.Version, p.ETag)
 		return nil
+	case "get-derived":
+		tmp := *out + ".partial"
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		v, err := c.GetDerived(ctx, *bucket, *key, *version, f)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		fmt.Printf("verified and decrypted derived version %s\n", v.Version)
+		return os.Rename(tmp, *out)
 	case "put-document":
 		text, err := os.ReadFile(*in)
 		if err != nil {

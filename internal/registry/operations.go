@@ -67,6 +67,16 @@ const (
 	OpDocShareOriginal       = "document.share-original"
 	OpDocRawRead             = "document.raw-read"
 	OpDocGetOriginalEnvelope = "document.original.get-envelope"
+	// Derived outputs (DRV-001 to DRV-003, DRV-007 to DRV-009). Lineage
+	// sources are of three types, so the source roles are optional.
+	OpDerivedBegin            = "derived.begin"
+	OpDerivedPublish          = "derived.publish"
+	OpDerivedSources          = "derived.sources"
+	OpDerivedRecipientSources = "derived.recipient-sources"
+	OpDerivedDeliver          = "derived.deliver"
+	OpDerivedDeclassify       = "derived.declassify"
+	OpDerivedShare            = "derived.share"
+	OpDerivedGetEnvelope      = "derived.get-envelope"
 )
 
 // Check roles shared by several operations.
@@ -87,6 +97,12 @@ const (
 	// RoleRecipientVersion is the recipient's read-units on a document
 	// version.
 	RoleRecipientVersion = "recipient-version"
+	// Derived-output roles.
+	RoleOutput           = "output"
+	RoleSourceObject     = "source-object"
+	RoleSourceUnit       = "source-unit"
+	RoleSourceDerived    = "source-derived"
+	RoleRecipientDeclass = "recipient-declassify"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -199,6 +215,30 @@ func r1Operations() []Operation {
 			{Role: RoleRecipientVersion, ResourceType: "document.version", Action: "raw-read", Kind: KindRecipientEligibility},
 			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
 		}},
+		one(OpDerivedBegin, RoleBucket, "storage.bucket", "create-object"),
+		{Name: OpDerivedPublish, Checks: []CheckSpec{
+			{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
+			{Role: RoleLabel, ResourceType: "document.derived", Action: "label", Optional: true},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create", Repeated: true},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},
+		}},
+		{Name: OpDerivedSources, Checks: sourceChecks(KindOperation)},
+		{Name: OpDerivedRecipientSources, Checks: sourceChecks(KindRecipientEligibility)},
+		one(OpDerivedDeliver, RoleOutput, "document.derived", "deliver"),
+		{Name: OpDerivedDeclassify, Checks: []CheckSpec{
+			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
+			{Role: RoleRecipientDeclass, ResourceType: "document.derived", Action: "declassify", Kind: KindRecipientEligibility},
+		}},
+		{Name: OpDerivedShare, Checks: []CheckSpec{
+			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create"},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
+		}},
+		{Name: OpDerivedGetEnvelope, Checks: []CheckSpec{
+			{Role: RoleOutput, ResourceType: "document.derived", Action: "deliver"},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
+		}},
 		{Name: OpDocGetUnitEnvelope, Checks: []CheckSpec{
 			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read"},
@@ -217,4 +257,16 @@ func R1Operations(types *Types) *Operations {
 		panic(err) // the table is static; a failure is a programming error
 	}
 	return o
+}
+
+// sourceChecks are the checks on a derived output's lineage sources:
+// read on objects and units, deliver on other derived outputs, for the
+// caller (OPERATION) or a recipient (RECIPIENT_ELIGIBILITY). Each role is
+// optional because a lineage need not name every type.
+func sourceChecks(kind CheckKind) []CheckSpec {
+	return []CheckSpec{
+		{Role: RoleSourceObject, ResourceType: "storage.object", Action: "read", Kind: kind, Repeated: true, Optional: true},
+		{Role: RoleSourceUnit, ResourceType: "document.text_unit", Action: "read", Kind: kind, Repeated: true, Optional: true},
+		{Role: RoleSourceDerived, ResourceType: "document.derived", Action: "deliver", Kind: kind, Repeated: true, Optional: true},
+	}
 }

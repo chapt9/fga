@@ -492,7 +492,8 @@ func (s *Service) resolve(ctx context.Context, tenant string, ref Alias) (regist
 // matchesOperation reports whether the request's checks are exactly the
 // registered operation's: every check fills a registered role with that
 // role's resource type, canonical action and kind; a role that is not
-// repeated is filled once and a repeated role at least once (RES-001,
+// repeated is filled once and a repeated role at least once; an optional
+// role may be left unfilled (RES-001,
 // RES-006, KEY-012). Absence of a required check fails the match.
 func matchesOperation(op registry.Operation, reqs []Check, checks []decision.Check, bound []registry.Resource) bool {
 	count := map[string]int{}
@@ -504,7 +505,7 @@ func matchesOperation(op registry.Operation, reqs []Check, checks []decision.Che
 		count[c.Role]++
 	}
 	for _, spec := range op.Checks {
-		if n := count[spec.Role]; n == 0 || (!spec.Repeated && n != 1) {
+		if n := count[spec.Role]; n == 0 && !spec.Optional || !spec.Repeated && n > 1 {
 			return false
 		}
 	}
