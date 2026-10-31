@@ -4,6 +4,9 @@
 # decryption or executor package belongs here.
 fga/cmd/fga-mcp
 fga/internal/mcpsvc
+# Reviewed 2026-10-31: the encrypted-package profile shared with the
+# client-side bridge (MCP-005); formats only, standard library only.
+fga/internal/mcpwire
 # Concurrent-call bounds (AVL-006) and panic containment
 # (docs/design/fault-isolation.md); standard library only.
 fga/internal/admission

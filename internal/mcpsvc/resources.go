@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"fga/internal/mcpwire"
 )
 
 // filter serves resources/list and filters tools/list; every other method
@@ -159,6 +160,13 @@ func (s *Service) readResource(ctx context.Context, req *mcp.ReadResourceRequest
 	text := func(s string) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, MIMEType: "text/plain", Text: s}}}, nil
 	}
+	recipient := recipientOf(req.Session)
+	units := func(out ReadOutput) (*mcp.ReadResourceResult, error) {
+		if out.Package != nil {
+			return packaged(uri, out.Package)
+		}
+		return text(joined(out.Units))
+	}
 	notFound := func(err error) (*mcp.ReadResourceResult, error) {
 		if errors.Is(err, errNotFound) {
 			return nil, mcp.ResourceNotFoundError(uri)
@@ -166,11 +174,11 @@ func (s *Service) readResource(ctx context.Context, req *mcp.ReadResourceRequest
 		return nil, err
 	}
 	if t.unit != "" {
-		out, err := s.readUnits(ctx, ev, t, []string{t.unit}, "")
+		out, err := s.readUnits(ctx, ev, t, []string{t.unit}, "", recipient)
 		if err != nil {
 			return notFound(err)
 		}
-		return text(out.Units[0].Text)
+		return units(out)
 	}
 	q := url.Values{"key": {t.key}}
 	if t.version != "" {
@@ -182,17 +190,29 @@ func (s *Service) readResource(ctx context.Context, req *mcp.ReadResourceRequest
 		return text(string(b))
 	case err == nil:
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, MIMEType: "application/octet-stream", Blob: b}}}, nil
+	case errors.Is(err, errClientMode) && recipient != "":
+		pkg, err := s.objectPackage(ctx, ev, t, recipient)
+		if err != nil {
+			return notFound(err)
+		}
+		return packaged(uri, pkg)
 	case !errors.Is(err, errNotFound):
 		return nil, err
 	}
 	// Not an object the user may read: a document or text collection.
-	out, err := s.readUnits(ctx, ev, t, nil, "")
+	out, err := s.readUnits(ctx, ev, t, nil, "", recipient)
 	if err != nil {
 		return notFound(err)
 	}
-	texts := make([]string, len(out.Units))
-	for i, u := range out.Units {
-		texts[i] = u.Text
+	return units(out)
+}
+
+// packaged is a resources/read result holding pkg as JSON text, of type
+// mcpwire.MIMEType.
+func packaged(uri string, pkg *mcpwire.Package) (*mcp.ReadResourceResult, error) {
+	b, err := json.Marshal(pkg)
+	if err != nil {
+		return nil, err
 	}
-	return text(strings.Join(texts, "\n\n"))
+	return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, MIMEType: mcpwire.MIMEType, Text: string(b)}}}, nil
 }

@@ -3,6 +3,7 @@ package mcpsvc_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,9 +26,11 @@ import (
 	"fga/internal/decisionsvc"
 	"fga/internal/httpapi"
 	"fga/internal/mcpsvc"
+	"fga/internal/mcpwire"
 	"fga/internal/nativeapi"
 	"fga/internal/r1test"
 	"fga/internal/registry"
+	"fga/sdk/go/crypto"
 )
 
 var ctx = context.Background()
@@ -123,7 +126,28 @@ func (d *deployment) connect(t *testing.T, user string) *mcp.ClientSession {
 
 func (d *deployment) tryConnect(t *testing.T, user string) (*mcp.ClientSession, error) {
 	t.Helper()
-	c := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	return d.tryConnectWith(t, user, "")
+}
+
+// connectWith opens a session for user whose client declares the
+// encrypted-package capability with the recipient key fingerprint.
+func (d *deployment) connectWith(t *testing.T, user, recipient string) *mcp.ClientSession {
+	t.Helper()
+	s, err := d.tryConnectWith(t, user, recipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func (d *deployment) tryConnectWith(t *testing.T, user, recipient string) (*mcp.ClientSession, error) {
+	t.Helper()
+	var opts *mcp.ClientOptions
+	if recipient != "" {
+		opts = &mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{
+			Experimental: mcpwire.ClientCapability{Version: mcpwire.Version, Recipient: recipient}.Experimental()}}
+	}
+	c := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, opts)
 	s, err := c.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: d.mcp.URL + "/mcp",
 		HTTPClient: &http.Client{Transport: bearer{d.mcpToken(t, user)}}, MaxRetries: -1}, nil)
 	if err == nil {
@@ -264,7 +288,7 @@ func TestMCPReads(t *testing.T) {
 	if err := st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
 		t.Fatal(err)
 	}
-	if names := toolNames(t, s); !slices.Equal(names, []string{mcpsvc.ToolReadDocument, mcpsvc.ToolSearch, mcpsvc.ToolReadText}) {
+	if names := toolNames(t, s); !slices.Equal(names, []string{mcpsvc.ToolExport, mcpsvc.ToolReadDocument, mcpsvc.ToolSearch, mcpsvc.ToolReadText}) {
 		t.Fatalf("tools: %v", names)
 	}
 
@@ -404,7 +428,7 @@ func TestMCPNoPermissionFromTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	carol := d.connect(t, "carol")
-	if names := toolNames(t, carol); len(names) != 3 {
+	if names := toolNames(t, carol); len(names) != 4 {
 		t.Fatalf("carol's tools: %v", names)
 	}
 	if _, err := call(carol, mcpsvc.ToolReadDocument, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, nil); err == nil ||
@@ -633,5 +657,228 @@ func TestGatewayRevision(t *testing.T) {
 		if got := decide(c.adapter, c.audience, c.op, c.check); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+var paragraphs = []string{"First client paragraph.", "Second client paragraph, restricted later.", "Third client paragraph."}
+
+// clientFixture publishes, in the client-mode bucket reports, alice's
+// object plan.bin and three-unit document q3.md, each with envelopes for
+// alice and bob, members of p1; carol is of p2. MCP is enabled.
+func clientFixture(t *testing.T, d *deployment) (alice, bob *r1test.Client, plain []byte, units []string) {
+	t.Helper()
+	d.st.Bucket("reports", "p1")
+	alice = d.st.Client("alice", []string{"member"}, "p1")
+	bob = d.st.Client("bob", []string{"member"}, "p1")
+	d.st.Client("carol", []string{"member"}, "p2")
+	alice.Pin(bob)
+	bob.Pin(alice)
+	plain = bytes.Repeat([]byte("client-mode secret "), 3000)
+	if _, err := alice.Put("reports", "plan.bin", plain, alice, bob); err != nil {
+		t.Fatal(err)
+	}
+	up, err := alice.PrepareDocument("reports", "q3.md", paragraphs, nil, alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range up.Intent.Units {
+		units = append(units, u.Unit)
+	}
+	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	return alice, bob, plain, units
+}
+
+func unb64(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func envelopeOf(t *testing.T, d mcpwire.Delivery) crypto.Envelope {
+	return crypto.Envelope{Context: unb64(t, d.Envelope.Context), Ciphertext: unb64(t, d.Envelope.Ciphertext), Signature: d.Envelope.Signature}
+}
+
+// openObject verifies and decrypts an object package with c's key, as a
+// compatible client does.
+func openObject(t *testing.T, c *r1test.Client, p *mcpwire.Package) ([]byte, error) {
+	t.Helper()
+	if p == nil || p.Object == nil {
+		t.Fatalf("no object package: %+v", p)
+	}
+	var out bytes.Buffer
+	err := crypto.Decrypt(&out, bytes.NewReader(unb64(t, p.Object.Ciphertext)), crypto.Package{Descriptor: unb64(t, p.Object.Descriptor),
+		DescriptorSignature: p.Object.DescriptorSignature, Envelope: envelopeOf(t, p.Object.Delivery)}, c.Recipient, c.Trust)
+	return out.Bytes(), err
+}
+
+// openUnits decrypts every unit of a package with c's key.
+func openUnits(t *testing.T, c *r1test.Client, p *mcpwire.Package) []string {
+	t.Helper()
+	if p == nil {
+		t.Fatal("no package")
+	}
+	var out []string
+	for _, u := range p.Units {
+		var b bytes.Buffer
+		if _, err := crypto.DecryptUnit(&b, bytes.NewReader(unb64(t, u.Ciphertext)), crypto.UnitPackage{Descriptor: unb64(t, u.Descriptor),
+			DescriptorSignature: u.DescriptorSignature, Envelope: envelopeOf(t, u.Delivery)}, c.Recipient, c.Trust); err != nil {
+			t.Fatalf("unit %s: %v", u.Unit, err)
+		}
+		out = append(out, b.String())
+	}
+	return out
+}
+
+// TestMCPClientMode covers MCP-005 for client-mode content: a generic MCP
+// client gets an explicit capability error and no plaintext (V-170); a
+// client that declares the encrypted-package capability gets the exact
+// packages a native client downloads, which it decrypts with its own key,
+// while the MCP role sees only ciphertext; units the user may not read are
+// left out of the package without a trace.
+func TestMCPClientMode(t *testing.T) {
+	d := deploy(t)
+	_, bob, plain, units := clientFixture(t, d)
+	secret := "client-mode secret"
+
+	generic := d.connect(t, "bob")
+	if _, err := readResource(generic, "fga://reports/plan.bin"); err == nil || !strings.Contains(err.Error(), "client-mode") ||
+		strings.Contains(err.Error(), secret) {
+		t.Fatalf("a generic client reads a client-mode object (V-170): %v", err)
+	}
+	if _, err := call(generic, mcpsvc.ToolReadDocument, map[string]any{"bucket": "reports", "key": "q3.md"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "client-mode") {
+		t.Fatalf("a generic client reads a client-mode document: %v", err)
+	}
+
+	s := d.connectWith(t, "bob", bob.Recipient.Fingerprint().String())
+	res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: "fga://reports/plan.bin"})
+	if err != nil || len(res.Contents) != 1 || res.Contents[0].MIMEType != mcpwire.MIMEType {
+		t.Fatalf("the object for a capable client: %+v %v", res, err)
+	}
+	if strings.Contains(res.Contents[0].Text, secret) {
+		t.Fatal("plaintext in the MCP response")
+	}
+	var pkg mcpwire.Package
+	if err := json.Unmarshal([]byte(res.Contents[0].Text), &pkg); err != nil || pkg.Profile != mcpwire.Profile ||
+		pkg.Recipient != bob.Recipient.Fingerprint().String() {
+		t.Fatalf("package %+v, %v", pkg, err)
+	}
+	if got, err := openObject(t, bob, &pkg); err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("bob opens the object: %v", err)
+	}
+
+	var out mcpsvc.ReadOutput
+	text, err := call(s, mcpsvc.ToolReadDocument, map[string]any{"bucket": "reports", "key": "q3.md"}, &out)
+	if err != nil || !strings.Contains(text, "Client-mode content") || len(out.Units) != 0 {
+		t.Fatalf("the document for a capable client: %q %+v %v", text, out, err)
+	}
+	if got := openUnits(t, bob, out.Package); !slices.Equal(got, paragraphs) {
+		t.Fatalf("bob's units: %q", got)
+	}
+
+	// A unit out of bob's reach is left out of the package, ID and all.
+	alice := d.st.Client("alice", []string{"member"}, "p1")
+	if _, err := d.st.Content.SetUnitLabel(ctx, alice.Caller, "reports", "q3.md", "", units[1], "restricted"); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := s.CallTool(ctx, &mcp.CallToolParams{Name: mcpsvc.ToolReadDocument, Arguments: map[string]any{"bucket": "reports", "key": "q3.md"}})
+	if err != nil || res2.IsError {
+		t.Fatalf("after the label change: %+v %v", res2, err)
+	}
+	raw, _ := json.Marshal(res2)
+	if strings.Contains(string(raw), units[1]) {
+		t.Fatal("the restricted unit's ID is in the response")
+	}
+	b, _ := json.Marshal(res2.StructuredContent)
+	out = mcpsvc.ReadOutput{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := openUnits(t, bob, out.Package); !slices.Equal(got, []string{paragraphs[0], paragraphs[2]}) {
+		t.Fatalf("bob's units after the label change: %q", got)
+	}
+	if _, err := readResource(s, "fga://reports/q3.md?unit="+units[1]); !resourceNotFound(err) {
+		t.Fatalf("bob reads the restricted unit: %v", err)
+	}
+
+	carol := d.connectWith(t, "carol", bob.Recipient.Fingerprint().String())
+	if _, err := call(carol, mcpsvc.ToolReadDocument, map[string]any{"bucket": "reports", "key": "q3.md"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "not found") {
+		t.Fatalf("carol, of another project: %v", err)
+	}
+}
+
+// TestMCPExport covers documents.export in both modes (the compound export
+// operation, MCP-005): server mode returns the plaintext of a complete
+// export, client mode the ciphertext and the recipient's existing
+// envelopes, which only that recipient opens; export needs its own
+// permission, and a recipient without an envelope gets nothing.
+func TestMCPExport(t *testing.T) {
+	d := deploy(t)
+	alice, bob, plain, _ := clientFixture(t, d)
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	if _, err := d.st.Content.PutObject(ctx, alice.Caller, content.BeginRequest{Bucket: "vault", Key: "plan.txt", IdempotencyKey: "o1"},
+		8, strings.NewReader("the plan")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "d1"},
+		[]byte(notes)); err != nil {
+		t.Fatal(err)
+	}
+	a := d.connect(t, "alice")
+
+	// Server mode.
+	var x mcpsvc.ExportOutput
+	if text, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "vault", "key": "plan.txt"}, &x); err != nil || text != "the plan" ||
+		string(unb64(t, x.Object)) != "the plan" {
+		t.Fatalf("server-mode object export: %q %+v %v", text, x, err)
+	}
+	x = mcpsvc.ExportOutput{}
+	if text, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, &x); err != nil ||
+		text != strings.TrimSpace(notes) || len(x.Units) != 3 {
+		t.Fatalf("server-mode document export: %q %+v %v", text, x, err)
+	}
+	b := d.connect(t, "bob")
+	if _, err := call(b, mcpsvc.ToolExport, map[string]any{"bucket": "vault", "key": "q3/notes.md"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "not found") {
+		t.Fatalf("bob may read but not export: %v", err)
+	}
+
+	// Client mode: alice exports for bob, who already has envelopes.
+	if _, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "reports", "key": "plan.bin"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "needs a recipient") {
+		t.Fatalf("a client-mode export without a recipient: %v", err)
+	}
+	forBob := map[string]any{"bucket": "reports", "key": "plan.bin", "recipient": bob.Recipient.Fingerprint().String()}
+	x = mcpsvc.ExportOutput{}
+	if _, err := call(a, mcpsvc.ToolExport, forBob, &x); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := openObject(t, bob, x.Package); err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("bob opens alice's export: %v", err)
+	}
+	if _, err := openObject(t, alice, x.Package); err == nil {
+		t.Fatal("alice opened an export made for bob")
+	}
+	forBob["key"] = "q3.md"
+	x = mcpsvc.ExportOutput{}
+	if _, err := call(a, mcpsvc.ToolExport, forBob, &x); err != nil {
+		t.Fatal(err)
+	}
+	if got := openUnits(t, bob, x.Package); !slices.Equal(got, paragraphs) {
+		t.Fatalf("bob's units of the export: %q", got)
+	}
+	carol := d.st.Client("carol", []string{"member"}, "p2")
+	if _, err := call(a, mcpsvc.ToolExport, map[string]any{"bucket": "reports", "key": "plan.bin",
+		"recipient": carol.Recipient.Fingerprint().String()}, nil); err == nil {
+		t.Fatal("an export for a recipient without an envelope")
 	}
 }

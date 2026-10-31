@@ -1,4 +1,4 @@
-# The MCP role (R2 stretch M2; MCP-001 to MCP-008)
+# The MCP role (R2 stretches M2 and M3; MCP-001 to MCP-008)
 
 Status: design record, 31 October 2026. Our own design; no upstream mapping. The hop from the MCP role to the storage role is [mcp-gateway.md](mcp-gateway.md).
 
@@ -37,14 +37,29 @@ The role keeps no identity store, so it cannot name the user's identity revision
 | `documents.search` | `documents.search` | `GET …/documents/search` | Keys, document version IDs and references: catalog metadata only (SRH-001) |
 | `documents.read` | `documents.read` | `GET …/document/units` (`kind` must be `document`), `GET …/document/unit/content`; with `units` (at most 100), the all-or-nothing selection `POST …/document/units/select` (DOC-007) | The readable units in document order, as text and as structured output. With `units`, exactly those, or "not found" |
 | `text.read` | `text.read` | The same, with `kind` `collection` | The readable entries |
+| `documents.export` | `documents.export` | Server mode: `GET …/object/export`, `POST …/document/export/content`. Client mode: `POST …/object/export`, `POST …/document/export` for a recipient. Each route refuses the other mode (`409 ENCRYPTION_MODE`), and the tool then takes the other | A complete export or nothing: server-mode plaintext, or ciphertext and the recipient's existing envelopes. Storage decides `export` on the version and `export-key` on every unit besides the reads; the server never rewraps or decrypts. Text collections are not exported (DOC-005) |
 
 The configured buckets choose what `resources/list` goes through, never what may be read.
 
 - **Unit filtering (V-169).** A unit the user may not read is left out without a trace: no text, ID or count.
 - **One tool, one kind.** `documents.read` refuses a text collection and `text.read` a document. A tool permission therefore stays what it names. The unit listing's `kind` field tells them apart.
-- **Client-mode content** is refused with an explicit error, never returned as plaintext (MCP-005). Returning it as the encrypted package for a local bridge is stretch M3, together with `documents.export`.
+- **Client-mode content** never comes back as plaintext (MCP-005). A generic client gets an explicit capability error (V-170). A client that declares the encrypted-package capability gets the encrypted package (below).
 - **Not cached.** Every result is marked cache scope `private` with TTL 0: it is for one user, now (the SDK default is `public`).
 - **Untrusted content.** Text read from storage is returned as data. The role acts on none of it (MCP-004).
+
+## Client mode (M3, MCP-005)
+
+**Capability.** A client that verifies and decrypts client-mode content itself declares the experimental capability `fga.encrypted-package` at initialize: `{"version": 1, "recipient": "sha256:…"}`, naming the recipient key it decrypts with. The profile is `internal/mcpwire`, which the MCP role and a client-side bridge share; it holds formats only, no keys or cryptography.
+
+**Reads.** For such a client, a client-mode object or document read returns a `Package`:
+- an object version: its signed descriptor, the envelope the keys role delivered for the recipient with its receipt, and the exact ciphertext (`GET …/object/package`, then `GET …/object/ciphertext` of that version);
+- a document version: the same for each readable unit (`GET …/document/unit/package`, `…/unit/ciphertext`). Units the user may not read are left out, ID and all.
+
+`resources/read` returns the package as JSON text of type `application/vnd.fga.encrypted-package+json`. The read tools return it in their structured output, with a short text saying what it is. Binary fields are base64, as the native API sends them, and are passed through unchanged.
+
+The storage role decides the read and the envelope delivery exactly as for a native client. The delivery decision takes the MCP decision as the user's evidence (TB3), and the MCP role holds nothing that opens an envelope. A recipient without an envelope gets nothing, since the server never creates or rewraps one. A package counts against `max_bytes` by its ciphertext; larger content is for a native client until authenticated links exist.
+
+**Export.** `documents.export` exports for the `recipient` argument, or the declared key when it is absent, so a generic client may also export for someone else: it receives ciphertext it cannot open.
 
 ## Sessions (MCP-007, V-115)
 
@@ -85,7 +100,10 @@ The decision role needs the MCP workload in `adapter_audiences` (for `fga-mcp`) 
 | `TestMCPSessions` | V-115: another user's token in a session `403`; a token for another audience or none `401` |
 | `TestMCPPanicContained` | A panic in one request fails only that request; other sessions go on. Without `contain` it ends the test process |
 | `TestMCPLimits` | Session and call bounds per user and in total; a closed session frees its place |
+| `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
+| `TestMCPExport` | Server-mode export of an object and a document; export needs its own permission (a reader who may not export gets "not found"); client-mode export for another recipient, which only that recipient opens; none without a recipient, or for a recipient without an envelope |
 | `TestGatewayRevision` | Revision 0 is filled in only for a gateway's own MCP operations |
 | `TestSharedNames`, `TestWireFormat`, `TestResourceURIs` | The copied names and wire format; `fga://` URIs round trip, and malformed ones are refused |
+| `internal/mcpwire` `TestCapability` | The capability round trips; another version or a missing recipient is not the capability |
 | `cmd/fga-mcp` `TestImportAllowlist`, `TestValidate` | MCP-008 and MOD-004: no catalog, blob, key, payload, policy or decision-service package; configuration rules |
-| `scripts/smoke.sh` | A generic MCP client (JSON-RPC over HTTP): tools, a server-mode document and object equal to the native reads, another project's member refused, client-mode content refused, a session bound to its user |
+| `scripts/smoke.sh` | A generic MCP client (JSON-RPC over HTTP): tools, a server-mode document and object equal to the native reads, another project's member refused, client-mode content refused, a session bound to its user; a client that declares its recipient key gets the client-mode object as a package |

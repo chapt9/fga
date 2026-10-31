@@ -82,7 +82,8 @@ func (s *Service) storageJSON(ctx context.Context, evidence, path string, q url.
 		return err
 	}
 	defer resp.Body.Close()
-	if json.NewDecoder(io.LimitReader(resp.Body, maxListing)).Decode(out) != nil {
+	// An export response carries ciphertext inline, base64.
+	if json.NewDecoder(io.LimitReader(resp.Body, maxListing+2*s.d.Limits.MaxBytes)).Decode(out) != nil {
 		return errUnavailable
 	}
 	return nil

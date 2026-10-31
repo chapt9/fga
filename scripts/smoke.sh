@@ -261,9 +261,10 @@ def post(tok, body, sid=None):
             return r.status, r.headers.get("Mcp-Session-Id"), json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
         return e.code, None, None
-def session(tok):
+def session(tok, recipient=None):
+    caps = {"experimental": {"fga.encrypted-package": {"version": 1, "recipient": recipient}}} if recipient else {}
     st, sid, res = post(tok, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18",
-                    "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}})
+                    "capabilities": caps, "clientInfo": {"name": "smoke", "version": "1"}}})
     assert st == 200 and sid, ("initialize", st, res)
     post(tok, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
     return sid
@@ -273,10 +274,10 @@ def rpc(tok, sid, method, params):
     return res
 def read_doc(tok, sid):
     return rpc(tok, sid, "tools/call", {"name": "documents.read", "arguments": {"bucket": "shared", "key": "q4/notes.md"}})["result"]
-bob, alice, carl = sys.argv[1:4]
+bob, alice, carl, bobfp = sys.argv[1:5]
 b = session(bob)
 tools = sorted(t["name"] for t in rpc(bob, b, "tools/list", {})["result"]["tools"])
-assert tools == ["documents.read", "documents.search", "text.read"], tools
+assert tools == ["documents.export", "documents.read", "documents.search", "text.read"], tools
 doc = read_doc(bob, b)
 assert not doc.get("isError") and doc["content"][0]["text"] == open("bob-shared-notes.txt").read().rstrip("\n"), doc
 obj = rpc(bob, b, "resources/read", {"uri": "fga://shared/q4/plan.bin"})["result"]["contents"][0]
@@ -290,11 +291,17 @@ a = session(alice)
 cm = rpc(alice, a, "resources/read", {"uri": "fga://reports/q3/report.bin"})
 assert "error" in cm and "client-mode" in cm["error"]["message"], cm
 print("MCP: a client-mode object is refused:", cm["error"]["message"][:60] + "...")
+bp = session(bob, bobfp)
+pk = rpc(bob, bp, "resources/read", {"uri": "fga://reports/q3/report.bin"})["result"]["contents"][0]
+assert pk["mimeType"] == "application/vnd.fga.encrypted-package+json", pk.get("mimeType")
+p = json.loads(pk["text"])
+assert p["profile"] == "fga.encrypted-package/v1" and p["recipient"] == bobfp and len(base64.b64decode(p["object"]["ciphertext"])) > 3000000
+print("MCP: a client declaring its recipient key gets the client-mode object as an encrypted package")
 st, _, _ = post(alice, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}, b)
 assert st == 403, ("alice in bob's session", st)
 print("MCP: alice's token in bob's session:", st)
 P
-check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)"
+check python3 -I mcp_client.py "$(tok bob fga-mcp)" "$(tok alice fga-mcp)" "$(tok carl fga-mcp)" "$BOBFP"
 # Final removal of a server-mode version destroys its data key (S6,
 # SSE-006): reclaim retires the withdrawn version and reports that backups
 # taken before still hold the key.
