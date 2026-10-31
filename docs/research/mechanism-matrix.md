@@ -34,3 +34,16 @@ Only the map's behavioral descriptions were read. No upstream source file was op
 | Distributed listing and metacache | Listing can queue lifecycle and replication work | **Reject.** Listing has no hidden effects. | CNT-006 |
 | Reed-Solomon coding and quorum | Erasure-coded shards with read and write quorum | **Defer.** Full-copy replication comes later; erasure coding is out of scope. | Part 5, ADR-08 |
 | Streaming PUT and conditional commit | Preconditions evaluated under lock before commit; small objects can be stored inline | **Adapt.** Preconditions on the committed catalog version; inline small objects deferred. | PUB-003, PUB-007 |
+
+## Added for specification 2.5 R1-B (31 October 2026)
+
+Sources: the research map's records "SSE-S3, SSE-KMS and SSE-C object encryption", "Bucket default/automatic encryption and key rotation", "KMS/KES/static-key connections and key operations", "Partial-operation and replacement-drive healing", "Explicit pool rebalancing", "Pool decommission and resumable evacuation" and "AWS Signature V4 signed and presigned requests". Only their behavioral descriptions were read; no upstream source file was opened.
+
+| Map record | Observed behavior | Decision | Our contract |
+|---|---|---|---|
+| Server-side object encryption with envelope keys | A fresh object key per object, sealed under a server-held or KMS-held key and bound to the object path; the server decrypts on read | **Adapt.** Keep the idea of a fresh key per immutable object and a binding of key to object identity. Reject server custody: the client generates the keyset and wraps it to each recipient with HPKE; the server stores opaque envelopes and cannot unwrap them. | [crypto-wire-profile](../design/crypto-wire-profile.md), [envelope-service](../design/envelope-service.md); CRY-001 to CRY-005, KEY-001, KEY-013 |
+| Key rotation by resealing object keys | Rotation unseals and reseals object keys on the server | **Reject.** The server cannot rewrap. Recipient-key rotation is a client operation that publishes a new envelope under revision checks. | KEY-004, KEY-016 |
+| External KMS connection and key operations | Server calls a KMS to generate and decrypt data keys | **Reject.** No platform KMS unwrap dependency; key custody is the client's (D-08 open). | KEY-005, KEY-013 |
+| Healing of incomplete writes and replaced drives | A bounded in-memory queue of partial operations, persisted only on orderly shutdown; trackers resume per-drive healing | **Defer to R3, adapt.** Repair state will be durable catalog records, never only an in-memory queue. | REP-005 (R3) |
+| Rebalancing and decommission | Resumable copy between pools with progress records; verification before completion | **Defer to R3, adapt.** Evacuation copies and verifies identical ciphertext, then compare-and-swaps the placement generation. | REP-004, REP-006 (R3) |
+| SigV4 request authentication | Canonicalize signed headers, query, path and payload; derive the signing key; compare signatures; presigned requests have expiry | **Defer to R3, adapt.** Our own verifier from the public specification, constant-time comparison, no presigned or streaming modes in profile v1. | S3P-002, S3P-003 (R3) |

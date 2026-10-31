@@ -1,0 +1,353 @@
+openapi: 3.1.0
+info:
+  title: fga native storage API
+  version: "1"
+  description: >
+    Contract for the R1-B native storage operations (CNT-009). Rules that the
+    schema cannot express are in native-api.md. Every operation requires a
+    bearer access token for the serving role's audience.
+servers:
+  - url: http://127.0.0.1:8441
+    description: storage role, development profile
+  - url: http://127.0.0.1:8442
+    description: keys role, development profile
+security:
+  - bearer: []
+paths:
+  /v1/buckets/{bucket}/uploads:
+    post:
+      operationId: beginEncryptedUpload
+      parameters: [{ $ref: "#/components/parameters/bucket" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BeginRequest" }
+      responses:
+        "201": { description: Intent created, content: { application/json: { schema: { $ref: "#/components/schemas/Intent" } } } }
+        "200": { description: Identical retry, content: { application/json: { schema: { $ref: "#/components/schemas/Intent" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/uploads/{intent}/ciphertext:
+    put:
+      operationId: uploadCiphertext
+      parameters:
+        - { name: intent, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: Content-Length, in: header, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: Fga-Ciphertext-Sha256, in: header, required: true, schema: { $ref: "#/components/schemas/Digest" } }
+      requestBody:
+        required: true
+        content: { application/octet-stream: { schema: { type: string, format: binary } } }
+      responses:
+        "200": { description: Durable receipt, content: { application/json: { schema: { $ref: "#/components/schemas/Receipt" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/uploads/{intent}/finalize:
+    post:
+      operationId: finalizeEncryptedUpload
+      parameters:
+        - { name: intent, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/FinalizeRequest" } } }
+      responses:
+        "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Published" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object:
+    get:
+      operationId: statObject
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: Permitted metadata, content: { application/json: { schema: { $ref: "#/components/schemas/VersionInfo" } } } }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteObject
+      description: Without version, writes a delete marker. With version, withdraws that version.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/DeleteOutcome" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/package:
+    get:
+      operationId: readPackage
+      parameters:
+        - { $ref: "#/components/parameters/bucket" }
+        - { $ref: "#/components/parameters/key" }
+        - { $ref: "#/components/parameters/version" }
+        - { name: recipient, in: query, required: true, schema: { $ref: "#/components/schemas/Digest" } }
+      responses:
+        "200": { description: Encrypted package metadata, content: { application/json: { schema: { $ref: "#/components/schemas/Package" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/ciphertext:
+    get:
+      operationId: readCiphertext
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200":
+          description: Exact ciphertext of the version
+          headers:
+            Fga-Version-Id: { schema: { type: string, format: uuid } }
+            Fga-Ciphertext-Sha256: { schema: { $ref: "#/components/schemas/Digest" } }
+          content: { application/octet-stream: { schema: { type: string, format: binary } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/objects:
+    get:
+      operationId: listObjects
+      parameters:
+        - { $ref: "#/components/parameters/bucket" }
+        - { name: prefix, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/continuation" }
+      responses:
+        "200": { description: Visible entries, content: { application/json: { schema: { $ref: "#/components/schemas/ObjectPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/object/versions:
+    get:
+      operationId: listVersions
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/limit" }, { $ref: "#/components/parameters/continuation" }]
+      responses:
+        "200": { description: Visible versions, content: { application/json: { schema: { $ref: "#/components/schemas/VersionPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/recipients:
+    post:
+      operationId: enrollRecipient
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EnrollRequest" } } } }
+      responses:
+        "201": { description: Challenge, content: { application/json: { schema: { $ref: "#/components/schemas/Challenge" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/recipients/{fingerprint}:
+    get:
+      operationId: getRecipient
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      responses:
+        "200": { description: Directory entry (not a trust anchor), content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: revokeRecipient
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      responses:
+        "200": { description: Revoked, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/recipients/{fingerprint}/activate:
+    post:
+      operationId: activateRecipient
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProofRequest" } } } }
+      responses:
+        "200": { description: Active, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/signing-keys:
+    post:
+      operationId: enrollSigningKey
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EnrollRequest" } } } }
+      responses:
+        "201": { description: Challenge, content: { application/json: { schema: { $ref: "#/components/schemas/Challenge" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/signing-keys/{fingerprint}:
+    get:
+      operationId: getSigningKey
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      responses:
+        "200": { description: Verification record, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/signing-keys/{fingerprint}/activate:
+    post:
+      operationId: activateSigningKey
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProofRequest" } } } }
+      responses:
+        "200": { description: Active, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/signing-keys/{fingerprint}/retire:
+    post:
+      operationId: retireSigningKey
+      parameters: [{ $ref: "#/components/parameters/fingerprint" }]
+      responses:
+        "200": { description: Retired, content: { application/json: { schema: { $ref: "#/components/schemas/KeyRecord" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/envelopes:
+    post:
+      operationId: publishRecipientEnvelope
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ShareRequest" } } } }
+      responses:
+        "201": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/EnvelopeRef" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/envelopes/{id}:
+    delete:
+      operationId: retireEnvelope
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Retired, content: { application/json: { schema: { $ref: "#/components/schemas/EnvelopeRef" } } } }
+        default: { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: at+jwt }
+  parameters:
+    bucket: { name: bucket, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{2,62}$" } }
+    key: { name: key, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 1024 } }
+    version: { name: version, in: query, schema: { type: string, format: uuid } }
+    limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+    continuation: { name: continuation, in: query, schema: { type: string } }
+    fingerprint: { name: fingerprint, in: path, required: true, schema: { $ref: "#/components/schemas/Digest" } }
+  responses:
+    Error:
+      description: Redacted error
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error]
+            properties:
+              error: { type: string, enum: [INVALID_REQUEST, UNAUTHENTICATED, NOT_FOUND, CONFLICT, PRECONDITION_FAILED, TOO_LARGE, OVERLOADED, UNAVAILABLE] }
+  schemas:
+    Digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    Base64: { type: string, contentEncoding: base64 }
+    BeginRequest:
+      type: object
+      additionalProperties: false
+      required: [key, idempotency_key]
+      properties:
+        key: { type: string }
+        idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+        if_match: { type: string }
+        if_none_match: { type: string, enum: ["*"] }
+    Intent:
+      type: object
+      properties:
+        intent_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        object_id: { type: string, format: uuid }
+        logical_version_id: { type: string, format: uuid }
+        crypto_version_id: { type: string, format: uuid }
+        blob_id: { type: string, format: uuid }
+        attempt_id: { type: string, format: uuid }
+        suite: { type: integer }
+        format: { type: integer }
+        max_ciphertext_length: { type: integer }
+        expires_at: { type: string, format: date-time }
+    Receipt:
+      type: object
+      properties:
+        blob_id: { type: string, format: uuid }
+        ciphertext_length: { type: integer }
+        ciphertext_sha256: { $ref: "#/components/schemas/Digest" }
+    Envelope:
+      type: object
+      additionalProperties: false
+      required: [context, ciphertext, signature]
+      properties:
+        context: { $ref: "#/components/schemas/Base64" }
+        ciphertext: { $ref: "#/components/schemas/Base64" }
+        signature: { type: string, description: detached compact JWS }
+    FinalizeRequest:
+      type: object
+      additionalProperties: false
+      required: [descriptor, descriptor_signature, envelopes]
+      properties:
+        descriptor: { $ref: "#/components/schemas/Base64" }
+        descriptor_signature: { type: string }
+        envelopes: { type: array, minItems: 1, maxItems: 16, items: { $ref: "#/components/schemas/Envelope" } }
+    Published:
+      type: object
+      properties:
+        object_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        etag: { type: string }
+        generation: { type: integer }
+    VersionInfo:
+      type: object
+      properties:
+        version_id: { type: string, format: uuid }
+        etag: { type: string }
+        current: { type: boolean }
+        ciphertext_length: { type: integer }
+        ciphertext_sha256: { $ref: "#/components/schemas/Digest" }
+        suite: { type: integer }
+        format: { type: integer }
+        created_at: { type: string, format: date-time }
+    Package:
+      type: object
+      properties:
+        version: { $ref: "#/components/schemas/VersionInfo" }
+        descriptor: { $ref: "#/components/schemas/Base64" }
+        descriptor_signature: { type: string }
+        envelope_id: { type: string, format: uuid }
+        envelope: { $ref: "#/components/schemas/Envelope" }
+        receipt: { $ref: "#/components/schemas/Base64" }
+        receipt_signature: { type: string }
+    ObjectPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              version_id: { type: string, format: uuid }
+              ciphertext_length: { type: integer }
+              created_at: { type: string, format: date-time }
+        continuation: { type: string }
+    VersionPage:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              version_id: { type: string, format: uuid }
+              current: { type: boolean }
+              delete_marker: { type: boolean }
+              created_at: { type: string, format: date-time }
+        continuation: { type: string }
+    DeleteOutcome:
+      type: object
+      properties:
+        generation: { type: integer }
+        version_id: { type: string, format: uuid }
+        state: { type: string, enum: [DELETE_MARKER, WITHDRAWN] }
+    EnrollRequest:
+      type: object
+      additionalProperties: false
+      required: [public_key]
+      properties:
+        public_key: { $ref: "#/components/schemas/Base64" }
+    Challenge:
+      type: object
+      properties:
+        challenge_id: { type: string, format: uuid }
+        fingerprint: { $ref: "#/components/schemas/Digest" }
+        nonce: { $ref: "#/components/schemas/Base64" }
+        ephemeral_public_key: { $ref: "#/components/schemas/Base64" }
+        expires_at: { type: string, format: date-time }
+    ProofRequest:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, proof]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        proof: { type: string, description: base64 HMAC for a recipient key, compact JWS for a signing key }
+    KeyRecord:
+      type: object
+      properties:
+        fingerprint: { $ref: "#/components/schemas/Digest" }
+        principal: { type: string }
+        public_key: { $ref: "#/components/schemas/Base64" }
+        key_version: { type: integer }
+        status: { type: string, enum: [PENDING, ACTIVE, REVOKED, RETIRED, COMPROMISED] }
+        revision: { type: integer }
+    ShareRequest:
+      type: object
+      additionalProperties: false
+      required: [bucket, key, version, envelope]
+      properties:
+        bucket: { type: string }
+        key: { type: string }
+        version: { type: string, format: uuid }
+        envelope: { $ref: "#/components/schemas/Envelope" }
+    EnvelopeRef:
+      type: object
+      properties:
+        envelope_id: { type: string, format: uuid }
+        generation: { type: integer }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
