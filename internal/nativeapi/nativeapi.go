@@ -442,12 +442,14 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
 			return
 		}
-		vs, err := svc.ListVersions(r.Context(), c, b, k)
+		q := r.URL.Query()
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		page, err := svc.ListVersions(r.Context(), c, b, k, limit, q.Get("continuation"))
 		if err != nil {
 			fail(w, r, err)
 			return
 		}
-		httpapi.WriteJSON(w, http.StatusOK, map[string]any{"versions": vs})
+		httpapi.WriteJSON(w, http.StatusOK, page)
 	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/encryption", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		var body encryptionBody

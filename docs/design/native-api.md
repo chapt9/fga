@@ -24,7 +24,7 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Package | `GET /v1/buckets/{bucket}/object/package?key=&version=&recipient=` | Storage: `read` (+ `read-history`). Keys role: `GetRecipientEnvelope` checks (caller `read`, envelope `release`, recipient `read`, `receive-key`) |
 | Ciphertext | `GET /v1/buckets/{bucket}/object/ciphertext?key=&version=` | `read` (+ `read-history`); admission and stream lease |
 | List objects | `GET /v1/buckets/{bucket}/objects?prefix=&limit=&continuation=` | Bucket `list`, then per entry `discover` |
-| List versions | `GET /v1/buckets/{bucket}/object/versions?key=&limit=&continuation=` | Bucket `list`, object `discover`, and `discover-history` for non-current entries |
+| List versions | `GET /v1/buckets/{bucket}/object/versions?key=&limit=&continuation=` | Bucket `list`, object `discover`, and `discover-history` for non-current entries. Pages of at most `limit` (default 100), newest first, with a continuation bound to the caller and the key (review v3 F11). The head and the versions are read in one snapshot after the decisions, and the listing starts again if the head moved, so an old version is never shown as current (F10) |
 | Delete key | `DELETE /v1/buckets/{bucket}/object?key=` | `delete`; writes a delete marker |
 | Delete version | `DELETE /v1/buckets/{bucket}/object?key=&version=` | `delete-version`; retention and reference guards |
 | Enroll recipient | `POST /v1/recipients`, then `POST /v1/recipients/{fp}/activate` | `crypto.recipient` `enroll`, then `activate`, with possession proof |

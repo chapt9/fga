@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
 	"fga/internal/content"
 	"fga/internal/cryptowire"
+	"fga/internal/decisionsvc"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 )
 
 var ctx = context.Background()
@@ -142,11 +146,11 @@ func TestVersionsAndHistory(t *testing.T) {
 	if got, err := bob.Get("reports", "doc", ""); err != nil || string(got) != "two" {
 		t.Fatalf("member's current read: %q, %v", got, err)
 	}
-	vs, err := st.Content.ListVersions(ctx, bob.Caller, "reports", "doc")
-	if err != nil || len(vs) != 1 || !vs[0].Current {
+	vs, err := st.Content.ListVersions(ctx, bob.Caller, "reports", "doc", 0, "")
+	if err != nil || len(vs.Versions) != 1 || !vs.Versions[0].Current {
 		t.Fatalf("member's version list = %+v, %v; want only the current version", vs, err)
 	}
-	if vs, err := st.Content.ListVersions(ctx, alice.Caller, "reports", "doc"); err != nil || len(vs) != 2 {
+	if vs, err := st.Content.ListVersions(ctx, alice.Caller, "reports", "doc", 0, ""); err != nil || len(vs.Versions) != 2 {
 		t.Fatalf("owner's version list = %+v, %v", vs, err)
 	}
 
@@ -488,4 +492,79 @@ func intentState(t *testing.T, st *r1test.Stack, id cryptowire.UUID) string {
 		t.Fatal(err)
 	}
 	return state
+}
+
+// TestListVersionsHead is the regression test of review v3 F10: the
+// listing read the current-version pointer before its decisions and never
+// checked it again, so after an overwrite in between a caller without
+// discover-history got the old version marked current. The listing now
+// reads the head and the versions in one snapshot and starts again when
+// the head moved since its decisions.
+func TestListVersionsHead(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	v1, err := alice.Put("reports", "doc", []byte("one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v2 content.Published
+	overwritten := false
+	st.BeforeDecide = func(req decisionsvc.Request) {
+		if req.Operation == registry.OpListVersions && !overwritten {
+			overwritten = true
+			if v2, err = alice.Put("reports", "doc", []byte("two")); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	vs, err := st.Content.ListVersions(ctx, bob.Caller, "reports", "doc", 0, "")
+	st.BeforeDecide = nil
+	if err != nil || len(vs.Versions) != 1 || vs.Versions[0].Version != v2.Version || !vs.Versions[0].Current {
+		t.Fatalf("bob's list after an overwrite during it: %+v, %v (v1 %s, v2 %s)", vs, err, v1.Version, v2.Version)
+	}
+}
+
+// TestListVersionsPages is the regression test of review v3 F11: the
+// version listing ignored the limit and continuation it documents and
+// returned every version at once. It now pages.
+func TestListVersionsPages(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	want := map[string]bool{}
+	for i := range 5 {
+		p, err := alice.Put("reports", "doc", []byte{byte('a' + i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[p.Version] = true
+		*st.Clock = st.Clock.Add(time.Second)
+	}
+	got := map[string]bool{}
+	var sizes []int
+	cont := ""
+	for range 5 {
+		page, err := st.Content.ListVersions(ctx, alice.Caller, "reports", "doc", 2, cont)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sizes = append(sizes, len(page.Versions))
+		for _, v := range page.Versions {
+			if got[v.Version] {
+				t.Fatalf("version %s listed twice", v.Version)
+			}
+			got[v.Version] = true
+		}
+		if cont = page.Continuation; cont == "" {
+			break
+		}
+	}
+	if !maps.Equal(got, want) || !slices.Equal(sizes, []int{2, 2, 1}) {
+		t.Fatalf("pages of %v, %d versions; want 2, 2, 1 covering all 5", sizes, len(got))
+	}
+	if _, err := st.Content.ListVersions(ctx, alice.Caller, "reports", "doc", 2, "bogus"); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("a forged continuation: %v", err)
+	}
 }

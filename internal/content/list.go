@@ -7,9 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"fga/internal/cryptowire"
 	"fga/internal/registry"
@@ -206,28 +210,55 @@ type VersionEntry struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// VersionPage is one page of a key's versions, newest first.
+type VersionPage struct {
+	Versions     []VersionEntry `json:"versions"`
+	Continuation string         `json:"continuation,omitempty"`
+}
+
+// errHeadMoved: the key's head changed after the listing's decisions.
+var errHeadMoved = errors.New("content: the key's head moved")
+
 // ListVersions lists a key's versions (Table "Native version and visibility
 // semantics"): bucket list and object discover show the current entry, and
 // discover-history is needed for every other one. Unauthorized entries are
-// omitted, with no total count. Withdrawn versions are not listed.
-func (s *Service) ListVersions(ctx context.Context, c Caller, bucketName, key string) ([]VersionEntry, error) {
+// omitted, with no total count. Withdrawn versions are not listed. Pages
+// hold at most limit entries and continue with an opaque continuation
+// bound to the caller and the key (review v3 F11). The head and the
+// versions are read in one snapshot after the decisions, and the listing
+// starts again when the head moved since the decisions were made, so an
+// old version is never shown as current (review v3 F10).
+func (s *Service) ListVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (VersionPage, error) {
+	for range 3 {
+		page, err := s.listVersions(ctx, c, bucketName, key, limit, continuation)
+		if !errors.Is(err, errHeadMoved) {
+			return page, err
+		}
+	}
+	return VersionPage{}, fmt.Errorf("%w: the key keeps changing", ErrConflict)
+}
+
+func (s *Service) listVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (VersionPage, error) {
+	if limit <= 0 || limit > s.d.Limits.ListPageMax {
+		limit = min(100, s.d.Limits.ListPageMax)
+	}
 	b, err := s.bucketByName(ctx, c.Tenant, bucketName)
 	if err != nil {
-		return nil, err
+		return VersionPage{}, err
 	}
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, key)
 	if err != nil || o.Current == nil {
-		return nil, ErrNotFound
+		return VersionPage{}, ErrNotFound
 	}
 	ref := canonical("storage.object", o.ID.String())
 	_, rec, err := s.decide(ctx, c, registry.OpListVersions, Audience, false, []check{
 		{id: "bucket", role: registry.RoleBucket, action: "list", ref: canonical("storage.bucket", b.ID.String())},
 		{id: "object", role: registry.RoleObject, action: "discover", ref: ref}})
 	if err != nil {
-		return nil, err
+		return VersionPage{}, err
 	}
 	if err := s.checked(ctx, rec); err != nil {
-		return nil, err
+		return VersionPage{}, err
 	}
 	history := false
 	var histRec signing.Record
@@ -236,28 +267,79 @@ func (s *Service) ListVersions(ctx context.Context, c Caller, bucketName, key st
 		{id: "history", role: registry.RoleHistory, action: "discover-history", ref: ref}}); err == nil {
 		history = s.checked(ctx, histRec) == nil
 	} else if err != ErrNotFound {
-		return nil, err
+		return VersionPage{}, err
 	}
-	rows, err := s.d.Catalog.Pool().Query(ctx, `
-		SELECT id, delete_marker, created_at FROM object_versions
-		 WHERE tenant = $1 AND object = $2 AND state = 'LIVE' ORDER BY created_at DESC, id`, c.Tenant, o.ID)
+	cur := cursor{Tenant: c.Tenant, Principal: c.Principal, Revision: rec.Actor.Revision, Bucket: b.ID.String(), Prefix: "versions:" + o.ID.String(),
+		Epoch: rec.PolicyEpoch, Incarnation: rec.RecoveryIncarnation}
+	var afterTime time.Time
+	var afterID string
+	if continuation != "" {
+		prev, err := s.openToken(continuation)
+		if err != nil || prev.Tenant != cur.Tenant || prev.Principal != cur.Principal || prev.Revision != cur.Revision ||
+			prev.Bucket != cur.Bucket || prev.Prefix != cur.Prefix || prev.Epoch != cur.Epoch || prev.Incarnation != cur.Incarnation ||
+			!s.d.Now().Before(prev.Expires) {
+			return VersionPage{}, ErrInvalid
+		}
+		at, id, ok := strings.Cut(prev.After, "|")
+		if afterTime, err = time.Parse(time.RFC3339Nano, at); !ok || err != nil {
+			return VersionPage{}, ErrInvalid
+		}
+		afterID = id
+	}
+
+	tx, err := s.d.Catalog.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, err
+		return VersionPage{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read-only
+	var head *cryptowire.UUID
+	var generation uint64
+	if err := tx.QueryRow(ctx, `SELECT o.current_version, r.generation FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
+	                             WHERE o.tenant = $1 AND o.id = $2`, c.Tenant, o.ID).Scan(&head, &generation); err != nil {
+		return VersionPage{}, err
+	}
+	if head == nil || *head != *o.Current || generation != o.Generation {
+		return VersionPage{}, errHeadMoved
+	}
+	page := VersionPage{Versions: []VersionEntry{}}
+	sql := `SELECT id, delete_marker, created_at FROM object_versions WHERE tenant = $1 AND object = $2 AND state = 'LIVE'`
+	args := []any{c.Tenant, o.ID}
+	switch {
+	case !history && continuation != "":
+		// Without discover-history only the current version is listed,
+		// on the first page.
+		return page, nil
+	case !history:
+		sql += ` AND id = $3`
+		args = append(args, *head)
+	case continuation != "":
+		sql += ` AND (created_at < $3 OR created_at = $3 AND id::text > $4)`
+		args = append(args, afterTime, afterID)
+	}
+	sql += ` ORDER BY created_at DESC, id::text LIMIT ` + strconv.Itoa(limit+1)
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return VersionPage{}, err
 	}
 	defer rows.Close()
-	out := []VersionEntry{}
 	for rows.Next() {
 		var e VersionEntry
 		var id cryptowire.UUID
 		if err := rows.Scan(&id, &e.DeleteMarker, &e.CreatedAt); err != nil {
-			return nil, err
+			return VersionPage{}, err
 		}
-		e.Version, e.Current, e.CreatedAt = id.String(), id == *o.Current, e.CreatedAt.UTC()
-		if e.Current || history {
-			out = append(out, e)
+		if len(page.Versions) == limit {
+			last := page.Versions[limit-1]
+			cur.After, cur.Expires = last.CreatedAt.Format(time.RFC3339Nano)+"|"+last.Version, s.d.Now().Add(s.d.Limits.TokenLifetime)
+			if page.Continuation, err = s.sealToken(cur); err != nil {
+				return VersionPage{}, err
+			}
+			break
 		}
+		e.Version, e.Current, e.CreatedAt = id.String(), id == *head, e.CreatedAt.UTC()
+		page.Versions = append(page.Versions, e)
 	}
-	return out, rows.Err()
+	return page, rows.Err()
 }
 
 func (s *Service) sealToken(c cursor) (string, error) {
