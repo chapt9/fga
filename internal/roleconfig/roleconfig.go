@@ -22,6 +22,7 @@ import (
 	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/decisionsvc"
+	"fga/internal/guard"
 	"fga/internal/signing"
 	"fga/internal/strictjson"
 )
@@ -248,8 +249,11 @@ func (c Common) Server(handler http.Handler) (*http.Server, decisionsvc.AdapterO
 	return server, decisionsvc.AdapterFromClientCert, nil
 }
 
-// Serve runs server until ctx ends, then shuts it down.
+// Serve runs server until ctx ends, then shuts it down. A panic in a
+// request is answered 500 and logged, and the role goes on serving
+// (internal/guard).
 func (c Common) Serve(ctx context.Context, server *http.Server) error {
+	server.Handler = guard.Handler(nil, server.Handler)
 	errc := make(chan error, 1)
 	go func() {
 		if c.TLS != nil {

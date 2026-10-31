@@ -47,6 +47,9 @@ fga/internal/fence
 fga/internal/httpapi
 fga/internal/gate
 fga/internal/identity
+# Reviewed 2026-10-31: keeps a panic inside its request or goroutine
+# (standard library only; docs/design/fault-isolation.md).
+fga/internal/guard
 fga/internal/journal
 fga/internal/keycheck
 fga/internal/keysapi

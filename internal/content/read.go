@@ -15,6 +15,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
 	"fga/internal/fence"
+	"fga/internal/guard"
 	"fga/internal/registry"
 	"fga/internal/signing"
 )
@@ -245,7 +246,15 @@ func (s *Service) upload(r io.ReadCloser, b fence.Binding) io.ReadCloser {
 func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time, classify func(error) error) io.ReadCloser {
 	l := &leased{r: r, validUntil: until, now: s.d.Now, every: s.d.Limits.LeaseCheckEvery, done: make(chan struct{})}
 	l.lastOK = s.d.Now()
-	go func() {
+	l.watch(func(ctx context.Context) error { return s.d.Fence.Check(ctx, b) }, classify)
+	return l
+}
+
+// watch runs check every l.every until the stream closes. A panic in a
+// check ends the stream as a failed check does, and the role goes on: no
+// byte is delivered without a passing recheck (CNT-008).
+func (l *leased) watch(check func(context.Context) error, classify func(error) error) {
+	guard.Go(nil, "stream lease check", func() {
 		t := time.NewTicker(l.every)
 		defer t.Stop()
 		for {
@@ -254,22 +263,28 @@ func (s *Service) leaseUntil(r io.ReadCloser, b fence.Binding, until time.Time, 
 				return
 			case <-t.C:
 				ctx, cancel := context.WithTimeout(context.Background(), l.every)
-				err := s.d.Fence.Check(ctx, b)
+				err := check(ctx)
 				cancel()
-				l.mu.Lock()
 				switch {
 				case err != nil && classify != nil:
-					l.err = classify(err)
+					err = classify(err)
 				case err != nil:
-					l.err = fmt.Errorf("%w: %v", ErrLease, err)
-				default:
-					l.lastOK = s.d.Now()
+					err = fmt.Errorf("%w: %v", ErrLease, err)
+				}
+				l.mu.Lock()
+				if err != nil {
+					l.err = err
+				} else {
+					l.lastOK = l.now()
 				}
 				l.mu.Unlock()
 			}
 		}
-	}()
-	return l
+	}, func(any) {
+		l.mu.Lock()
+		l.err = fmt.Errorf("%w: authority recheck failed", ErrLease)
+		l.mu.Unlock()
+	})
 }
 
 type leased struct {

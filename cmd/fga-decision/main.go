@@ -30,6 +30,7 @@ import (
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
 	"fga/internal/gate"
+	"fga/internal/guard"
 	"fga/internal/registry"
 	"fga/internal/release"
 	"fga/internal/signing"
@@ -70,7 +71,9 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	server.Handler = svc.Handler(adapterOf)
+	// A panic in a request is answered 500 and logged; the role goes on
+	// serving (internal/guard).
+	server.Handler = guard.Handler(nil, svc.Handler(adapterOf))
 
 	errc := make(chan error, 1)
 	go func() {
