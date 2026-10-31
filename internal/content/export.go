@@ -356,3 +356,101 @@ func (s *Service) discoverVersions(ctx context.Context, c Caller, cands []Search
 	}
 	return visible, nil
 }
+
+// ObjectExport is an encrypted remote export of one object version: its
+// descriptor, exact ciphertext and the target recipient's existing
+// envelope with a delivery receipt.
+type ObjectExport struct {
+	Version             VersionInfo `json:"version"`
+	Descriptor          []byte      `json:"descriptor"`
+	DescriptorSignature string      `json:"descriptor_signature"`
+	Ciphertext          []byte      `json:"ciphertext"`
+	Envelope            Delivered   `json:"envelope"`
+}
+
+// ExportObject exports one version of an object (the current one when
+// versionSel is "") to the target recipient key. The caller needs export
+// and read on the object, and read-history for a version that is not
+// current; the keys role releases the target's existing envelope only
+// against a decision carrying those checks plus the envelope's release and
+// the target's read and receive-key (storage.object.export-envelope). The
+// server never creates or rewraps an envelope.
+func (s *Service) ExportObject(ctx context.Context, c Caller, bucketName, key, versionSel, recipient string) (ObjectExport, error) {
+	if _, err := cryptowire.ParseDigest(recipient); err != nil {
+		return ObjectExport{}, ErrInvalid
+	}
+	_, o, v, current, err := s.target(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	if v.Length > MaxExportBytes {
+		return ObjectExport{}, ErrTooLarge
+	}
+	ref := canonical("storage.object", o.ID.String())
+	checks := []check{
+		{id: "object", role: registry.RoleObject, action: "export", ref: ref, version: v.ID.String()},
+		{id: "object-read", role: registry.RoleObjectRead, action: "read", ref: ref, version: v.ID.String()}}
+	if !current {
+		checks = append(checks, check{id: "history", role: registry.RoleHistory, action: "read-history", ref: ref, version: v.ID.String()})
+	}
+	_, rec, err := s.decide(ctx, c, registry.OpObjectExport, Audience, true, checks)
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	var envelopeID string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
+	                                         AND document_version IS NULL AND status = 'ACTIVE'`, c.Tenant, v.ID, recipient).Scan(&envelopeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ObjectExport{}, ErrNotFound
+	}
+	if err != nil {
+		return ObjectExport{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	keysChecks := append(slices.Clone(checks),
+		check{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: v.ID.String()},
+		check{id: "recipient-read", role: registry.RoleRecipientRead, action: "read", ref: ref, version: v.ID.String(), recipient: recipient},
+		check{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient})
+	signed, _, err := s.decide(ctx, c, registry.OpObjectExportEnvelope, KeysAudience, true, keysChecks)
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	tenantID, err := s.tenantID(ctx, c.Tenant)
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.headHolds(ctx, tx, c.Tenant, o, v, current, rec, true); err != nil {
+			return err
+		}
+		locked, err := s.versionByID(ctx, tx, c.Tenant, v.ID, true)
+		if err != nil || locked.State != "LIVE" {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO read_admissions VALUES ($1, $2, $3, $4, $5)`, c.Tenant, rec.DecisionID, v.ID, s.d.Now(), rec.ValidUntil); err != nil {
+			return err
+		}
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindReadAdmission, rec, "EXPORTED",
+			audit.Target{Type: "storage.object", ID: o.ID.String(), Version: v.ID.String(), Digest: v.SHA256, Recipient: recipient}))
+	})
+	if err != nil {
+		return ObjectExport{}, err
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return ObjectExport{}, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return ObjectExport{}, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	defer r.Close()
+	ct, err := io.ReadAll(io.LimitReader(r, v.Length+1))
+	if err != nil || int64(len(ct)) != v.Length {
+		return ObjectExport{}, fmt.Errorf("%w: backend: short ciphertext", ErrUnavailable)
+	}
+	return ObjectExport{Version: info(v, current), Descriptor: v.Descriptor, DescriptorSignature: v.DescriptorSig, Ciphertext: ct, Envelope: env}, nil
+}

@@ -108,6 +108,10 @@ const (
 	// references any more.
 	OpDocDelete        = "document.delete"
 	OpDocDeleteVersion = "document.delete-version"
+	// Export of a whole object version to a target recipient; the history
+	// role is filled for a version that is not current.
+	OpObjectExport         = "storage.object.export"
+	OpObjectExportEnvelope = "storage.object.export-envelope"
 )
 
 // Check roles shared by several operations.
@@ -137,6 +141,7 @@ const (
 	// Export roles.
 	RoleVersionRead = "version-read"
 	RoleUnitExport  = "unit-export"
+	RoleObjectRead  = "object-read"
 )
 
 // envelopeChecks are the publisher and target-recipient checks every
@@ -305,6 +310,19 @@ func baseOperations() []Operation {
 		one(OpDerivedRelabel, RoleOutput, "document.derived", "relabel"),
 		one(OpApproveUnit, RoleUnit, "document.text_unit", "approve"),
 		one(OpApproveDerived, RoleOutput, "document.derived", "approve"),
+		{Name: OpObjectExport, Checks: []CheckSpec{
+			{Role: RoleObject, ResourceType: "storage.object", Action: "export"},
+			{Role: RoleObjectRead, ResourceType: "storage.object", Action: "read"},
+			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history", Optional: true},
+		}},
+		{Name: OpObjectExportEnvelope, Checks: []CheckSpec{
+			{Role: RoleObject, ResourceType: "storage.object", Action: "export"},
+			{Role: RoleObjectRead, ResourceType: "storage.object", Action: "read"},
+			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history", Optional: true},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
+			{Role: RoleRecipientRead, ResourceType: "storage.object", Action: "read", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
+		}},
 		one(OpDocDelete, RoleDocument, "storage.object", "delete"),
 		one(OpDocDeleteVersion, RoleDocument, "storage.object", "delete-version"),
 		{Name: OpDerivedDeclassify, Checks: []CheckSpec{

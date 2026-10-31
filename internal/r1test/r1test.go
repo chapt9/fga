@@ -70,7 +70,7 @@ var Policies = map[string]string{
 	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
 	   "when":"resource.attributes.project in principal.attributes.projects"}]}`,
 	"objects.json": `{"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
-	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
+	  {"id":"owner-all","effect":"allow","actions":["read","stat","discover","read-history","discover-history","new-version","delete","delete-version","share","label","export"],"roles":["*"],"when":"resource.attributes.owner == principal.id"},
 	  {"id":"owner-lowers-with-approval","effect":"allow","actions":["relabel"],"roles":["*"],"requires":["approval"],
 	   "when":"resource.attributes.owner == principal.id"},
 	  {"id":"members-propose-labels","effect":"allow","actions":["propose-label"],"roles":["member"],
@@ -133,7 +133,7 @@ var Policies = map[string]string{
 var UserActions = map[string][]string{
 	"storage.bucket": {"create-object", "list", "manage", "approve"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
-		"label", "relabel", "propose-label", "approve"},
+		"label", "relabel", "propose-label", "export", "approve"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},

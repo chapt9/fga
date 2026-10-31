@@ -133,20 +133,31 @@ func InsertUnitEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, ob
 // registered (TRU-005: the complete result, not a subset).
 func (s *Service) exactly(rec signing.Record) bool {
 	op, ok := s.ops.Lookup(rec.Operation)
-	if !ok || len(rec.Checks) != len(op.Checks) {
+	if !ok {
 		return false
 	}
-	want := make([]string, 0, len(op.Checks))
-	for _, c := range op.Checks {
-		want = append(want, c.ResourceType+" "+c.Action+" "+string(c.CheckKind()))
-	}
-	got := make([]string, 0, len(rec.Checks))
+	// Each check fills one registered role of its type, action and kind; a
+	// role is filled at most once (these operations repeat none), and
+	// every role that is not optional is filled.
+	used := make([]bool, len(op.Checks))
 	for _, c := range rec.Checks {
-		got = append(got, c.ResourceType+" "+c.Action+" "+c.Kind)
+		matched := false
+		for i, spec := range op.Checks {
+			if !used[i] && c.ResourceType == spec.ResourceType && c.Action == spec.Action && c.Kind == string(spec.CheckKind()) {
+				used[i], matched = true, true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
-	slices.Sort(want)
-	slices.Sort(got)
-	return slices.Equal(want, got)
+	for i, spec := range op.Checks {
+		if !used[i] && !spec.Optional {
+			return false
+		}
+	}
+	return true
 }
 
 type stored struct {
@@ -194,10 +205,12 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
 	exported := rec.Operation == registry.OpDocExportEnvelope
+	objectExport := rec.Operation == registry.OpObjectExportEnvelope
 	unit := rec.Operation == registry.OpDocGetUnitEnvelope || rec.Operation == registry.OpDocGetEntryEnvelope || exported
 	original := rec.Operation == registry.OpDocGetOriginalEnvelope
 	derived := rec.Operation == registry.OpDerivedGetEnvelope
-	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived) ||
+	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived &&
+		!objectExport) ||
 		!s.exactly(rec) {
 		return Delivered{}, ErrDecision
 	}
@@ -233,6 +246,8 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			// Export: the caller's export on the version and export-key on
 			// the unit, besides the full envelope check set (V-132 to V-136).
 			ok = exported && c.ResourceID == e.DocumentVersion.String() && c.Kind == string(registry.KindOperation)
+		case "storage.object export":
+			ok = objectExport && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && c.Kind == string(registry.KindOperation)
 		case "document.text_unit export-key":
 			ok = exported && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && c.Kind == string(registry.KindOperation)
 		case "document.derived deliver":
@@ -279,7 +294,8 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 		}
 		// A plain read releases only the current version's envelope; an
 		// older version needs the history operation (review finding 2).
-		if rec.Operation == registry.OpGetEnvelope {
+		history := slices.ContainsFunc(rec.Checks, func(c signing.Check) bool { return c.Action == "read-history" })
+		if rec.Operation == registry.OpGetEnvelope || objectExport && !history {
 			var head *cryptowire.UUID
 			if err := tx.QueryRow(ctx, `SELECT current_version FROM objects WHERE tenant = $1 AND id = $2 FOR SHARE`,
 				rec.Tenant, e.Object).Scan(&head); err != nil {

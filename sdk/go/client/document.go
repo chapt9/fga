@@ -448,3 +448,24 @@ func (c *Client) DeleteDocument(ctx context.Context, bucket, key, version string
 	_, err := c.do(ctx, http.MethodDelete, documentURL(c.StorageURL, bucket, "", key, version, nil), c.StorageToken, nil, -1, nil, &map[string]any{})
 	return err
 }
+
+// ExportedObject is an export package of one object version for a target
+// recipient: descriptor, exact ciphertext and the target's envelope.
+type ExportedObject struct {
+	packageJSON
+	Ciphertext []byte `json:"ciphertext"`
+}
+
+// ExportObject fetches an encrypted export package of an object version
+// (the current one when version is "") for the target recipient key, which
+// must already have an envelope; only the target can open it.
+func (c *Client) ExportObject(ctx context.Context, bucket, key, version string, recipient cryptowire.Digest) (ExportedObject, error) {
+	var out ExportedObject
+	body, n := jsonBody(map[string]string{"recipient": recipient.String()})
+	_, err := c.do(ctx, http.MethodPost, objectURL(c.StorageURL, bucket, "/export", key, version, nil), c.StorageToken, body, n,
+		map[string]string{"Content-Type": "application/json"}, &out)
+	if err == nil {
+		err = checkVersion(out.Descriptor, out.Version.Version, version)
+	}
+	return out, err
+}

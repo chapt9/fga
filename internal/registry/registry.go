@@ -76,8 +76,11 @@ var r1TypeDefs = []TypeDef{
 	// stores an advisory classifier proposal (LAB-002), which under default
 	// deny is an action like any other (ruling 7).
 	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve"}},
+	// export on storage objects is our addition to the spec's table: the
+	// compound export operation names "export on the document version (or
+	// object)".
 	{Name: "storage.object", Actions: []string{"read", "stat", "discover", "read-history", "discover-history",
-		"new-version", "delete", "delete-version", "share", "label", "relabel", "propose-label", "approve"},
+		"new-version", "delete", "delete-version", "share", "label", "relabel", "propose-label", "approve", "export"},
 		ActionAliases: map[string]string{"storage.object.read": "read"}},
 	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},

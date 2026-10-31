@@ -64,7 +64,7 @@ func main() {
 var StoragePreset = map[string][]string{
 	"storage.bucket": {"create-object", "list"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
-		"label", "relabel", "propose-label"},
+		"label", "relabel", "propose-label", "export"},
 	"crypto.envelope":    {"create", "release", "retire"},
 	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
 	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},

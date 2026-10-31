@@ -214,3 +214,47 @@ func TestSearchDocuments(t *testing.T) {
 		t.Fatalf("search with an unknown label: %v", err)
 	}
 }
+
+// TestObjectExport covers export of a whole object version: export and
+// read for the caller (read-history for an older version), and the
+// target's existing envelope released only against the full check set.
+func TestObjectExport(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	carol := st.Client("carol", []string{"member"}, "p1")
+	alice.Pin(bob)
+	bob.Pin(alice)
+	v1, err := alice.Put("reports", "doc", []byte("version one"), alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Put("reports", "doc", []byte("version two"), alice, bob); err != nil {
+		t.Fatal(err)
+	}
+	open := func(x content.ObjectExport) string {
+		var out bytes.Buffer
+		err := crypto.Decrypt(&out, bytes.NewReader(x.Ciphertext), crypto.Package{Descriptor: x.Descriptor, DescriptorSignature: x.DescriptorSignature,
+			Envelope: crypto.Envelope{Context: x.Envelope.Context, Ciphertext: x.Envelope.Ciphertext, Signature: x.Envelope.Signature}},
+			bob.Recipient, bob.Trust)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	fp := bob.Recipient.Fingerprint().String()
+	x, err := st.Content.ExportObject(ctx, alice.Caller, "reports", "doc", "", fp)
+	if err != nil || open(x) != "version two" || !x.Version.Current {
+		t.Fatalf("export of the current version: %v", err)
+	}
+	if x, err := st.Content.ExportObject(ctx, alice.Caller, "reports", "doc", v1.Version, fp); err != nil || open(x) != "version one" {
+		t.Fatalf("export of a historical version: %v", err)
+	}
+	if _, err := st.Content.ExportObject(ctx, bob.Caller, "reports", "doc", "", fp); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("export by a member without export: %v", err)
+	}
+	if _, err := st.Content.ExportObject(ctx, alice.Caller, "reports", "doc", "", carol.Recipient.Fingerprint().String()); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("export to a target without an envelope: %v", err)
+	}
+}

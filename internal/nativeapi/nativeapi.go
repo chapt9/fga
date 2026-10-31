@@ -707,6 +707,30 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 		}
 		httpapi.WriteJSON(w, http.StatusOK, out)
 	}))
+	mux.HandleFunc("POST /v1/buckets/{bucket}/object/export", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := object(r)
+		var body struct {
+			Recipient string `json:"recipient"`
+		}
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		if !httpapi.DecodeJSON(w, r, &body) {
+			return
+		}
+		x, err := svc.ExportObject(r.Context(), c, b, k, v, body.Recipient)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, struct {
+			packageBody
+			Ciphertext []byte `json:"ciphertext"`
+		}{packageBody{Version: x.Version, Descriptor: x.Descriptor, DescriptorSignature: x.DescriptorSignature, EnvelopeID: x.Envelope.EnvelopeID,
+			Envelope: httpapi.EnvelopeBody{Context: x.Envelope.Context, Ciphertext: x.Envelope.Ciphertext, Signature: x.Envelope.Signature},
+			Receipt:  x.Envelope.Receipt, ReceiptSignature: x.Envelope.ReceiptSignature}, x.Ciphertext})
+	}))
 	return mux
 }
 

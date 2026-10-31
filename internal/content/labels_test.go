@@ -207,7 +207,10 @@ func TestClearanceRanks(t *testing.T) {
 	for name, doc := range r1test.Policies {
 		policies[name] = doc
 	}
-	policies["objects.json"] = strings.Replace(policies["objects.json"], `"share","label"]`, `"share"]`, 1)
+	policies["objects.json"] = strings.Replace(policies["objects.json"], `"share","label","export"]`, `"share","export"]`, 1)
+	if strings.Contains(policies["objects.json"], `"share","label"`) {
+		t.Fatal("the owner's unconditional label right is still in the policy")
+	}
 	policies["objects.json"] = strings.Replace(policies["objects.json"], `"rules":[`, `"rules":[
 	  {"id":"label-within-clearance","effect":"allow","actions":["label"],"roles":["*"],
 	   "when":"resource.attributes.owner == principal.id && resource.attributes.new_label_rank <= principal.attributes.clearance_rank"},`, 1)
