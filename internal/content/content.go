@@ -235,7 +235,7 @@ func mapFence(err error) error {
 		errors.Is(err, fence.ErrExpired), errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval):
 		return fmt.Errorf("%w: %w", ErrConflict, err)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrPrecondition), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalid),
-		errors.Is(err, audit.ErrFull):
+		errors.Is(err, ErrEncryptionMode), errors.Is(err, audit.ErrFull):
 		return err
 	default:
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)

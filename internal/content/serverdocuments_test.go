@@ -253,3 +253,25 @@ func TestServerOriginal(t *testing.T) {
 		t.Fatalf("an unknown version: %v", err)
 	}
 }
+
+// TestServerExportRefusesClientMode is the regression test of a defect
+// found while building R2 stretch M3: the server-mode unit export found a
+// client-mode version only inside the authority fence, and the fence's
+// error mapping turned ENCRYPTION_MODE into UNAVAILABLE, so the route
+// answered 503, try later, instead of 409, wrong mode (ENC-002).
+func TestServerExportRefusesClientMode(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	up, err := alice.PrepareDocument("reports", "client.md", []string{"client unit"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	units := unitIDs(t, st, alice.Caller, "reports", "client.md", "")
+	if _, err := st.Content.ExportUnitsPlain(ctx, alice.Caller, "reports", "client.md", "", units); !errors.Is(err, content.ErrEncryptionMode) {
+		t.Fatalf("a server-mode export of a client-mode document: %v", err)
+	}
+}
