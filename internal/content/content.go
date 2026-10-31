@@ -39,7 +39,7 @@ import (
 var (
 	ErrInvalid      = errors.New("content: invalid request")
 	ErrNotFound     = enforce.ErrNotFound
-	ErrConflict     = errors.New("content: conflict")
+	ErrConflict     = enforce.ErrConflict
 	ErrPrecondition = errors.New("content: precondition failed")
 	ErrTooLarge     = errors.New("content: too large")
 	// ErrEncryptionMode: the target is in the other encryption mode than

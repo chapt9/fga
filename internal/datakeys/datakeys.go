@@ -647,11 +647,22 @@ func (s *Service) event(rec signing.Record, outcome string, b kek.Binding, kekVe
 }
 
 // classify keeps the service's own errors and reports anything else from
-// the fence as a decision that no longer authorizes the key.
+// the fence as a decision that no longer authorizes the key. When the
+// authority it bound moved on in the meantime, that is also a conflict,
+// which the caller may begin again after (review v2, finding 3).
 func classify(err error) error {
 	for _, e := range []error{ErrNotFound, ErrConflict, ErrUnavailable} {
 		if errors.Is(err, e) {
 			return err
+		}
+	}
+	if errors.Is(err, fence.ErrAdmissionClosed) {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	for _, e := range []error{fence.ErrIncarnation, fence.ErrEpoch, fence.ErrIdentity, fence.ErrDelegation, fence.ErrRecipientKey,
+		fence.ErrResource, fence.ErrExpired, fence.ErrReplayed, fence.ErrApproval} {
+		if errors.Is(err, e) {
+			return fmt.Errorf("%w: %w: %v", ErrDecision, ErrConflict, err)
 		}
 	}
 	return fmt.Errorf("%w: %v", ErrDecision, err)

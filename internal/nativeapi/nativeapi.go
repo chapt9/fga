@@ -90,6 +90,7 @@ type (
 		Units          []content.DocumentUnitSpec `json:"units"`
 		Original       bool                       `json:"original,omitempty"`
 		Collection     bool                       `json:"collection,omitempty"`
+		BaseVersion    string                     `json:"base_version,omitempty"`
 	}
 	unitFinalBody struct {
 		Descriptor          []byte                 `json:"descriptor"`
@@ -587,7 +588,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		in, err := svc.BeginDocument(r.Context(), c, content.DocumentBeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
-			IdempotencyKey: b.IdempotencyKey, Units: b.Units, Original: b.Original, Collection: b.Collection})
+			IdempotencyKey: b.IdempotencyKey, Units: b.Units, Original: b.Original, Collection: b.Collection, BaseVersion: b.BaseVersion})
 		if err != nil {
 			fail(w, r, err)
 			return

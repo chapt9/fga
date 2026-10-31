@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -365,13 +366,25 @@ func NewWith(t testing.TB, opts Options) *Stack {
 // over HTTP, with the same mapping of not-found.
 type dataKeys struct{ st *Stack }
 
+// keyError maps the keys role's errors as the storage role's RPC client
+// does: not found, and a conflict when the bound authority moved on.
+func keyError(err error) error {
+	switch {
+	case errors.Is(err, datakeys.ErrNotFound):
+		return content.ErrNotFound
+	case errors.Is(err, datakeys.ErrConflict):
+		return fmt.Errorf("%w: %v", content.ErrConflict, err)
+	}
+	return err
+}
+
 func (d dataKeys) SealDataKey(ctx context.Context, decision signing.Signed, intentID string) (content.DataKey, error) {
 	if d.st.DataKeysVia != nil {
 		return d.st.DataKeysVia.SealDataKey(ctx, decision, intentID)
 	}
 	k, err := d.st.DataKeys.Seal(ctx, decision, intentID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return content.DataKey{}, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return content.DataKey{}, err
 	}
 	return content.DataKey{Key: k.Key, Sealed: k.Sealed, KEKVersion: k.KEKVersion}, err
 }
@@ -381,8 +394,8 @@ func (d dataKeys) SealDocumentKeys(ctx context.Context, decision signing.Signed,
 		return d.st.DataKeysVia.SealDocumentKeys(ctx, decision, docIntentID)
 	}
 	ks, err := d.st.DataKeys.SealDocument(ctx, decision, docIntentID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return nil, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return nil, err
 	}
 	var out []content.DataKey
 	for _, k := range ks {
@@ -396,8 +409,8 @@ func (d dataKeys) ReleaseUnitKey(ctx context.Context, decision signing.Signed, d
 		return d.st.DataKeysVia.ReleaseUnitKey(ctx, decision, documentVersionID, unitID)
 	}
 	k, err := d.st.DataKeys.ReleaseUnit(ctx, decision, documentVersionID, unitID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return nil, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return nil, err
 	}
 	return k, err
 }
@@ -407,8 +420,8 @@ func (d dataKeys) ReleaseOriginalKey(ctx context.Context, decision signing.Signe
 		return d.st.DataKeysVia.ReleaseOriginalKey(ctx, decision, extra, documentVersionID)
 	}
 	k, err := d.st.DataKeys.ReleaseOriginal(ctx, decision, extra, documentVersionID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return nil, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return nil, err
 	}
 	return k, err
 }
@@ -418,8 +431,8 @@ func (d dataKeys) ReleaseDerivedKey(ctx context.Context, decision signing.Signed
 		return d.st.DataKeysVia.ReleaseDerivedKey(ctx, decision, extra, versionID)
 	}
 	k, err := d.st.DataKeys.ReleaseDerived(ctx, decision, extra, versionID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return nil, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return nil, err
 	}
 	return k, err
 }
@@ -429,8 +442,8 @@ func (d dataKeys) ReleaseDataKey(ctx context.Context, decision signing.Signed, v
 		return d.st.DataKeysVia.ReleaseDataKey(ctx, decision, versionID)
 	}
 	k, err := d.st.DataKeys.Release(ctx, decision, versionID)
-	if errors.Is(err, datakeys.ErrNotFound) {
-		return nil, content.ErrNotFound
+	if err = keyError(err); err != nil {
+		return nil, err
 	}
 	return k, err
 }

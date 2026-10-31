@@ -59,6 +59,12 @@ type DocumentBeginRequest struct {
 	// text.entry resources, and a new version replaces or appends entries
 	// by reusing earlier ones. A key keeps its kind.
 	Collection bool
+	// BaseVersion is the document version the reused units were selected
+	// from. The begin refuses unless it is still the document's current
+	// version, read together with the generation the publication checks,
+	// so entries appended in between are not dropped (review v2 finding
+	// 3). A new collection version that reuses entries must name it.
+	BaseVersion string
 }
 
 func (r DocumentBeginRequest) digest() string {
@@ -72,6 +78,9 @@ func (r DocumentBeginRequest) digest() string {
 	}
 	if r.Collection {
 		fmt.Fprintf(h, "collection\n")
+	}
+	if r.BaseVersion != "" {
+		fmt.Fprintf(h, "base %q\n", r.BaseVersion)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
@@ -169,11 +178,15 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	in := storedDocIntent{DocumentIntent: DocumentIntent{IntentID: cryptowire.NewUUID().String(), Tenant: tenantID.String(),
 		DocumentVersion: cryptowire.NewUUID().String(), MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime)},
 		principal: c.Principal, requestDigest: r.digest(), bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption}
-	var kind string
-	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id::text, o.kind, r.generation, r.scope, r.attributes FROM objects o
+	var kind, current string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id::text, o.kind, coalesce(o.current_document_version::text, ''), r.generation, r.scope,
+	                                               r.attributes FROM objects o
 	                                         JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
 	                                        WHERE o.tenant = $1 AND o.bucket = $2 AND o.key = $3 AND o.kind IN ('object', 'document')`,
-		c.Tenant, b.ID, r.Key).Scan(&in.Document, &kind, &in.expectedGen, &in.scope, &in.attributes)
+		c.Tenant, b.ID, r.Key).Scan(&in.Document, &kind, &current, &in.expectedGen, &in.scope, &in.attributes)
+	if (err == nil || errors.Is(err, pgx.ErrNoRows)) && r.BaseVersion != "" && r.BaseVersion != current {
+		return storedDocIntent{}, fmt.Errorf("%w: the document has a newer version than the one its units were selected from", ErrConflict)
+	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		in.Document, in.newDocument = cryptowire.NewUUID().String(), true
@@ -192,6 +205,9 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	types := unitsOf(docKind)
 	if r.Collection != (docKind == "collection") || types == textEntries && r.Original {
 		return storedDocIntent{}, fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
+	}
+	if types == textEntries && !in.newDocument && r.BaseVersion == "" && slices.ContainsFunc(r.Units, func(u DocumentUnitSpec) bool { return u.ReuseUnit != "" }) {
+		return storedDocIntent{}, fmt.Errorf("%w: a collection version that keeps entries names the version it extends", ErrInvalid)
 	}
 	for i, u := range r.Units {
 		ui := UnitIntent{Position: i, Label: u.Label}

@@ -88,8 +88,13 @@ func binding(tenant, object, version, cryptoVersion, blobID cryptowire.UUID) pay
 // keysError keeps the shared not-found and reports any other failure of
 // the keys role as unavailable.
 func keysError(err error) error {
-	if errors.Is(err, ErrNotFound) {
+	switch {
+	case errors.Is(err, ErrNotFound):
 		return err
+	case errors.Is(err, ErrConflict):
+		// The authority the decision bound moved on before the keys
+		// role's fence; the caller may begin again.
+		return fmt.Errorf("%w: keys role: %v", ErrConflict, err)
 	}
 	return fmt.Errorf("%w: keys role: %v", ErrUnavailable, err)
 }

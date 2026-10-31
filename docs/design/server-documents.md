@@ -14,7 +14,7 @@ Unit-level access is unchanged: each unit is read alone, under its own checks an
 
 The body is the text (`Content-Length` required, at most 64 MiB), with an optional `Idempotency-Key`. The SDK calls are `PutDocumentText` and `AppendText`; in the CLI, `fga put-document [-collection]` and `fga append` follow the bucket's mode.
 
-1. **Begin.** The document's checks: `create-object` on the bucket for a new key, `new-version` on the document otherwise. For an append, the begin keeps every entry of the collection's current version as a reused unit. If an entry is no longer LIVE, the append is refused rather than dropping that entry.
+1. **Begin.** The document's checks: `create-object` on the bucket for a new key, `new-version` on the document otherwise. For an append, the begin keeps every entry of the collection's current version as a reused unit. If an entry is no longer LIVE, the append is refused rather than dropping that entry. The append names that version as its base, and the begin refuses it (`409 CONFLICT`) unless the version is still current when the begin reads the generation that the publication checks. So an append committed in between is not dropped; the caller begins again under a new idempotency key (review v2 finding 3). A conflict the keys role finds in its fence while sealing, because another append committed after the seal decision, is likewise `409 CONFLICT`.
 2. **Seal.** One decision for the keys role, `storage.key.seal-document-create` or `seal-document-version`, carries the document's write check. In one fenced transaction the keys role seals a data key for every new unit intent of the document intent, each bound to its unit's identity. Reused units keep their keys.
 3. **Stage.** One single-use staging decision admits the upload (as for client units). Each paragraph is encrypted into its unit's blob (`internal/payload`), and each unit intent records its digest, ciphertext length and plaintext length.
 4. **Publish.** The storage role builds the manifest. `cryptowire.MarshalServer` gives it the client manifest's shape, with every unit in suite 1 and the server format. Nobody signs it, and the client parser refuses it.
@@ -84,6 +84,7 @@ So in server mode a member who may read every source reads the output with no sh
 |---|---|
 | `internal/content` `TestServerDocument` | Splitting, sealing and publishing without signatures or descriptors; reads by policy alone; a unit raised to `restricted` leaving another member's view while the owner still reads it; a retry; a second version; mode refusals in both directions |
 | `TestServerCollection` | Create, append keeping entries, an append retry, a member without `new-version`, appending to a document, a withdrawn entry |
+| `TestConcurrentServerAppends` | Two writers appending concurrently, beginning again on conflict: every acknowledged entry is kept |
 | `internal/datakeys` `TestReleaseUnit` | A unit's decision opens no other unit; a unit outside the version; another operation; audit |
 | `TestServerOriginal` | Original upload and read, a member without `raw-read`, V-163, exports |
 | `internal/datakeys` `TestReleaseOriginal` | A release without every unit, or with a unit named twice, is refused |

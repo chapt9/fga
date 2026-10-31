@@ -70,26 +70,41 @@ func (c *Client) PrepareDocumentSpecs(ctx context.Context, bucket, key string, p
 // and an optional original file (nil for none).
 func (c *Client) PrepareDocumentFull(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
 	reuse map[int]*crypto.SealedUnit, original []byte, to ...*Client) (DocumentUpload, error) {
-	return c.prepare(ctx, bucket, key, paragraphs, specs, reuse, original, false, to...)
+	return c.prepare(ctx, bucket, key, "", paragraphs, specs, reuse, original, false, to...)
 }
 
 // PrepareCollection prepares a version of a text collection (DOC-005):
 // entries are new text entries, except the positions in reuse, which keep
 // earlier entries.
 func (c *Client) PrepareCollection(bucket, key string, entries []string, reuse map[int]*crypto.SealedUnit, to ...*Client) (DocumentUpload, error) {
+	base := ""
+	if len(reuse) > 0 {
+		// The kept entries come from the collection's current version.
+		page, err := c.st.Content.ListUnits(context.Background(), c.Caller, bucket, key, "", 1, "")
+		if err != nil {
+			return DocumentUpload{}, err
+		}
+		base = page.DocumentVersion
+	}
+	return c.PrepareCollectionFrom(base, bucket, key, entries, reuse, to...)
+}
+
+// PrepareCollectionFrom is PrepareCollection keeping entries selected from
+// the collection version base.
+func (c *Client) PrepareCollectionFrom(base, bucket, key string, entries []string, reuse map[int]*crypto.SealedUnit, to ...*Client) (DocumentUpload, error) {
 	specs := make([]content.DocumentUnitSpec, len(entries))
 	for i := range entries {
 		if u, ok := reuse[i]; ok {
 			specs[i] = content.DocumentUnitSpec{ReuseUnit: u.Params.Unit.String(), ReuseVersion: u.Params.UnitVersion.String()}
 		}
 	}
-	return c.prepare(context.Background(), bucket, key, entries, specs, reuse, nil, true, to...)
+	return c.prepare(context.Background(), bucket, key, base, entries, specs, reuse, nil, true, to...)
 }
 
-func (c *Client) prepare(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
+func (c *Client) prepare(ctx context.Context, bucket, key, base string, paragraphs []string, specs []content.DocumentUnitSpec,
 	reuse map[int]*crypto.SealedUnit, original []byte, collection bool, to ...*Client) (DocumentUpload, error) {
 	in, err := c.st.Content.BeginDocument(ctx, c.Caller, content.DocumentBeginRequest{Bucket: bucket, Key: key,
-		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs, Original: original != nil, Collection: collection})
+		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs, Original: original != nil, Collection: collection, BaseVersion: base})
 	if err != nil {
 		return DocumentUpload{}, err
 	}

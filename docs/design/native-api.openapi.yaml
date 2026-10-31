@@ -325,6 +325,11 @@ paths:
                       reuse_version: { type: string, format: uuid }
                       label: { type: string, maxLength: 64 }
                 original: { type: boolean, description: Reserve an encrypted original file (CNT-003) }
+                collection: { type: boolean, description: Make a new key a text collection (DOC-005) }
+                base_version:
+                  type: string
+                  format: uuid
+                  description: The document version the reused units were selected from; the begin answers 409 unless it is still current. Required for a new collection version that keeps entries (review v2 finding 3).
       responses:
         "201": { description: Document intent (document, version, units with intents and identifiers), content: { application/json: { schema: { type: object } } } }
         default: { $ref: "#/components/responses/Error" }

@@ -69,12 +69,12 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 	case !errors.Is(err, ErrNotFound):
 		return DocumentPublished{}, err
 	default:
-		specs, err := s.textSpecs(ctx, c, r, len(paragraphs))
+		specs, base, err := s.textSpecs(ctx, c, r, len(paragraphs))
 		if err != nil {
 			return DocumentPublished{}, err
 		}
 		if in, err = s.beginDocument(ctx, c, DocumentBeginRequest{Bucket: r.Bucket, Key: r.Key, IdempotencyKey: r.IdempotencyKey,
-			Units: specs, Collection: r.Collection || r.Append, Original: r.Original != nil}, "server"); err != nil {
+			Units: specs, Collection: r.Collection || r.Append, Original: r.Original != nil, BaseVersion: base}, "server"); err != nil {
 			return DocumentPublished{}, err
 		}
 	}
@@ -119,36 +119,41 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 // entry of the collection's current version, kept as it is, then one new
 // unit per paragraph. An append refuses a version with an entry that is no
 // longer LIVE rather than dropping it silently.
-func (s *Service) textSpecs(ctx context.Context, c Caller, r TextRequest, paragraphs int) ([]DocumentUnitSpec, error) {
+// textSpecs returns the unit specs of a text upload and, for an append,
+// the collection version whose entries it keeps, which the begin checks
+// is still current (review v2 finding 3).
+func (s *Service) textSpecs(ctx context.Context, c Caller, r TextRequest, paragraphs int) ([]DocumentUnitSpec, string, error) {
 	var specs []DocumentUnitSpec
+	var base string
 	if r.Append {
 		d, err := s.documentVersion(ctx, c.Tenant, r.Bucket, r.Key, "")
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if d.units != textEntries {
-			return nil, fmt.Errorf("%w: only a text collection is appended to", ErrInvalid)
+			return nil, "", fmt.Errorf("%w: only a text collection is appended to", ErrInvalid)
 		}
 		ms, err := s.members(ctx, c.Tenant, d.id, -1, cryptowire.MaxUnits+1, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		var all int
 		if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT count(*) FROM document_units WHERE tenant = $1 AND document_version = $2`,
 			c.Tenant, d.id).Scan(&all); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if all != len(ms) {
-			return nil, fmt.Errorf("%w: an entry of the collection is no longer live", ErrConflict)
+			return nil, "", fmt.Errorf("%w: an entry of the collection is no longer live", ErrConflict)
 		}
 		for _, m := range ms {
 			specs = append(specs, DocumentUnitSpec{ReuseUnit: m.entry.Unit, ReuseVersion: m.entry.UnitVersion})
 		}
+		base = d.id.String()
 	}
 	for range paragraphs {
 		specs = append(specs, DocumentUnitSpec{})
 	}
-	return specs, nil
+	return specs, base, nil
 }
 
 // unitStates counts the new units and the original of a document intent

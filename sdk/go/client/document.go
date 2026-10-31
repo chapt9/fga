@@ -45,7 +45,7 @@ func (c *Client) PutDocumentWithOriginal(ctx context.Context, bucket, key string
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	return c.putDocument(ctx, bucket, key, nil, paragraphs, original, recipients, false)
+	return c.putDocument(ctx, bucket, key, nil, "", paragraphs, original, recipients, false)
 }
 
 // PutCollection creates a text collection at bucket/key (DOC-005) whose
@@ -55,7 +55,7 @@ func (c *Client) PutCollection(ctx context.Context, bucket, key string, text []b
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	return c.putDocument(ctx, bucket, key, nil, paragraphs, nil, recipients, true)
+	return c.putDocument(ctx, bucket, key, nil, "", paragraphs, nil, recipients, true)
 }
 
 // AppendCollection appends the paragraphs of text to the text collection
@@ -121,14 +121,16 @@ func (c *Client) AppendCollection(ctx context.Context, bucket, key string, text 
 		}
 		kept = append(kept, u)
 	}
-	return c.putDocument(ctx, bucket, key, kept, paragraphs, nil, recipients, true)
+	// The server refuses the append if another version committed since
+	// this manifest, rather than dropping its entries.
+	return c.putDocument(ctx, bucket, key, kept, manifest.DocumentVersionID, paragraphs, nil, recipients, true)
 }
 
 // putDocument publishes a document or collection version whose units are
-// the kept units, reused as they are, followed by new units for the
-// paragraphs.
-func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*crypto.SealedUnit, paragraphs []string, original io.Reader,
-	recipients []crypto.Recipient, collection bool) (DocumentPublished, error) {
+// the kept units, reused as they are from the version base, followed by
+// new units for the paragraphs.
+func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*crypto.SealedUnit, base string, paragraphs []string,
+	original io.Reader, recipients []crypto.Recipient, collection bool) (DocumentPublished, error) {
 	var err error
 	specs := make([]map[string]string, 0, len(kept)+len(paragraphs))
 	for _, u := range kept {
@@ -151,6 +153,9 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 	}
 	if collection {
 		begin["collection"] = true
+	}
+	if base != "" {
+		begin["base_version"] = base
 	}
 	body, n := jsonBody(begin)
 	if _, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/buckets/"+url.PathEscape(bucket)+"/documents", c.StorageToken, body, n,

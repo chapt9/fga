@@ -33,6 +33,9 @@ const (
 var (
 	ErrNotFound    = errors.New("not found")
 	ErrUnavailable = errors.New("a dependency is unavailable")
+	// ErrConflict means the operation raced a change to what it relies
+	// on; the caller may begin again.
+	ErrConflict = errors.New("conflict")
 	// ErrApprovalNotUsable means the approval the caller named is not
 	// approved for exactly this operation (rejected, expired, consumed, or
 	// requested for another operation, requester or resource state).

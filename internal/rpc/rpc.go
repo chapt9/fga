@@ -132,8 +132,11 @@ func (c KeysClient) ReleaseDerivedKey(ctx context.Context, d signing.Signed, ext
 // and an absent target look the same to the caller (CNT-004).
 func keysError(err error) error {
 	var se statusError
-	if errors.As(err, &se) && se == http.StatusNotFound {
+	switch {
+	case errors.As(err, &se) && se == http.StatusNotFound:
 		return enforce.ErrNotFound
+	case errors.As(err, &se) && se == http.StatusConflict:
+		return fmt.Errorf("%w: %v", enforce.ErrConflict, err)
 	}
 	return err
 }

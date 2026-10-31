@@ -2,6 +2,9 @@ package content_test
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"sync"
 	"testing"
 
 	"fga/internal/content"
@@ -108,4 +111,112 @@ func TestTextCollection(t *testing.T) {
 	if _, err := st.Content.ExportUnits(ctx, alice.Caller, "reports", "chat", "", units, bob.Recipient.Fingerprint().String()); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("export of text entries: %v", err)
 	}
+}
+
+// TestConcurrentAppends is the regression test of review v2 finding 3: an
+// append's kept entries and the generation its publication checks were
+// read apart, so an append committed in between was dropped from the next
+// version although both were acknowledged. An append now names the
+// version it extends, and the begin refuses it once another version
+// committed; an append that names none is refused.
+func TestConcurrentAppends(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	up, err := alice.PrepareCollection("reports", "chat", []string{"base"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1, err := alice.FinalizeDocument(up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuse := map[int]*crypto.SealedUnit{0: up.Units[0]}
+	// A selects its entries from v1; B appends and commits first.
+	b, err := alice.PrepareCollectionFrom(v1.DocumentVersion, "reports", "chat", []string{"base", "concurrent entry"}, reuse, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.PrepareCollectionFrom(v1.DocumentVersion, "reports", "chat", []string{"base", "outer entry"}, reuse, alice); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("an append based on an older version: %v", err)
+	}
+	if _, err := alice.PrepareCollectionFrom("", "reports", "chat", []string{"base", "outer entry"}, reuse, alice); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("an append naming no version: %v", err)
+	}
+	page, err := st.Content.ListUnits(ctx, alice.Caller, "reports", "chat", "", 10, "")
+	if err != nil || len(page.Units) != 2 {
+		t.Fatalf("the collection after the refused append: %+v, %v", page, err)
+	}
+
+}
+
+// TestConcurrentServerAppends covers review v2 finding 3 in server mode:
+// two writers append concurrently, beginning again when refused, and every
+// acknowledged entry is in the final collection.
+func TestConcurrentServerAppends(t *testing.T) {
+	st := r1test.New(t)
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.ModeBucket("vault", "p1", "internal", "server")
+	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "log", IdempotencyKey: "l1",
+		Collection: true}, []byte("base")); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	acked := make(chan string, 16)
+	for w := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 8 {
+				text := fmt.Sprintf("writer %d entry %d", w, i)
+				for attempt := 0; ; attempt++ {
+					_, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "log",
+						IdempotencyKey: fmt.Sprintf("%s/%d", text, attempt), Append: true}, []byte(text))
+					if err == nil {
+						acked <- text
+						break
+					}
+					if !errors.Is(err, content.ErrConflict) || attempt > 50 {
+						t.Errorf("%s: %v", text, err)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(acked)
+	page, err := st.Content.ListUnits(ctx, alice.Caller, "vault", "log", "", 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for i := range page.Units {
+		text, err := readServerUnit(st, alice, page.Units[i].Unit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		have[text] = true
+	}
+	for text := range acked {
+		if !have[text] {
+			t.Errorf("acknowledged entry %q is not in the collection", text)
+		}
+	}
+	if len(page.Units) != 17 {
+		t.Errorf("%d entries, want 17", len(page.Units))
+	}
+}
+
+func readServerUnit(st *r1test.Stack, c *r1test.Client, unit string) (string, error) {
+	s, err := st.Content.ReadUnitPlain(ctx, c.Caller, "vault", "log", "", unit)
+	if err != nil {
+		return "", err
+	}
+	defer s.Close()
+	b, err := io.ReadAll(s)
+	return string(b), err
 }
