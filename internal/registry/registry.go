@@ -63,24 +63,44 @@ func NewTypes(defs []TypeDef) (*Types, error) {
 	return t, nil
 }
 
-// R1Types returns the resource types of release R1 (specification, "Resources, actions and canonical identity").
-func R1Types() *Types {
-	t, err := NewTypes([]TypeDef{
-		{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure", "approve", "resolve", "write-off"}},
-		{Name: "network.destination", Actions: []string{"connect", "send"}},
-		{Name: "business.record", Actions: []string{"read", "update", "approve", "export"}},
-		{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover"}},
-		{Name: "document.text_unit", Actions: []string{"read", "use-in-model", "export-key"}},
-		{Name: "document.derived", Actions: []string{"deliver", "declassify", "relabel"}},
-		{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
-		{Name: "storage.object", Actions: []string{"read", "stat", "discover", "new-version", "delete"},
-			ActionAliases: map[string]string{"storage.object.read": "read"}},
-		{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage"}},
-		{Name: "ai.model", Actions: []string{"submit", "configure"}},
-		{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
-	})
+// r1TypeDefs are the resource types of release R1 (specification 2.5,
+// "Resources, actions and canonical identity"). Types of later phases are
+// registered only when their service is enabled.
+var r1TypeDefs = []TypeDef{
+	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage"}},
+	{Name: "storage.object", Actions: []string{"read", "stat", "discover", "read-history", "discover-history",
+		"new-version", "delete", "delete-version", "share"},
+		ActionAliases: map[string]string{"storage.object.read": "read"}},
+	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export"}},
+	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key"}},
+	{Name: "text.entry", Actions: []string{"read", "use-in-model", "update"}},
+	{Name: "document.derived", Actions: []string{"deliver", "declassify", "relabel"}},
+	{Name: "crypto.recipient", Actions: []string{"enroll", "activate", "receive-key", "revoke"}},
+	{Name: "crypto.envelope", Actions: []string{"create", "release", "retire"}},
+	{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
+}
+
+// executorTypeDefs are the R2 types of the optional executor (feature
+// executor). agent.tool also carries the approval and reconciliation
+// actions that executor uses.
+var executorTypeDefs = []TypeDef{
+	{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure", "approve", "resolve", "write-off"}},
+	{Name: "network.destination", Actions: []string{"connect", "send"}},
+	{Name: "business.record", Actions: []string{"read", "update", "approve", "export"}},
+	{Name: "ai.model", Actions: []string{"submit", "configure"}},
+}
+
+// R1Types returns the resource types of release R1.
+func R1Types() *Types { return mustTypes(r1TypeDefs) }
+
+// ExecutorTypes returns the R1 types plus the types of the optional R2
+// executor. Only roles that enable the executor use it.
+func ExecutorTypes() *Types { return mustTypes(append(slices.Clone(r1TypeDefs), executorTypeDefs...)) }
+
+func mustTypes(defs []TypeDef) *Types {
+	t, err := NewTypes(defs)
 	if err != nil {
-		panic(err) // the table above is static; a failure is a programming error
+		panic(err) // the tables above are static; a failure is a programming error
 	}
 	return t
 }

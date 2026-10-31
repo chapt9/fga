@@ -24,7 +24,7 @@ func expenseTool() Tool {
 const validArgs = `{"amount":{"currency":"EUR","minor":50000},"vendor":"Rail Co","category":"travel","source":"doc://q3#overview"}`
 
 func TestValidate(t *testing.T) {
-	types := registry.R1Types()
+	types := registry.ExecutorTypes()
 	if err := expenseTool().Validate(types); err != nil {
 		t.Fatalf("valid tool rejected: %v", err)
 	}

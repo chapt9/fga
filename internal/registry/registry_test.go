@@ -107,7 +107,7 @@ func TestCanonicalAction(t *testing.T) {
 // needs separate checks for invoking the tool, reading its source and
 // sending to its destination.
 func TestPlanCompoundOperation(t *testing.T) {
-	types := R1Types()
+	types := ExecutorTypes()
 	ops, err := NewOperations(types, []Operation{{Name: "expense.submit", Checks: []CheckSpec{
 		{Role: "source", ResourceType: "document.text_unit", Action: "read"},
 		{Role: "tool", ResourceType: "agent.tool", Action: "invoke"},
@@ -142,5 +142,29 @@ func TestPlanCompoundOperation(t *testing.T) {
 	}
 	if _, err := NewOperations(types, []Operation{{Name: "bad", Checks: []CheckSpec{{Role: "x", ResourceType: "agent.tool", Action: "delete"}}}}); err == nil {
 		t.Error("an operation with an unregistered action must be rejected")
+	}
+}
+
+// TestR1TypesExcludeLaterPhases covers the phase split of the resource
+// table: R1 registers the crypto types and the storage history actions, and
+// not the R2 executor types.
+func TestR1TypesExcludeLaterPhases(t *testing.T) {
+	r1, all := R1Types(), ExecutorTypes()
+	for _, typ := range []string{"agent.tool", "network.destination", "business.record", "ai.model"} {
+		if r1.HasResourceType(typ) || !all.HasResourceType(typ) {
+			t.Errorf("%s: in R1 = %v, with executor = %v", typ, r1.HasResourceType(typ), all.HasResourceType(typ))
+		}
+	}
+	for typ, actions := range map[string][]string{
+		"storage.object":   {"read-history", "discover-history", "delete-version", "share"},
+		"document.version": {"share", "export"},
+		"crypto.recipient": {"enroll", "activate", "receive-key", "revoke"},
+		"crypto.envelope":  {"create", "release", "retire"},
+	} {
+		for _, a := range actions {
+			if !r1.HasAction(typ, a) {
+				t.Errorf("R1 lacks %s %s", typ, a)
+			}
+		}
 	}
 }
