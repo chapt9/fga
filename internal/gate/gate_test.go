@@ -182,7 +182,7 @@ func TestRecheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t)
-			b, err := f.gate.Bind(context.Background(), delegatedBatch("read").Envelope, []registry.Resource{bound}, 5, 30*time.Second)
+			b, err := f.gate.Bind(context.Background(), delegatedBatch("read").Envelope, []registry.Resource{bound}, nil, 5, 30*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,8 +199,8 @@ func TestRecheck(t *testing.T) {
 func TestBindValidUntil(t *testing.T) {
 	f := newFixture(t)
 	env := delegatedBatch("read").Envelope
-	short, _ := f.gate.Bind(context.Background(), env, nil, 5, 30*time.Second)
-	long, _ := f.gate.Bind(context.Background(), env, nil, 5, 2*time.Hour)
+	short, _ := f.gate.Bind(context.Background(), env, nil, nil, 5, 30*time.Second)
+	long, _ := f.gate.Bind(context.Background(), env, nil, nil, 5, 2*time.Hour)
 	if !short.ValidUntil.Equal(start.Add(30*time.Second)) || !long.ValidUntil.Equal(start.Add(time.Hour)) {
 		t.Fatalf("valid_until = %v and %v, want +30s and the delegation expiry +1h", short.ValidUntil, long.ValidUntil)
 	}
@@ -216,7 +216,7 @@ func TestIdentityExpiry(t *testing.T) {
 	f.identities.Put(identity.Identity{ID: "user-42", Tenant: "t-acme", Revision: 88, Roles: []string{"reviewer"},
 		ExpiresAt: start.Add(10 * time.Second)})
 	env := delegatedBatch("read").Envelope
-	b, err := f.gate.Bind(context.Background(), env, nil, 5, time.Minute)
+	b, err := f.gate.Bind(context.Background(), env, nil, nil, 5, time.Minute)
 	if err != nil || !b.ValidUntil.Equal(start.Add(10*time.Second)) {
 		t.Fatalf("Bind = %v, %v; want valid until the subject's expiry", b.ValidUntil, err)
 	}

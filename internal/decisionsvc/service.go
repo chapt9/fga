@@ -352,7 +352,11 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return resp, bound
 	}
 
-	binding, err := s.d.Gate.Bind(ctx, env, bound, snap.Epoch, s.d.MaxAge)
+	principals := make([]decision.Ref, 0, len(d.Results))
+	for _, r := range d.Results {
+		principals = append(principals, r.Principal)
+	}
+	binding, err := s.d.Gate.Bind(ctx, env, bound, principals, snap.Epoch, s.d.MaxAge)
 	if err != nil {
 		var rej *decision.Rejection
 		if errors.As(err, &rej) {

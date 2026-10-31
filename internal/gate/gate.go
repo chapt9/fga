@@ -280,13 +280,20 @@ type Binding struct {
 }
 
 // Bind records the authority behind an allowed decision. ValidUntil is the
-// earliest of the decision-age limit, the actor's and subject's identity
-// expiry and every delegation expiry (DEC-005).
-func (g *Gate) Bind(ctx context.Context, env decision.Envelope, resources []registry.Resource, policyEpoch uint64, maxAge time.Duration) (Binding, error) {
+// earliest of the decision-age limit, the identity expiry of the actor,
+// the subject and every other principal a check was evaluated for (such
+// as a recipient), and every delegation expiry (DEC-005, review finding 7).
+func (g *Gate) Bind(ctx context.Context, env decision.Envelope, resources []registry.Resource, principals []decision.Ref, policyEpoch uint64,
+	maxAge time.Duration) (Binding, error) {
 	b := Binding{Envelope: env, Resources: slices.Clone(resources), PolicyEpoch: policyEpoch, ValidUntil: g.now().Add(maxAge)}
 	refs := []decision.Ref{env.Actor}
 	if env.Delegation != "" {
 		refs = append(refs, env.Subject)
+	}
+	for _, p := range principals {
+		if p.ID != "" && !slices.Contains(refs, p) {
+			refs = append(refs, p)
+		}
 	}
 	for _, ref := range refs {
 		id, err := g.current(ctx, env.Tenant, ref)

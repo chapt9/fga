@@ -71,7 +71,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		Attributes: map[string]any{"project_ids": []string{"p1"}}})
 	ids.Put(identity.Identity{ID: "agent-7", Tenant: "t-acme", Revision: 12, Roles: []string{"agent"}})
 	ids.Put(identity.Identity{ID: "user-77", Tenant: "t-acme", Revision: 5, Roles: []string{"reviewer"},
-		Attributes: map[string]any{"project_ids": []string{"p1"}}})
+		Attributes: map[string]any{"project_ids": []string{"p1"}}, ExpiresAt: now.Add(20 * time.Second)})
 	ids.Put(identity.Identity{ID: "user-90", Tenant: "t-acme", Revision: 2, Roles: []string{"reviewer"},
 		Attributes: map[string]any{"project_ids": []string{"p2"}}})
 	dels := delegation.NewMemoryStore()
@@ -482,5 +482,20 @@ func TestPlanMustMatchItsDigest(t *testing.T) {
 	r.Plan, r.OperationDigest = &other, opplan.Digest(other)
 	if resp := f.svc.Decide(ctx, "tools-gw-1", r); resp.Outcome != "DENY" || resp.Reason != string(ReasonInvalidRequest) {
 		t.Fatalf("plan of another operation = %+v", resp)
+	}
+}
+
+// TestRecipientExpiryBoundsValidity is the regression test of review
+// finding 7: only the actor's and subject's expiry bounded a decision, so
+// an operation could commit after a recipient's identity expired. A share
+// with user-77, who expires in 20 seconds, is valid for at most that.
+func TestRecipientExpiryBoundsValidity(t *testing.T) {
+	f := newFixture(t, 10)
+	resp := f.svc.Decide(context.Background(), "storage-1", f.withToken(shareRequest("sha256:77")))
+	if resp.Outcome != "ALLOW" || resp.ValidUntil == nil {
+		t.Fatalf("share = %+v", resp)
+	}
+	if want := now.Add(20 * time.Second); !resp.ValidUntil.Equal(want) {
+		t.Fatalf("valid until %s, want the recipient's expiry %s", resp.ValidUntil, want)
 	}
 }
