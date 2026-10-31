@@ -187,8 +187,9 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // envelope (RCP-005, KEY-015).
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
-	unit := rec.Operation == registry.OpDocGetUnitEnvelope
-	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit) || !s.exactly(rec) {
+	unit, original := rec.Operation == registry.OpDocGetUnitEnvelope, rec.Operation == registry.OpDocGetOriginalEnvelope
+	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original) ||
+		!s.exactly(rec) {
 		return Delivered{}, ErrDecision
 	}
 	id, err := cryptowire.ParseUUID(envelopeID)
@@ -199,10 +200,10 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	if err != nil {
 		return Delivered{}, err
 	}
-	// A unit envelope is delivered only for the unit operation, bound to
-	// its document version, and an object envelope only for the object
-	// operations.
-	if unit != (e.DocumentVersion != nil) {
+	// A unit or original envelope is delivered only for its document
+	// operation, bound to its document version, and an object envelope
+	// only for the object operations.
+	if (unit || original) != (e.DocumentVersion != nil) {
 		return Delivered{}, ErrDecision
 	}
 	for _, c := range rec.Checks {
@@ -217,6 +218,8 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			ok = unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
 		case "document.version read-units":
 			ok = unit && c.ResourceID == e.DocumentVersion.String() && holder
+		case "document.version raw-read":
+			ok = original && c.ResourceID == e.DocumentVersion.String() && holder
 		case "crypto.recipient receive-key":
 			ok = c.ResourceID == e.Recipient && c.PrincipalBinding == e.Recipient
 		}
@@ -243,11 +246,15 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			return ErrNotFound
 		}
 		if e.DocumentVersion != nil {
-			if err := tx.QueryRow(ctx, `SELECT state FROM document_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,
-				rec.Tenant, *e.DocumentVersion).Scan(&state); err != nil {
+			var originalObject *cryptowire.UUID
+			if err := tx.QueryRow(ctx, `SELECT state, original FROM document_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,
+				rec.Tenant, *e.DocumentVersion).Scan(&state, &originalObject); err != nil {
 				return err
 			}
-			if state != "LIVE" {
+			// The original's envelope only for the original operation, and
+			// never a unit's for it.
+			isOriginal := originalObject != nil && *originalObject == e.Object
+			if state != "LIVE" || isOriginal != original {
 				return ErrNotFound
 			}
 		}

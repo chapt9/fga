@@ -171,7 +171,7 @@ func (f *Fence) Run(ctx context.Context, b Binding, mutate []string, fn func(ctx
 // every decision is consumed in the same transaction, so the operation
 // commits only if all of them still hold.
 func (f *Fence) RunAll(ctx context.Context, bs []Binding, mutate []string, fn func(ctx context.Context, tx pgx.Tx) error) error {
-	b, err := merge(bs)
+	b, err := Merge(bs)
 	if err != nil {
 		return err
 	}
@@ -210,11 +210,11 @@ func (f *Fence) RunAll(ctx context.Context, bs []Binding, mutate []string, fn fu
 	})
 }
 
-// merge combines bindings of one operation into the binding the fence
-// checks: same tenant and incarnation, the earliest expiry, the lowest
+// Merge combines bindings of one operation into the binding the fence
+// checks (and a read lease rechecks): same tenant and incarnation, the earliest expiry, the lowest
 // policy epoch, and the union of every bound fact, which must agree where
 // bindings share one. At most one approval may be bound.
-func merge(bs []Binding) (Binding, error) {
+func Merge(bs []Binding) (Binding, error) {
 	if len(bs) == 0 {
 		return Binding{}, errors.New("fence: no decision")
 	}

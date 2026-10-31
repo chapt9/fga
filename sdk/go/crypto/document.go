@@ -83,6 +83,38 @@ type DocumentParams struct {
 	Tenant, Document, DocumentVersion cryptowire.UUID
 	ExtractionVersion                 string
 	NormalizationVersion              string
+	// Original is the encrypted original file, if the document has one.
+	Original *SealedOriginal
+}
+
+// OriginalParams are the original file's identifiers from a document
+// intent.
+type OriginalParams struct {
+	Object, Version, CryptoVersion, Blob, Attempt cryptowire.UUID
+}
+
+// SealedOriginal is an encrypted original file and its key package.
+type SealedOriginal struct {
+	Params           OriginalParams
+	CiphertextSHA256 cryptowire.Digest
+	CiphertextLength uint64
+	pkg              []byte
+}
+
+// Close clears the original's key package.
+func (o *SealedOriginal) Close() { clear(o.pkg) }
+
+// EncryptOriginal encrypts a document's original file under its own
+// single-key keyset (CNT-003): no unit key opens it.
+func EncryptOriginal(dst io.Writer, src io.Reader, tenant cryptowire.UUID, p OriginalParams) (*SealedOriginal, error) {
+	o := &SealedOriginal{Params: p}
+	aad := cryptowire.PayloadAAD(tenant, p.Object, p.CryptoVersion, cryptowire.Suite1, cryptowire.Format1)
+	pkg, err := seal(dst, src, aad, &o.CiphertextSHA256, &o.CiphertextLength)
+	if err != nil {
+		return nil, err
+	}
+	o.pkg = pkg
+	return o, nil
 }
 
 // SealedUnitFinal is one unit's signed descriptor and envelopes.
@@ -99,6 +131,8 @@ type SealedDocument struct {
 	ManifestSignature string
 	ManifestDigest    cryptowire.Digest
 	Units             []SealedUnitFinal
+	// Original holds the original file's object descriptor and envelopes.
+	Original *SealedUnitFinal
 }
 
 // SealDocument builds and signs the manifest over units in order, then
@@ -127,6 +161,10 @@ func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient,
 		m.Units = append(m.Units, cryptowire.ManifestUnit{UnitID: u.Params.Unit.String(), UnitVersionID: u.Params.UnitVersion.String(),
 			CryptoVersionID: u.Params.CryptoVersion.String(), CiphertextSHA256: u.CiphertextSHA256.String(), CiphertextLength: u.CiphertextLength,
 			Suite: cryptowire.Suite1, Format: cryptowire.Format1})
+	}
+	if o := p.Original; o != nil {
+		m.Original = &cryptowire.ManifestOriginal{ObjectID: o.Params.Object.String(), VersionID: o.Params.Version.String(),
+			CiphertextSHA256: o.CiphertextSHA256.String(), CiphertextLength: o.CiphertextLength}
 	}
 	var out SealedDocument
 	var err error
@@ -163,7 +201,66 @@ func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient,
 		}
 		out.Units = append(out.Units, f)
 	}
+	if o := p.Original; o != nil {
+		d := cryptowire.Descriptor{TenantID: p.Tenant.String(), ObjectID: o.Params.Object.String(), LogicalVersionID: o.Params.Version.String(),
+			CryptoVersionID: o.Params.CryptoVersion.String(), BlobID: o.Params.Blob.String(), AttemptID: o.Params.Attempt.String(),
+			Suite: cryptowire.Suite1, Format: cryptowire.Format1, CiphertextSHA256: o.CiphertextSHA256.String(),
+			CiphertextLength: o.CiphertextLength, Signer: signer.Fingerprint.String(), CreatedAt: now}
+		f := SealedUnitFinal{}
+		if f.Descriptor, err = d.Marshal(); err != nil {
+			return SealedDocument{}, err
+		}
+		if f.DescriptorSignature, err = signer.Sign(cryptowire.TypeDescriptor, f.Descriptor); err != nil {
+			return SealedDocument{}, err
+		}
+		for i, r := range recipients {
+			ctx := cryptowire.EnvelopeContext{Tenant: p.Tenant, Object: o.Params.Object, LogicalVersion: o.Params.Version,
+				CryptoVersion: o.Params.CryptoVersion, Suite: cryptowire.Suite1, Format: cryptowire.Format1,
+				CiphertextSHA256: o.CiphertextSHA256, CiphertextLength: o.CiphertextLength, Recipient: r.Fingerprint,
+				RecipientKeyVersion: r.KeyVersion, Generation: 1, Sharer: signer.Fingerprint, CreatedAt: now,
+				Document: p.Document, DocumentVersion: p.DocumentVersion, ManifestDigest: out.ManifestDigest}
+			env, err := wrap(ctx, pubs[i], o.pkg, signer)
+			if err != nil {
+				return SealedDocument{}, err
+			}
+			f.Envelopes = append(f.Envelopes, env)
+		}
+		out.Original = &f
+	}
 	return out, nil
+}
+
+// DecryptOriginal verifies an original file's package (its object
+// descriptor and the recipient's profile-2 envelope) and writes the
+// plaintext to dst, with the checks of Decrypt. It returns the envelope's
+// context, which names the document version and manifest the original
+// belongs to.
+func DecryptOriginal(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *RecipientKey, trust TrustStore) (cryptowire.EnvelopeContext, error) {
+	keyFor := trustedSigner(trust)
+	if _, err := cryptowire.Verify(cryptowire.TypeDescriptor, pkg.DescriptorSignature, pkg.Descriptor, keyFor); err != nil {
+		return cryptowire.EnvelopeContext{}, err
+	}
+	desc, err := cryptowire.ParseDescriptor(pkg.Descriptor)
+	if err != nil {
+		return cryptowire.EnvelopeContext{}, err
+	}
+	if err := checkCiphertext(ciphertext, desc.CiphertextSHA256, desc.CiphertextLength); err != nil {
+		return cryptowire.EnvelopeContext{}, err
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, pkg.Envelope.Signature,
+		cryptowire.EnvelopeSigningInput(pkg.Envelope.Context, pkg.Envelope.Ciphertext), keyFor); err != nil {
+		return cryptowire.EnvelopeContext{}, err
+	}
+	ctx, err := cryptowire.ParseEnvelopeContext(pkg.Envelope.Context)
+	if err != nil {
+		return cryptowire.EnvelopeContext{}, err
+	}
+	c := ctx
+	c.Document, c.DocumentVersion, c.ManifestDigest = cryptowire.UUID{}, cryptowire.UUID{}, cryptowire.Digest{}
+	if ctx.Profile() != 2 || !contextMatches(c, desc) || ctx.Recipient != key.fingerprint {
+		return cryptowire.EnvelopeContext{}, ErrBinding
+	}
+	return ctx, open(dst, ciphertext, pkg.Envelope, ctx, key)
 }
 
 // UnitPackage is what a recipient receives for one unit: its signed

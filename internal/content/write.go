@@ -191,7 +191,7 @@ func (s *Service) Begin(ctx context.Context, c Caller, r BeginRequest) (Intent, 
 // intentChecks are the checks that authorize an intent's upload: create on
 // the bucket for a new key, new-version on the object otherwise.
 func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
-	if in.kind == "unit" {
+	if in.kind != "object" {
 		if in.docNew {
 			return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
 		}

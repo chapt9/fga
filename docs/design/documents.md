@@ -1,6 +1,6 @@
 # Documents and text units (DOC-001 to DOC-008, CNT-003, DSC-001 to DSC-005, SRH-001 to SRH-004)
 
-Status: design record, 31 October 2026. Our own design; no upstream mapping. Default deny (ruling 7) applies to every operation below. Publication of text units is implemented (R1-C step 3, see "Implementation" below). The original file, disclosure, export, search and text entries follow in steps 4 and 6.
+Status: design record, 31 October 2026. Our own design; no upstream mapping. Default deny (ruling 7) applies to every operation below. Publication of text units and the original file, and their disclosure, are implemented (R1-C steps 3 and 4, see "Implementation" below). Export, search and text entries follow in step 6.
 
 ## Model
 
@@ -102,7 +102,6 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 - The decision and release sentinels see the computed ranks, so a policy can keep restricted units from a recipient. A document with such a unit cannot be published to that recipient at all (V-063).
 
 **Not yet.**
-- The encrypted original file (step 4, with `raw-read`).
 - Approvals for document publication: no plan is sent, so `NEEDS_APPROVAL` there is a denial.
 - Withdrawing documents or units. Reclamation already refuses to remove a unit version that a LIVE document version references (V-064).
 
@@ -121,3 +120,20 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 | `GET …/document/unit/ciphertext?unit=` | `document.unit.read`, single use, admitted under the fence with a read lease | The unit's exact ciphertext |
 
 Entries carry the unit ID, unit version, ciphertext length and signed descriptor, never a position. `client.GetDocument` and `fga get-document` fetch the permitted units and verify each with `crypto.DecryptUnit`. A document key is never served by the object routes.
+
+## Implementation (step 4: the original file, CNT-003)
+
+**Publication.** A document intent may reserve an original (`"original": true`): an upload intent of kind `original` staged like a unit. The manifest's `original` entry names its object, version, digest and length. Finalize carries its object descriptor (`fga.descriptor/v1`) and profile-2 envelopes, which name the document version and manifest. Per recipient, `document.share-original` decides:
+- `share` on the version;
+- `create` on the envelope (planned as `docintent:<intent>|<fingerprint>|<envelope>`);
+- the recipient's `raw-read` on the version;
+- the recipient's `receive-key`.
+
+The original is an `objects` row of kind `original` without a key or a resource of its own, linked from `document_versions.original`. Its key is its own: no unit envelope opens it (the AAD and context name the original).
+
+**Disclosure.** `GET …/document/original/package?recipient=` and `GET …/document/original/ciphertext` need `document.raw-read`: `raw-read` on the version and `read` on every unit, in batches. The read is admitted under the fence over all batches together, with a read lease over their merged binding. The keys role then releases the original's envelope against `document.original.get-envelope`:
+- `raw-read` for the caller and the recipient;
+- the envelope's `release`;
+- `receive-key`.
+
+The keys role delivers it only if the envelope is that version's original, and never a unit envelope under this operation. A member who may read some units but not all, or who lacks `raw-read`, gets no original (V-052, V-053) and can still read the units it may. `client.GetOriginal`, `fga put-document -original` and `fga get-original` use these routes.

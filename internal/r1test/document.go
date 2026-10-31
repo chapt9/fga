@@ -13,9 +13,10 @@ import (
 // staged and whose manifest, descriptors and envelopes are sealed, but not
 // finalized.
 type DocumentUpload struct {
-	Intent content.DocumentIntent
-	Units  []*crypto.SealedUnit
-	Sealed crypto.SealedDocument
+	Intent   content.DocumentIntent
+	Units    []*crypto.SealedUnit
+	Original *crypto.SealedOriginal
+	Sealed   crypto.SealedDocument
 }
 
 // Request is the finalize request of a document upload.
@@ -27,6 +28,13 @@ func (u DocumentUpload) Request() content.DocumentFinalizeRequest {
 			uf.Envelopes = append(uf.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 		}
 		r.Units = append(r.Units, uf)
+	}
+	if o := u.Sealed.Original; o != nil {
+		of := content.UnitFinal{Descriptor: o.Descriptor, DescriptorSignature: o.DescriptorSignature}
+		for _, e := range o.Envelopes {
+			of.Envelopes = append(of.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
+		}
+		r.Original = &of
 	}
 	return r
 }
@@ -46,11 +54,24 @@ func (c *Client) PrepareDocument(bucket, key string, paragraphs []string, reuse 
 	return c.PrepareDocumentSpecs(ctx, bucket, key, paragraphs, specs, reuse, to...)
 }
 
+// PrepareDocumentWithOriginal is PrepareDocument with an encrypted
+// original file.
+func (c *Client) PrepareDocumentWithOriginal(bucket, key string, paragraphs []string, original []byte, to ...*Client) (DocumentUpload, error) {
+	return c.PrepareDocumentFull(context.Background(), bucket, key, paragraphs, make([]content.DocumentUnitSpec, len(paragraphs)), nil, original, to...)
+}
+
 // PrepareDocumentSpecs is PrepareDocument with explicit unit specs.
 func (c *Client) PrepareDocumentSpecs(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
 	reuse map[int]*crypto.SealedUnit, to ...*Client) (DocumentUpload, error) {
+	return c.PrepareDocumentFull(ctx, bucket, key, paragraphs, specs, reuse, nil, to...)
+}
+
+// PrepareDocumentFull prepares a document with unit specs, reused units
+// and an optional original file (nil for none).
+func (c *Client) PrepareDocumentFull(ctx context.Context, bucket, key string, paragraphs []string, specs []content.DocumentUnitSpec,
+	reuse map[int]*crypto.SealedUnit, original []byte, to ...*Client) (DocumentUpload, error) {
 	in, err := c.st.Content.BeginDocument(ctx, c.Caller, content.DocumentBeginRequest{Bucket: bucket, Key: key,
-		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs})
+		IdempotencyKey: cryptowire.NewUUID().String(), Units: specs, Original: original != nil})
 	if err != nil {
 		return DocumentUpload{}, err
 	}
@@ -74,13 +95,26 @@ func (c *Client) PrepareDocumentSpecs(ctx context.Context, bucket, key string, p
 		}
 		up.Units = append(up.Units, sealed)
 	}
+	params := crypto.DocumentParams{Tenant: tenant, Document: must(cryptowire.ParseUUID(in.Document)),
+		DocumentVersion: must(cryptowire.ParseUUID(in.DocumentVersion)), NormalizationVersion: crypto.NormalizationVersion}
+	if o := in.Original; o != nil {
+		p := crypto.OriginalParams{Object: must(cryptowire.ParseUUID(o.Unit)), Version: must(cryptowire.ParseUUID(o.UnitVersion)),
+			CryptoVersion: must(cryptowire.ParseUUID(o.CryptoVersion)), Blob: must(cryptowire.ParseUUID(o.Blob)), Attempt: must(cryptowire.ParseUUID(o.Attempt))}
+		var ct bytes.Buffer
+		if up.Original, err = crypto.EncryptOriginal(&ct, bytes.NewReader(original), tenant, p); err != nil {
+			return DocumentUpload{}, err
+		}
+		if _, err := c.st.Content.PutCiphertext(ctx, c.Caller, must(cryptowire.ParseUUID(o.IntentID)), int64(ct.Len()), up.Original.CiphertextSHA256,
+			bytes.NewReader(ct.Bytes())); err != nil {
+			return DocumentUpload{}, err
+		}
+		params.Original = up.Original
+	}
 	var recipients []crypto.Recipient
 	for _, r := range to {
 		recipients = append(recipients, crypto.Recipient{Fingerprint: r.Recipient.Fingerprint(), KeyVersion: r.KeyVersion})
 	}
-	up.Sealed, err = crypto.SealDocument(crypto.DocumentParams{Tenant: tenant, Document: must(cryptowire.ParseUUID(in.Document)),
-		DocumentVersion: must(cryptowire.ParseUUID(in.DocumentVersion)), NormalizationVersion: crypto.NormalizationVersion},
-		up.Units, recipients, c.Signer, c.Trust, *c.st.Clock)
+	up.Sealed, err = crypto.SealDocument(params, up.Units, recipients, c.Signer, c.Trust, *c.st.Clock)
 	return up, err
 }
 

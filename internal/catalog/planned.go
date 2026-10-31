@@ -32,13 +32,16 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		var err error
 		if intent, ok := strings.CutPrefix(parts[0], "intent:"); ok {
 			object, err = v.s.plannedObject(ctx, tenant, intent)
+		} else if intent, ok := strings.CutPrefix(parts[0], "docintent:"); ok {
+			// An envelope of a document version's original file.
+			object, err = v.s.plannedDocumentVersion(ctx, tenant, intent)
 		} else {
 			object, err = v.s.GetResource(ctx, tenant, parts[0])
 		}
 		if err != nil {
 			return registry.Resource{}, err
 		}
-		if object.Type != "storage.object" && object.Type != "document.text_unit" {
+		if object.Type != "storage.object" && object.Type != "document.text_unit" && object.Type != "document.version" {
 			return registry.Resource{}, registry.ErrUnknownResource
 		}
 		var principal string
@@ -83,8 +86,12 @@ func (s *Store) plannedObject(ctx context.Context, tenant, intent string) (regis
 		  FROM upload_intents i JOIN buckets b ON b.tenant = i.tenant AND b.id = i.bucket
 		 WHERE i.tenant = $1 AND i.id::text = $2 AND i.new_object AND i.state IN ('RESERVED', 'STAGED')`, tenant, intent).
 		Scan(&r.ID, &r.Scope, &attrs, &label, &floor, &kind)
-	if kind == "unit" {
+	switch kind {
+	case "unit":
 		r.Type = "document.text_unit"
+	case "original":
+		// An original has no resource of its own (CNT-003).
+		return registry.Resource{}, registry.ErrUnknownResource
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return registry.Resource{}, registry.ErrUnknownResource

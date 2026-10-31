@@ -75,6 +75,7 @@ type (
 		Key            string                     `json:"key"`
 		IdempotencyKey string                     `json:"idempotency_key"`
 		Units          []content.DocumentUnitSpec `json:"units"`
+		Original       bool                       `json:"original,omitempty"`
 	}
 	unitFinalBody struct {
 		Descriptor          []byte                 `json:"descriptor"`
@@ -85,6 +86,7 @@ type (
 		Manifest          []byte          `json:"manifest"`
 		ManifestSignature string          `json:"manifest_signature"`
 		Units             []unitFinalBody `json:"units"`
+		Original          *unitFinalBody  `json:"original,omitempty"`
 	}
 	selectBody struct {
 		Units []string `json:"unit_ids"`
@@ -377,7 +379,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		in, err := svc.BeginDocument(r.Context(), c, content.DocumentBeginRequest{Bucket: r.PathValue("bucket"), Key: b.Key,
-			IdempotencyKey: b.IdempotencyKey, Units: b.Units})
+			IdempotencyKey: b.IdempotencyKey, Units: b.Units, Original: b.Original})
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -400,6 +402,13 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 				uf.Envelopes = append(uf.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
 			}
 			req.Units = append(req.Units, uf)
+		}
+		if o := b.Original; o != nil {
+			of := content.UnitFinal{Descriptor: o.Descriptor, DescriptorSignature: o.DescriptorSignature}
+			for _, e := range o.Envelopes {
+				of.Envelopes = append(of.Envelopes, content.EnvelopeIn{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature})
+			}
+			req.Original = &of
 		}
 		p, err := svc.FinalizeDocument(r.Context(), c, r.PathValue("intent"), req)
 		if err != nil {
@@ -486,6 +495,36 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			return
 		}
 		st, err := svc.ReadUnitCiphertext(r.Context(), c, b, k, v, q.Get("unit"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		defer st.Close()
+		streamBody(w, r, st)
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/original/package", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		q := r.URL.Query()
+		if !ok || len(q["recipient"]) != 1 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		p, err := svc.OriginalPackage(r.Context(), c, b, k, v, q.Get("recipient"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, packageBody{Version: p.Version, Descriptor: p.Descriptor, DescriptorSignature: p.DescriptorSignature,
+			EnvelopeID: p.Envelope.EnvelopeID, Envelope: httpapi.EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext,
+				Signature: p.Envelope.Signature}, Receipt: p.Envelope.Receipt, ReceiptSignature: p.Envelope.ReceiptSignature})
+	}))
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/original/ciphertext", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		b, k, v, ok := document(r)
+		if !ok {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		st, err := svc.ReadOriginal(r.Context(), c, b, k, v)
 		if err != nil {
 			fail(w, r, err)
 			return

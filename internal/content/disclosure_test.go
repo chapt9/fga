@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"fga/internal/content"
@@ -143,5 +144,99 @@ func TestUnitPackage(t *testing.T) {
 	}
 	if _, err := st.Content.ReadCiphertext(ctx, alice.Caller, "reports", "q3.md", ""); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a document through the object route: %v", err)
+	}
+}
+
+// TestOriginalFile covers CNT-003 and V-053: the encrypted original is a
+// separate ciphertext under its own key, disclosed only with raw-read on
+// the version and read on every unit. A member who may raw-read but not
+// read a restricted unit gets no original, while still reading the units
+// it may; a unit's envelope never opens the original.
+func TestOriginalFile(t *testing.T) {
+	policies := map[string]string{}
+	for name, doc := range r1test.Policies {
+		policies[name] = doc
+	}
+	policies["documents.json"] = strings.Replace(policies["documents.json"], `"actions":["read-units","discover"],"roles":["member"]`,
+		`"actions":["read-units","discover","raw-read"],"roles":["member"]`, 1)
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	alice.Pin(bob)
+	bob.Pin(alice)
+	original := []byte("%PDF-1.7 the whole report, as uploaded")
+	up, err := alice.PrepareDocumentWithOriginal("reports", "q3.pdf", paragraphs(3), original, alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := alice.FinalizeDocument(up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(c *r1test.Client) ([]byte, error) {
+		pkg, err := st.Content.OriginalPackage(ctx, c.Caller, "reports", "q3.pdf", "", c.Recipient.Fingerprint().String())
+		if err != nil {
+			return nil, err
+		}
+		s, err := st.Content.ReadOriginal(ctx, c.Caller, "reports", "q3.pdf", "")
+		if err != nil {
+			return nil, err
+		}
+		ct, err := io.ReadAll(s)
+		s.Close()
+		if err != nil {
+			return nil, err
+		}
+		var out bytes.Buffer
+		ctxv, err := crypto.DecryptOriginal(&out, bytes.NewReader(ct), crypto.Package{Descriptor: pkg.Descriptor, DescriptorSignature: pkg.DescriptorSignature,
+			Envelope: crypto.Envelope{Context: pkg.Envelope.Context, Ciphertext: pkg.Envelope.Ciphertext, Signature: pkg.Envelope.Signature}},
+			c.Recipient, c.Trust)
+		if err == nil && ctxv.DocumentVersion.String() != p.DocumentVersion {
+			t.Errorf("the original's envelope names version %s", ctxv.DocumentVersion)
+		}
+		return out.Bytes(), err
+	}
+	for _, c := range []*r1test.Client{alice, bob} {
+		if got, err := read(c); err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("%s reads the original: %q, %v", c.Caller.Principal, got, err)
+		}
+	}
+	// A unit's envelope does not open the original.
+	unit, err := st.Content.UnitPackage(ctx, alice.Caller, "reports", "q3.pdf", "", up.Intent.Units[0].Unit, alice.Recipient.Fingerprint().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _ := st.Content.OriginalPackage(ctx, alice.Caller, "reports", "q3.pdf", "", alice.Recipient.Fingerprint().String())
+	s, _ := st.Content.ReadOriginal(ctx, alice.Caller, "reports", "q3.pdf", "")
+	ct, _ := io.ReadAll(s)
+	s.Close()
+	if _, err := crypto.DecryptOriginal(io.Discard, bytes.NewReader(ct), crypto.Package{Descriptor: pkg.Descriptor, DescriptorSignature: pkg.DescriptorSignature,
+		Envelope: crypto.Envelope{Context: unit.Envelope.Context, Ciphertext: unit.Envelope.Ciphertext, Signature: unit.Envelope.Signature}},
+		alice.Recipient, alice.Trust); err == nil {
+		t.Fatal("a unit envelope opened the original")
+	}
+
+	// V-053: with one restricted unit, bob may read-units and raw-read but
+	// not read every unit, so the whole-document path is denied.
+	specs := []content.DocumentUnitSpec{{}, {Label: "restricted"}, {}}
+	up2, err := alice.PrepareDocumentFull(ctx, "reports", "hr.md", paragraphs(3), specs, nil, []byte("the whole HR file"), alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.ReadOriginal(ctx, alice.Caller, "reports", "hr.md", ""); err != nil {
+		t.Fatalf("the owner's whole-document path: %v", err)
+	}
+	if _, err := st.Content.ReadOriginal(ctx, bob.Caller, "reports", "hr.md", ""); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("whole-document path with a denied unit: %v", err)
+	}
+	if _, err := st.Content.OriginalPackage(ctx, bob.Caller, "reports", "hr.md", "", bob.Recipient.Fingerprint().String()); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("original package with a denied unit: %v", err)
+	}
+	if page, err := st.Content.ListUnits(ctx, bob.Caller, "reports", "hr.md", "", 10, ""); err != nil || len(page.Units) != 2 {
+		t.Fatalf("bob's subset = %+v, %v", page, err)
 	}
 }

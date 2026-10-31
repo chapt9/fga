@@ -421,3 +421,155 @@ func (s *Service) admitUnit(ctx context.Context, c Caller, rec signing.Record, d
 	}
 	return &Stream{ReadCloser: s.lease(r, b), Version: info(v, true)}, nil
 }
+
+// original returns a document version's original file object and version,
+// or ErrNotFound when it has none.
+func (s *Service) original(ctx context.Context, tenant string, d docVersion) (cryptowire.UUID, version, error) {
+	var object, versionID *cryptowire.UUID
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT original, original_version FROM document_versions WHERE tenant = $1 AND id = $2`,
+		tenant, d.id).Scan(&object, &versionID); err != nil {
+		return cryptowire.UUID{}, version{}, err
+	}
+	if object == nil {
+		return cryptowire.UUID{}, version{}, ErrNotFound
+	}
+	v, err := s.versionByID(ctx, s.d.Catalog.Pool(), tenant, *versionID, false)
+	if err != nil || v.State != "LIVE" {
+		return cryptowire.UUID{}, version{}, ErrNotFound
+	}
+	return *object, v, nil
+}
+
+// completeContent decides raw-read on the version and read on every unit
+// (CNT-003): the original discloses everything, so it needs everything.
+// Any denial is ErrNotFound.
+func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, singleUse bool) ([]signing.Record, error) {
+	ms, err := s.members(ctx, c.Tenant, d.id, -1, cryptowire.MaxUnits, nil)
+	if err != nil {
+		return nil, err
+	}
+	var recs []signing.Record
+	for start := 0; start < len(ms); start += maxBatch - 1 {
+		checks := selectChecks(d.id, ms[start:min(len(ms), start+maxBatch-1)])
+		checks[0].action = "raw-read"
+		_, rec, err := s.decide(ctx, c, registry.OpDocRawRead, Audience, singleUse, checks)
+		if err != nil {
+			return nil, err
+		}
+		recs = append(recs, rec)
+	}
+	return recs, nil
+}
+
+// OriginalPackage returns the original file's signed object descriptor and
+// the recipient's existing envelope for it (CNT-003, DOC-006). It needs
+// raw-read on the version and read on every unit; the keys role releases
+// the envelope against raw-read for the caller and the recipient.
+func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key, versionSel, recipient string) (Package, error) {
+	if _, err := cryptowire.ParseDigest(recipient); err != nil {
+		return Package{}, ErrInvalid
+	}
+	d, err := s.documentVersion(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return Package{}, err
+	}
+	_, v, err := s.original(ctx, c.Tenant, d)
+	if err != nil {
+		return Package{}, err
+	}
+	recs, err := s.completeContent(ctx, c, d, false)
+	if err != nil {
+		return Package{}, err
+	}
+	for _, rec := range recs {
+		if err := s.checked(ctx, rec); err != nil {
+			return Package{}, err
+		}
+	}
+	var envelopeID string
+	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3
+	                                         AND document_version = $4 AND status = 'ACTIVE'`, c.Tenant, v.ID, recipient, d.id).Scan(&envelopeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Package{}, ErrNotFound
+	}
+	if err != nil {
+		return Package{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	ref := canonical("document.version", d.id.String())
+	signed, _, err := s.decide(ctx, c, registry.OpDocGetOriginalEnvelope, KeysAudience, true, []check{
+		{id: "version", role: registry.RoleVersion, action: "raw-read", ref: ref},
+		{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: v.ID.String()},
+		{id: "recipient-version", role: registry.RoleRecipientVersion, action: "raw-read", ref: ref, recipient: recipient},
+		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient},
+	})
+	if err != nil {
+		return Package{}, err
+	}
+	env, err := s.d.Keys.Deliver(ctx, signed, envelopeID)
+	if err != nil {
+		return Package{}, err
+	}
+	return Package{Version: info(v, true), Descriptor: v.Descriptor, DescriptorSignature: v.DescriptorSig, Envelope: env}, nil
+}
+
+// ReadOriginal admits the read of a document version's original file under
+// the fence, after single-use decisions for raw-read and read on every
+// unit, and returns its stream with a read lease over all of them.
+func (s *Service) ReadOriginal(ctx context.Context, c Caller, bucketName, key, versionSel string) (*Stream, error) {
+	d, err := s.documentVersion(ctx, c.Tenant, bucketName, key, versionSel)
+	if err != nil {
+		return nil, err
+	}
+	object, v, err := s.original(ctx, c.Tenant, d)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := s.completeContent(ctx, c, d, true)
+	if err != nil {
+		return nil, err
+	}
+	bindings := make([]fence.Binding, len(recs))
+	for i, rec := range recs {
+		if bindings[i], err = fence.FromRecord(rec); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	}
+	tenantID, err := s.tenantID(ctx, c.Tenant)
+	if err != nil {
+		return nil, err
+	}
+	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		var originalState, docState string
+		if err := tx.QueryRow(ctx, `SELECT v.state, d.state FROM object_versions v, document_versions d
+		                             WHERE v.tenant = $1 AND v.id = $2 AND d.tenant = $1 AND d.id = $3 FOR SHARE`,
+			c.Tenant, v.ID, d.id).Scan(&originalState, &docState); err != nil {
+			return err
+		}
+		if originalState != "LIVE" || docState != "LIVE" {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO read_admissions VALUES ($1, $2, $3, $4, $5)`,
+			c.Tenant, recs[0].DecisionID, v.ID, s.d.Now(), recs[0].ValidUntil); err != nil {
+			return err
+		}
+		return s.d.Catalog.AppendTx(ctx, tx, s.event(audit.KindReadAdmission, recs[0], "ADMITTED",
+			audit.Target{Type: "document.original", ID: object.String(), Version: v.ID.String(), Digest: v.SHA256},
+			audit.Target{Type: "document.version", ID: d.id.String()}))
+	}))
+	if err != nil {
+		return nil, err
+	}
+	merged, err := fence.Merge(bindings)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	digest, err := cryptowire.ParseDigest(v.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored digest", ErrUnavailable)
+	}
+	r, err := s.d.Blobs.Open(blob.Receipt{Ref: blob.Ref{Tenant: tenantID, Blob: v.Blob}, Length: v.Length, SHA256: digest})
+	if err != nil {
+		return nil, fmt.Errorf("%w: backend: %v", ErrUnavailable, err)
+	}
+	return &Stream{ReadCloser: s.lease(r, merged), Version: info(v, true)}, nil
+}

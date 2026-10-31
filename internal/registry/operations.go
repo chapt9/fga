@@ -61,6 +61,12 @@ const (
 	OpDocReadUnit        = "document.unit.read"
 	OpDocManifest        = "document.manifest"
 	OpDocGetUnitEnvelope = "document.unit.get-envelope"
+	// The encrypted original file (CNT-003): publishing its envelopes, and
+	// reading it, which needs raw-read on the version and read on every
+	// unit (complete content).
+	OpDocShareOriginal       = "document.share-original"
+	OpDocRawRead             = "document.raw-read"
+	OpDocGetOriginalEnvelope = "document.original.get-envelope"
 )
 
 // Check roles shared by several operations.
@@ -176,6 +182,22 @@ func r1Operations() []Operation {
 		{Name: OpDocManifest, Checks: []CheckSpec{
 			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},
 			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true},
+		}},
+		{Name: OpDocShareOriginal, Checks: []CheckSpec{
+			{Role: RoleShare, ResourceType: "document.version", Action: "share", Repeated: true},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "create", Repeated: true},
+			{Role: RoleRecipientVersion, ResourceType: "document.version", Action: "raw-read", Kind: KindRecipientEligibility, Repeated: true},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility, Repeated: true},
+		}},
+		{Name: OpDocRawRead, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "raw-read"},
+			{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true},
+		}},
+		{Name: OpDocGetOriginalEnvelope, Checks: []CheckSpec{
+			{Role: RoleVersion, ResourceType: "document.version", Action: "raw-read"},
+			{Role: RoleEnvelope, ResourceType: "crypto.envelope", Action: "release"},
+			{Role: RoleRecipientVersion, ResourceType: "document.version", Action: "raw-read", Kind: KindRecipientEligibility},
+			{Role: RoleRecipientKey, ResourceType: "crypto.recipient", Action: "receive-key", Kind: KindRecipientEligibility},
 		}},
 		{Name: OpDocGetUnitEnvelope, Checks: []CheckSpec{
 			{Role: RoleVersion, ResourceType: "document.version", Action: "read-units"},

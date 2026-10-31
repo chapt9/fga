@@ -46,6 +46,10 @@ type DocumentBeginRequest struct {
 	Key            string
 	IdempotencyKey string
 	Units          []DocumentUnitSpec
+	// Original reserves an encrypted original file (CNT-003): a separate
+	// ciphertext under its own key, disclosed only with raw-read on the
+	// version and read on every unit.
+	Original bool
 }
 
 func (r DocumentBeginRequest) digest() string {
@@ -53,6 +57,9 @@ func (r DocumentBeginRequest) digest() string {
 	fmt.Fprintf(h, "fga.document-begin/v1\n%q\n%q\n", r.Bucket, r.Key)
 	for _, u := range r.Units {
 		fmt.Fprintf(h, "%q %q %q\n", u.ReuseUnit, u.ReuseVersion, u.Label)
+	}
+	if r.Original {
+		fmt.Fprintf(h, "original\n")
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
@@ -81,8 +88,10 @@ type DocumentIntent struct {
 	Document        string       `json:"document_id"`
 	DocumentVersion string       `json:"document_version_id"`
 	Units           []UnitIntent `json:"units"`
-	MaxCiphertext   int64        `json:"max_ciphertext_length"`
-	ExpiresAt       time.Time    `json:"expires_at"`
+	// Original is the original file's intent and identifiers, if reserved.
+	Original      *UnitIntent `json:"original,omitempty"`
+	MaxCiphertext int64       `json:"max_ciphertext_length"`
+	ExpiresAt     time.Time   `json:"expires_at"`
 }
 
 type storedDocIntent struct {
@@ -172,6 +181,11 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		}
 		in.Units = append(in.Units, ui)
 	}
+	if r.Original {
+		in.Original = &UnitIntent{Position: -1, IntentID: cryptowire.NewUUID().String(), Unit: cryptowire.NewUUID().String(),
+			UnitVersion: cryptowire.NewUUID().String(), CryptoVersion: cryptowire.NewUUID().String(), Blob: cryptowire.NewUUID().String(),
+			Attempt: cryptowire.NewUUID().String()}
+	}
 	op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
 	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
 	if err != nil {
@@ -183,18 +197,33 @@ func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	}
 	va, _ := json.Marshal(versionAttrs)
 	units, _ := json.Marshal(in.Units)
+	var original []byte
+	if in.Original != nil {
+		original, _ = json.Marshal(in.Original)
+	}
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO document_intents (tenant, id, principal, idempotency_key, request_digest, bucket, key, document, new_document,
-			  document_version, expected_generation, planned_scope, planned_attributes, units, state, expires_at, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'RESERVED',$15,$16)`,
+			  document_version, expected_generation, planned_scope, planned_attributes, units, state, expires_at, created_at, original)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'RESERVED',$15,$16,$17)`,
 			c.Tenant, in.IntentID, c.Principal, r.IdempotencyKey, in.requestDigest, b.ID, r.Key, in.Document, in.newDocument,
-			in.DocumentVersion, in.expectedGen, in.scope, va, units, in.ExpiresAt, s.d.Now())
+			in.DocumentVersion, in.expectedGen, in.scope, va, units, in.ExpiresAt, s.d.Now(), original)
 		if isUnique(err) {
 			return fmt.Errorf("%w: the idempotency key is in use", ErrConflict)
 		}
 		if err != nil {
 			return err
+		}
+		if o := in.Original; o != nil {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO upload_intents (tenant, id, principal, actor, idempotency_key, request_digest, bucket, key, object, new_object,
+				  version, crypto_version, blob, attempt, expected_generation, planned_scope, planned_attributes, state, expires_at,
+				  created_at, kind, document_intent)
+				VALUES ($1,$2,$3,$3,$4,$5,$6,'',$7,true,$8,$9,$10,$11,0,$12,$13,'RESERVED',$14,$15,'original',$16)`,
+				c.Tenant, o.IntentID, c.Principal, "document-intent:"+in.IntentID+":original", in.requestDigest, b.ID,
+				o.Unit, o.UnitVersion, o.CryptoVersion, o.Blob, o.Attempt, in.scope, va, in.ExpiresAt, s.d.Now(), in.IntentID); err != nil {
+				return err
+			}
 		}
 		for _, u := range in.Units {
 			if u.Reused {
@@ -271,15 +300,16 @@ func (s *Service) docIntent(ctx context.Context, q interface {
 	var units, attrs []byte
 	sql := `SELECT d.id::text, t.id::text, d.document::text, d.document_version::text, d.units, d.expires_at, d.principal, d.request_digest,
 	               d.state, d.bucket, d.key, d.new_document, d.expected_generation, d.planned_scope, d.planned_attributes,
-	               coalesce(d.result::text, '')
+	               coalesce(d.result::text, ''), coalesce(d.original::text, '')
 	          FROM document_intents d JOIN tenants t ON t.name = d.tenant
 	         WHERE d.tenant = $1 AND d.id::text = $2 AND d.principal = $3`
 	if lock {
 		sql += ` FOR UPDATE OF d`
 	}
-	var result string
+	var result, original string
 	err := q.QueryRow(ctx, sql, c.Tenant, id, c.Principal).Scan(&in.IntentID, &in.Tenant, &in.Document, &in.DocumentVersion, &units,
-		&in.ExpiresAt, &in.principal, &in.requestDigest, &in.state, &in.bucket, &in.key, &in.newDocument, &in.expectedGen, &in.scope, &attrs, &result)
+		&in.ExpiresAt, &in.principal, &in.requestDigest, &in.state, &in.bucket, &in.key, &in.newDocument, &in.expectedGen, &in.scope, &attrs, &result,
+		&original)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -287,6 +317,11 @@ func (s *Service) docIntent(ctx context.Context, q interface {
 		return in, err
 	}
 	in.MaxCiphertext, in.result = s.d.Limits.MaxCiphertext, []byte(result)
+	if original != "" {
+		if err := json.Unmarshal([]byte(original), &in.Original); err != nil {
+			return in, err
+		}
+	}
 	if err := json.Unmarshal(units, &in.Units); err != nil {
 		return in, err
 	}
@@ -306,6 +341,9 @@ type DocumentFinalizeRequest struct {
 	Manifest          []byte
 	ManifestSignature string
 	Units             []UnitFinal
+	// Original is the original file's object descriptor (fga.descriptor/v1)
+	// and profile-2 envelopes, when the intent reserved one.
+	Original *UnitFinal
 }
 
 // DocumentPublished is the result of a document commit.
@@ -366,11 +404,15 @@ func (s *Service) FinalizeDocument(ctx context.Context, c Caller, intentID strin
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	recs, err := s.documentDecisions(ctx, c, in, units)
+	original, err := s.checkOriginal(ctx, c, in, r, digest, signer)
 	if err != nil {
 		return DocumentPublished{}, err
 	}
-	return s.commitDocument(ctx, c, in, r, manifest, digest, signer, units, recs)
+	recs, err := s.documentDecisions(ctx, c, in, units, original)
+	if err != nil {
+		return DocumentPublished{}, err
+	}
+	return s.commitDocument(ctx, c, in, r, manifest, digest, signer, units, original, recs)
 }
 
 // checkManifest verifies the manifest's signature by an active signing key
@@ -387,7 +429,7 @@ func (s *Service) checkManifest(ctx context.Context, c Caller, in storedDocInten
 	}
 	m, err := cryptowire.ParseManifest(r.Manifest)
 	if err != nil || m.TenantID != in.Tenant || m.DocumentID != in.Document || m.DocumentVersionID != in.DocumentVersion ||
-		m.Original != nil || len(m.Units) != len(in.Units) {
+		(m.Original == nil) != (in.Original == nil) || (r.Original == nil) != (in.Original == nil) || len(m.Units) != len(in.Units) {
 		return cryptowire.Manifest{}, cryptowire.Digest{}, "", fmt.Errorf("%w: manifest does not match the intent", ErrInvalid)
 	}
 	for i, u := range in.Units {
@@ -484,7 +526,7 @@ const maxBatch = 50
 
 // documentDecisions obtains every decision of a publication, each check
 // group kept within one batch.
-func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocIntent, units []checkedUnit) ([]signing.Record, error) {
+func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocIntent, units []checkedUnit, original *checkedUnit) ([]signing.Record, error) {
 	op, ch := docChecks(in, registry.OpDocPublishCreate, registry.OpDocPublishVersion)
 	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
 	if err != nil {
@@ -497,7 +539,7 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 		}
 		return "intent:" + u.IntentID, planned(registry.PlannedObject, u.IntentID)
 	}
-	var labels, reuse, versions, shares [][]check
+	var labels, reuse, versions, shares, originals [][]check
 	recipients := map[string]bool{}
 	for i, u := range units {
 		n := strconv.Itoa(i)
@@ -532,10 +574,23 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 			{id: "recipient-read-units-" + n, role: registry.RoleRecipientRead, action: "read-units", ref: version, recipient: fp},
 		})
 	}
+	if original != nil {
+		for j, e := range original.envs {
+			fp, n := e.ctx.Recipient.String(), strconv.Itoa(j)
+			originals = append(originals, []check{
+				{id: "share-" + n, role: registry.RoleShare, action: "share", ref: version},
+				{id: "envelope-" + n, role: registry.RoleEnvelope, action: "create",
+					ref: planned(registry.PlannedEnvelope, "docintent:"+in.IntentID+"|"+fp+"|"+e.id.String())},
+				{id: "recipient-raw-read-" + n, role: registry.RoleRecipientVersion, action: "raw-read", ref: version, recipient: fp},
+				{id: "recipient-key-" + n, role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", fp), recipient: fp},
+			})
+		}
+	}
 	for _, g := range []struct {
 		op     string
 		groups [][]check
-	}{{registry.OpDocLabelUnits, labels}, {registry.OpDocReuseUnits, reuse}, {registry.OpDocShareVersion, versions}, {registry.OpDocShareUnits, shares}} {
+	}{{registry.OpDocLabelUnits, labels}, {registry.OpDocReuseUnits, reuse}, {registry.OpDocShareVersion, versions}, {registry.OpDocShareUnits, shares},
+		{registry.OpDocShareOriginal, originals}} {
 		for _, batch := range batches(g.groups, maxBatch) {
 			_, rec, err := s.decide(ctx, c, g.op, Audience, true, batch)
 			if err != nil {
@@ -569,7 +624,7 @@ func batches(groups [][]check, max int) [][]check {
 // the document version, new unit versions, membership, envelopes and the
 // document head; reused unit versions must still be LIVE.
 func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocIntent, r DocumentFinalizeRequest, m cryptowire.Manifest,
-	digest cryptowire.Digest, signer string, units []checkedUnit, recs []signing.Record) (DocumentPublished, error) {
+	digest cryptowire.Digest, signer string, units []checkedUnit, original *checkedUnit, recs []signing.Record) (DocumentPublished, error) {
 	bindings := make([]fence.Binding, 0, len(recs))
 	for _, rec := range recs {
 		b, err := fence.FromRecord(rec)
@@ -664,6 +719,12 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			}
 			targets = append(targets, audit.Target{Type: "document.text_unit", ID: u.Unit, Version: u.UnitVersion, Digest: u.descriptor.CiphertextSHA256})
 		}
+		if original != nil {
+			if err := s.publishOriginal(ctx, tx, c, in, original, *r.Original, &dv, now); err != nil {
+				return err
+			}
+			targets = append(targets, audit.Target{Type: "document.original", ID: original.Unit, Version: original.UnitVersion, Digest: original.staged.ciphertextSHA256})
+		}
 		if _, err := tx.Exec(ctx, `UPDATE objects SET current_document_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, in.Document, in.DocumentVersion); err != nil {
 			return err
 		}
@@ -713,5 +774,125 @@ func (s *Service) publishUnit(ctx context.Context, tx pgx.Tx, c Caller, u checke
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'COMMITTED' WHERE tenant = $1 AND id = $2`, c.Tenant, u.staged.IntentID)
+	return err
+}
+
+// checkOriginal verifies the original file's staged receipt, its object
+// descriptor (signed by the manifest's signer and matching the manifest's
+// original entry) and its profile-2 envelopes. It returns nil when the
+// intent reserved no original.
+func (s *Service) checkOriginal(ctx context.Context, c Caller, in storedDocIntent, r DocumentFinalizeRequest, digest cryptowire.Digest, signer string) (*checkedUnit, error) {
+	o := in.Original
+	if o == nil {
+		return nil, nil
+	}
+	f := *r.Original
+	id, _ := cryptowire.ParseUUID(o.IntentID)
+	st, err := s.intent(ctx, s.d.Catalog.Pool(), c, id, false)
+	if err != nil {
+		return nil, err
+	}
+	if st.state != "STAGED" {
+		return nil, fmt.Errorf("%w: the original is %s", ErrConflict, st.state)
+	}
+	m, _ := cryptowire.ParseManifest(r.Manifest)
+	if mo := m.Original; mo.ObjectID != o.Unit || mo.VersionID != o.UnitVersion || mo.CiphertextSHA256 != st.ciphertextSHA256 ||
+		int64(mo.CiphertextLength) != st.ciphertextLength {
+		return nil, fmt.Errorf("%w: manifest original", ErrInvalid)
+	}
+	signerPub, err := s.signerActive(ctx, c.Tenant, c.Principal, signer)
+	if err != nil {
+		return nil, err
+	}
+	keyFor := func(kid string) (ed25519.PublicKey, error) {
+		if kid != signer {
+			return nil, errors.New("signed by another key")
+		}
+		return signerPub, nil
+	}
+	if _, err := cryptowire.Verify(cryptowire.TypeDescriptor, f.DescriptorSignature, f.Descriptor, keyFor); err != nil {
+		return nil, fmt.Errorf("%w: original descriptor signature", ErrInvalid)
+	}
+	d, err := cryptowire.ParseDescriptor(f.Descriptor)
+	if err != nil || d.TenantID != in.Tenant || d.ObjectID != o.Unit || d.LogicalVersionID != o.UnitVersion || d.CryptoVersionID != o.CryptoVersion ||
+		d.BlobID != o.Blob || d.AttemptID != o.Attempt || d.CiphertextSHA256 != st.ciphertextSHA256 || int64(d.CiphertextLength) != st.ciphertextLength ||
+		d.Signer != signer {
+		return nil, fmt.Errorf("%w: original descriptor does not match", ErrInvalid)
+	}
+	cu := &checkedUnit{UnitIntent: *o, staged: st}
+	tenant, _ := cryptowire.ParseUUID(in.Tenant)
+	docID, _ := cryptowire.ParseUUID(in.Document)
+	dvID, _ := cryptowire.ParseUUID(in.DocumentVersion)
+	if len(f.Envelopes) == 0 || len(f.Envelopes) > s.d.Limits.MaxEnvelopes {
+		return nil, ErrInvalid
+	}
+	seen := map[cryptowire.Digest]bool{}
+	for _, e := range f.Envelopes {
+		ctxv, err := cryptowire.ParseEnvelopeContext(e.Context)
+		if err != nil || ctxv.Profile() != 2 || len(e.Ciphertext) == 0 || len(e.Ciphertext) > cryptowire.MaxHPKECiphertext {
+			return nil, fmt.Errorf("%w: original envelope", ErrInvalid)
+		}
+		if _, err := cryptowire.Verify(cryptowire.TypeEnvelope, e.Signature, cryptowire.EnvelopeSigningInput(e.Context, e.Ciphertext), keyFor); err != nil {
+			return nil, fmt.Errorf("%w: original envelope signature", ErrInvalid)
+		}
+		if ctxv.Tenant != tenant || ctxv.Object.String() != o.Unit || ctxv.LogicalVersion.String() != o.UnitVersion ||
+			ctxv.CryptoVersion.String() != o.CryptoVersion || ctxv.CiphertextSHA256.String() != st.ciphertextSHA256 ||
+			int64(ctxv.CiphertextLength) != st.ciphertextLength || ctxv.Document != docID || ctxv.DocumentVersion != dvID ||
+			ctxv.ManifestDigest != digest || ctxv.Sharer.String() != signer || ctxv.Generation != 1 || seen[ctxv.Recipient] {
+			return nil, fmt.Errorf("%w: original envelope bindings", ErrInvalid)
+		}
+		seen[ctxv.Recipient] = true
+		keyVersion, err := s.recipientKey(ctx, c.Tenant, ctxv.Recipient.String())
+		if err != nil {
+			return nil, err
+		}
+		if keyVersion != ctxv.RecipientKeyVersion {
+			return nil, fmt.Errorf("%w: recipient key version", ErrInvalid)
+		}
+		cu.envs = append(cu.envs, checkedEnvelope{EnvelopeIn: e, id: cryptowire.NewUUID(), ctx: ctxv, keyVersion: keyVersion,
+			digest: cryptowire.EnvelopeDigest(e.Context, e.Ciphertext)})
+	}
+	return cu, nil
+}
+
+// publishOriginal makes the staged original LIVE: an objects row of kind
+// original without a resource, its single version and its envelopes, and
+// links it from the document version.
+func (s *Service) publishOriginal(ctx context.Context, tx pgx.Tx, c Caller, in storedDocIntent, o *checkedUnit, f UnitFinal, dv *cryptowire.UUID, now time.Time) error {
+	var state string
+	if err := tx.QueryRow(ctx, `SELECT state FROM upload_intents WHERE tenant = $1 AND id = $2 FOR UPDATE`, c.Tenant, o.staged.IntentID).Scan(&state); err != nil {
+		return err
+	}
+	if state != "STAGED" {
+		return fmt.Errorf("%w: the original is %s", ErrConflict, state)
+	}
+	d, _ := cryptowire.ParseDescriptor(f.Descriptor)
+	if _, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, '', 'original')`, c.Tenant, o.Unit, in.bucket); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
+		                             signer, descriptor, descriptor_signature, created_at, published_at)
+		VALUES ($1, $2, $3, $4, $5, 'LIVE', $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+		c.Tenant, o.UnitVersion, o.Unit, o.CryptoVersion, o.Blob, int64(d.CiphertextLength), d.CiphertextSHA256, int(d.Suite), int(d.Format),
+		d.Signer, f.Descriptor, f.DescriptorSignature, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE objects SET current_version = $3 WHERE tenant = $1 AND id = $2`, c.Tenant, o.Unit, o.UnitVersion); err != nil {
+		return err
+	}
+	objectID, _ := cryptowire.ParseUUID(o.Unit)
+	versionID, _ := cryptowire.ParseUUID(o.UnitVersion)
+	for _, e := range o.envs {
+		if err := envelope.InsertUnitEnvelope(ctx, tx, c.Tenant, in.scope, o.staged.attributes, e.id, objectID, versionID, dv, e.ctx, e.keyVersion,
+			e.EnvelopeIn, e.digest, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE document_versions SET original = $3, original_version = $4 WHERE tenant = $1 AND id = $2`,
+		c.Tenant, in.DocumentVersion, o.Unit, o.UnitVersion); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE upload_intents SET state = 'COMMITTED' WHERE tenant = $1 AND id = $2`, c.Tenant, o.staged.IntentID)
 	return err
 }

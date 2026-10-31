@@ -121,6 +121,7 @@ paths:
                       reuse_unit: { type: string, format: uuid }
                       reuse_version: { type: string, format: uuid }
                       label: { type: string, maxLength: 64 }
+                original: { type: boolean, description: Reserve an encrypted original file (CNT-003) }
       responses:
         "201": { description: Document intent (document, version, units with intents and identifiers), content: { application/json: { schema: { type: object } } } }
         default: { $ref: "#/components/responses/Error" }
@@ -150,6 +151,13 @@ paths:
                       descriptor: { $ref: "#/components/schemas/Base64" }
                       descriptor_signature: { type: string }
                       envelopes: { type: array, items: { $ref: "#/components/schemas/Envelope" } }
+                original:
+                  type: object
+                  description: The original's object descriptor and profile-2 envelopes, when reserved
+                  properties:
+                    descriptor: { $ref: "#/components/schemas/Base64" }
+                    descriptor_signature: { type: string }
+                    envelopes: { type: array, items: { $ref: "#/components/schemas/Envelope" } }
       responses:
         "200":
           description: Published
@@ -211,6 +219,22 @@ paths:
                    { name: unit, in: query, required: true, schema: { type: string, format: uuid } }]
       responses:
         "200": { description: The unit's exact ciphertext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/original/package:
+    get:
+      operationId: getOriginalPackage
+      description: The original file's descriptor and the recipient's envelope; needs raw-read on the version and read on every unit.
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" },
+                   { name: recipient, in: query, required: true, schema: { $ref: "#/components/schemas/Digest" } }]
+      responses:
+        "200": { description: Package, content: { application/json: { schema: { $ref: "#/components/schemas/Package" } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/original/ciphertext:
+    get:
+      operationId: getOriginalCiphertext
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/version" }]
+      responses:
+        "200": { description: The original's exact ciphertext, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
         default: { $ref: "#/components/responses/Error" }
   /v1/approvals:
     get:

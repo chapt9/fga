@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,7 +42,8 @@ import (
 //	fga keys enroll    -tenant T -principal P
 //	fga trust add      [-recipient B64] [-signer B64]
 //	fga put            -bucket B -key K -in FILE [-to FP,...] [-if-none-match] [-label L]
-//	fga put-document   -bucket B -key K -in FILE [-to FP,...]   UTF-8 text, one unit per paragraph
+//	fga put-document   -bucket B -key K -in FILE [-to FP,...] [-original FILE]   UTF-8 text, one unit per paragraph
+//	fga get-original   -bucket B -key K -out FILE [-version V]   needs raw-read and read on every unit
 //	fga get            -bucket B -key K -out FILE [-version V]
 //	fga get-document   -bucket B -key K -out FILE [-version V]   the units the caller may read
 //	fga ls             -bucket B [-prefix P]
@@ -226,6 +228,7 @@ func clientCommand(cmd string, args []string) error {
 	approvalID := fs.String("approval", "", "approval to present when repeating an operation that needed one")
 	intent := fs.String("intent", "", "upload intent to finalize")
 	request := fs.String("request", "", "file holding a kept finalize request")
+	originalFile := fs.String("original", "", "put-document: the original file to publish encrypted beside the units")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -347,12 +350,37 @@ func clientCommand(cmd string, args []string) error {
 			}
 			recipients = append(recipients, crypto.Recipient{Fingerprint: d, KeyVersion: *keyVersion})
 		}
-		p, err := c.PutDocument(ctx, *bucket, *key, text, recipients)
+		var original io.Reader
+		if *originalFile != "" {
+			f, err := os.Open(*originalFile)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			original = f
+		}
+		p, err := c.PutDocumentWithOriginal(ctx, *bucket, *key, text, original, recipients)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("published document %s version %s: %d units, manifest %s\n", *key, p.DocumentVersion, p.Units, p.ManifestDigest)
 		return nil
+	case "get-original":
+		tmp := *out + ".partial"
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		err = c.GetOriginal(ctx, *bucket, *key, *version, f)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		fmt.Println("verified and decrypted the original file")
+		return os.Rename(tmp, *out)
 	case "get-document":
 		tmp := *out + ".partial"
 		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)

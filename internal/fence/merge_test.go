@@ -15,7 +15,7 @@ func TestMerge(t *testing.T) {
 	b := Binding{DecisionID: "d2", Tenant: "t", Incarnation: 1, PolicyEpoch: 2, ValidUntil: now.Add(30 * time.Second), SingleUse: true,
 		Identities: []Ref{{ID: "alice", Revision: 2}, {ID: "bob", Revision: 7}}, Keys: []Ref{{ID: "fp", Revision: 1}},
 		Resources: []Resource{{Type: "storage.object", ID: "o", Generation: 4, MetadataRevision: 1}, {Type: "document.text_unit", ID: "u", Generation: 1, MetadataRevision: 1}}}
-	m, err := merge([]Binding{a, b})
+	m, err := Merge([]Binding{a, b})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,12 +32,12 @@ func TestMerge(t *testing.T) {
 	} {
 		c := b
 		edit(&c)
-		if _, err := merge([]Binding{a, c}); err == nil {
+		if _, err := Merge([]Binding{a, c}); err == nil {
 			t.Errorf("%s: merged", name)
 		}
 	}
 	a.Approval, b.Approval = &Ref{ID: "ap1", Revision: 2}, &Ref{ID: "ap2", Revision: 2}
-	if _, err := merge([]Binding{a, b}); err == nil {
+	if _, err := Merge([]Binding{a, b}); err == nil {
 		t.Error("two approvals merged")
 	}
 }
