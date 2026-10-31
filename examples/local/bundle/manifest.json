@@ -1,6 +1,12 @@
 {
   "epoch": 0,
+  "audience": "fga-decision",
+  "business": ["units.json"],
   "ceiling": ["ceiling.json"],
+  "cost_limit": 10000,
+  "label_order": [],
+  "label_generation": 0,
+  "test_evidence": "the sentinels of this manifest",
   "key_id": "",
   "signature": "",
   "sentinels": [

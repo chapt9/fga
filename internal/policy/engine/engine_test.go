@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -205,5 +206,17 @@ func TestRequiresAreTheUnionOfMatchingAllows(t *testing.T) {
 		if got := res.Actions["read"].Requires; !slices.Equal(got, tc.want) {
 			t.Errorf("%s: requires = %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+// TestExpressionLibraryMatchesModule keeps the environment identity of
+// release manifests (REL-001) in step with the pinned cel-go version.
+func TestExpressionLibraryMatchesModule(t *testing.T) {
+	mod, err := os.ReadFile("../../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mod), "\n\t"+ExpressionLibrary+"\n") {
+		t.Fatalf("go.mod does not require %q", ExpressionLibrary)
 	}
 }

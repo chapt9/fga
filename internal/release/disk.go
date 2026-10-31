@@ -22,7 +22,8 @@ const (
 // signature and sentinels. Ceiling is required: an explicit empty list
 // declares an empty ceiling set, and an omitted field rejects the bundle.
 type Manifest struct {
-	Epoch     uint64             `json:"epoch"`
+	Epoch uint64 `json:"epoch"`
+	Info
 	Ceiling   *[]string          `json:"ceiling"`
 	KeyID     string             `json:"key_id"`
 	Signature string             `json:"signature"`
@@ -59,7 +60,7 @@ func LoadBundle(dir string) (Bundle, Manifest, error) {
 	if err := strictjson.Decode(raw, &m); err != nil {
 		return Bundle{}, Manifest{}, fmt.Errorf("release: %s: %w", ManifestFile, err)
 	}
-	b := Bundle{Epoch: m.Epoch, KeyID: m.KeyID, Documents: map[string][]byte{}}
+	b := Bundle{Epoch: m.Epoch, Info: m.Info, KeyID: m.KeyID, Documents: map[string][]byte{}}
 	if m.Ceiling != nil {
 		b.Ceiling, b.CeilingDeclared = *m.Ceiling, true
 	}

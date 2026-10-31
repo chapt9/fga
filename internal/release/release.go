@@ -49,9 +49,88 @@ type Sentinel struct {
 	Want    policy.Effect
 }
 
+// Format is the manifest format of a policy release.
+const Format = "fga.release/v1"
+
+// Info is the part of a release manifest beyond its documents, ceiling
+// declaration and sentinels (REL-001). The build-dependent fields name the
+// environment the release was validated against; an instance prepares only
+// a release whose environment matches its own (POL-010).
+type Info struct {
+	Format   string `json:"format"`
+	Audience string `json:"audience"`
+	// Business names the documents of the business set.
+	Business          []string `json:"business"`
+	EvaluatorVersion  string   `json:"evaluator_version"`
+	ExpressionLibrary string   `json:"expression_library"`
+	Functions         string   `json:"functions"`
+	CostLimit         uint64   `json:"cost_limit"`
+	SchemaDigest      string   `json:"schema_digest"`
+	OperationsDigest  string   `json:"operations_digest"`
+	// LabelOrder lists labels from least to most restrictive. It is empty
+	// with generation 0 until D-06 closes and labels are used (R1-C).
+	LabelOrder      []string `json:"label_order"`
+	LabelGeneration uint64   `json:"label_generation"`
+	// TestEvidence references the conformance and sentinel evidence the
+	// publisher reviewed (REL-005).
+	TestEvidence string `json:"test_evidence"`
+}
+
+// Environment is what an instance checks a release against: its registry,
+// its evaluator build and its limits.
+type Environment struct {
+	Schema           format.Schema
+	SchemaDigest     string
+	OperationsDigest string
+	Audience         string
+	// MaxCostLimit bounds the cost limit a release may select (DEC-009).
+	MaxCostLimit uint64
+}
+
+// Stamp fills the build-dependent fields of info from the environment and
+// this evaluator build. Publishing tools call it before signing.
+func (e Environment) Stamp(info *Info) {
+	info.Format = Format
+	info.EvaluatorVersion, info.ExpressionLibrary, info.Functions = engine.EvaluatorVersion, engine.ExpressionLibrary, engine.Functions
+	info.SchemaDigest, info.OperationsDigest = e.SchemaDigest, e.OperationsDigest
+}
+
+// check reports why info does not match the environment.
+func (e Environment) check(info Info) error {
+	var errs []error
+	for _, f := range []struct{ name, got, want string }{
+		{"format", info.Format, Format},
+		{"audience", info.Audience, e.Audience},
+		{"evaluator_version", info.EvaluatorVersion, engine.EvaluatorVersion},
+		{"expression_library", info.ExpressionLibrary, engine.ExpressionLibrary},
+		{"functions", info.Functions, engine.Functions},
+		{"schema_digest", info.SchemaDigest, e.SchemaDigest},
+		{"operations_digest", info.OperationsDigest, e.OperationsDigest},
+	} {
+		if f.got != f.want {
+			errs = append(errs, fmt.Errorf("%s is %q, this instance requires %q", f.name, f.got, f.want))
+		}
+	}
+	if info.CostLimit == 0 || info.CostLimit > e.MaxCostLimit {
+		errs = append(errs, fmt.Errorf("cost_limit must be in (0, %d]", e.MaxCostLimit))
+	}
+	seen := map[string]bool{}
+	for _, l := range info.LabelOrder {
+		if l == "" || seen[l] {
+			errs = append(errs, fmt.Errorf("label order has an empty or repeated label %q", l))
+		}
+		seen[l] = true
+	}
+	if (len(info.LabelOrder) == 0) != (info.LabelGeneration == 0) {
+		errs = append(errs, errors.New("a label order needs a generation above 0, and only a label order has one"))
+	}
+	return errors.Join(errs...)
+}
+
 // Bundle is a signed policy release.
 type Bundle struct {
 	Epoch     uint64
+	Info      Info
 	Documents map[string][]byte
 	// Ceiling names the documents of the ceiling set. A release must declare
 	// it, even when it is empty, so that a missing ceiling set is never
@@ -66,7 +145,12 @@ type Bundle struct {
 // Digest identifies the bundle's documents and sentinels.
 func (b Bundle) Digest() (string, error) {
 	h := sha256.New()
-	h.Write([]byte("fga.bundle/v1\n"))
+	h.Write([]byte("fga.bundle/v2\n"))
+	info, err := json.Marshal(b.Info)
+	if err != nil {
+		return "", fmt.Errorf("release: encode manifest: %w", err)
+	}
+	fmt.Fprintf(h, "manifest\n%x\n", sha256.Sum256(info))
 	names := make([]string, 0, len(b.Documents))
 	for name := range b.Documents {
 		names = append(names, name)
@@ -112,6 +196,7 @@ type Record struct {
 type Snapshot struct {
 	Digest string
 	Epoch  uint64
+	Info   Info
 	Engine *engine.Engine
 }
 
@@ -126,8 +211,7 @@ type EpochSource interface {
 // older is refused.
 type Manager struct {
 	publishers map[string]ed25519.PublicKey
-	schema     format.Schema
-	options    engine.Options
+	env        Environment
 	epochs     EpochSource
 	now        func() time.Time
 
@@ -137,9 +221,10 @@ type Manager struct {
 	history  []Record
 }
 
-// NewManager returns a manager that trusts the given publisher keys.
-func NewManager(publishers map[string]ed25519.PublicKey, schema format.Schema, options engine.Options, epochs EpochSource, now func() time.Time) *Manager {
-	return &Manager{publishers: publishers, schema: schema, options: options, epochs: epochs, now: now}
+// NewManager returns a manager that trusts the given publisher keys and
+// prepares releases for env.
+func NewManager(publishers map[string]ed25519.PublicKey, env Environment, epochs EpochSource, now func() time.Time) *Manager {
+	return &Manager{publishers: publishers, env: env, epochs: epochs, now: now}
 }
 
 // Activate takes a candidate through verification, preparation and sentinel
@@ -177,8 +262,18 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 	}
 	m.record(digest, b.Epoch, StateVerified, nil)
 
+	if err := m.env.check(b.Info); err != nil {
+		return nil, fmt.Errorf("release: manifest: %w", err)
+	}
 	if !b.CeilingDeclared {
 		return nil, errors.New("release: the manifest does not declare the ceiling set")
+	}
+	business := map[string]bool{}
+	for _, name := range b.Info.Business {
+		if _, ok := b.Documents[name]; !ok || business[name] {
+			return nil, fmt.Errorf("release: business document %q is missing or listed twice", name)
+		}
+		business[name] = true
 	}
 	declared := map[string]bool{}
 	for _, name := range b.Ceiling {
@@ -196,9 +291,12 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 		if (d.Set == format.SetCeiling) != declared[name] {
 			return nil, fmt.Errorf("release: %s: a document is in the ceiling set exactly when the manifest declares it there", name)
 		}
+		if (d.Set == format.SetBusiness) != business[name] {
+			return nil, fmt.Errorf("release: %s: a document is in the business set exactly when the manifest declares it there", name)
+		}
 		docs = append(docs, d)
 	}
-	eng, err := engine.Compile(digest, docs, m.schema, m.options)
+	eng, err := engine.Compile(digest, docs, m.env.Schema, engine.Options{CostLimit: b.Info.CostLimit})
 	if err != nil {
 		return nil, fmt.Errorf("release: %w", err)
 	}
@@ -214,7 +312,7 @@ func (m *Manager) prepare(ctx context.Context, b Bundle, digest string) (*Snapsh
 		}
 	}
 	m.record(digest, b.Epoch, StateReady, nil)
-	return &Snapshot{Digest: digest, Epoch: b.Epoch, Engine: eng}, nil
+	return &Snapshot{Digest: digest, Epoch: b.Epoch, Info: b.Info, Engine: eng}, nil
 }
 
 func evaluate(ctx context.Context, eng *engine.Engine, digest string, s Sentinel) (policy.Effect, error) {

@@ -40,10 +40,20 @@ func reviewerSentinel(want policy.Effect) Sentinel {
 	}}
 }
 
+var testEnv = Environment{Schema: schema, SchemaDigest: "sha256:test-schema", OperationsDigest: "sha256:test-ops",
+	Audience: "fga-decision", MaxCostLimit: engine.DefaultOptions.CostLimit}
+
+// testInfo is a manifest matching testEnv with the given business documents.
+func testInfo(business ...string) Info {
+	info := Info{Audience: "fga-decision", CostLimit: engine.DefaultOptions.CostLimit, Business: business}
+	testEnv.Stamp(&info)
+	return info
+}
+
 func signed(t *testing.T, epoch uint64, doc string, sentinels ...Sentinel) Bundle {
 	t.Helper()
-	b := Bundle{Epoch: epoch, Documents: map[string][]byte{"units.json": []byte(doc)}, CeilingDeclared: true,
-		Sentinels: sentinels, KeyID: "publisher-1"}
+	b := Bundle{Epoch: epoch, Info: testInfo("units.json"), Documents: map[string][]byte{"units.json": []byte(doc)},
+		CeilingDeclared: true, Sentinels: sentinels, KeyID: "publisher-1"}
 	return resign(t, b)
 }
 
@@ -58,7 +68,7 @@ func resign(t *testing.T, b Bundle) Bundle {
 }
 
 func newManager(epochs fixedEpochs) *Manager {
-	return NewManager(map[string]ed25519.PublicKey{"publisher-1": pub}, schema, engine.DefaultOptions, epochs,
+	return NewManager(map[string]ed25519.PublicKey{"publisher-1": pub}, testEnv, epochs,
 		func() time.Time { return time.Unix(1_800_000_000, 0) })
 }
 
@@ -228,7 +238,7 @@ const draftCeiling = `{"format":"fga.policy/v1","set":"ceiling","resource":"docu
 func TestCeilingDeclaration(t *testing.T) {
 	ctx := context.Background()
 	withCeiling := func(declared bool, names ...string) Bundle {
-		b := Bundle{Epoch: 1, KeyID: "publisher-1", CeilingDeclared: declared, Ceiling: names,
+		b := Bundle{Epoch: 1, Info: testInfo("units.json"), KeyID: "publisher-1", CeilingDeclared: declared, Ceiling: names,
 			Documents: map[string][]byte{"units.json": []byte(reviewersRead), "ceiling.json": []byte(draftCeiling)}}
 		return resign(t, b)
 	}
@@ -236,7 +246,7 @@ func TestCeilingDeclaration(t *testing.T) {
 		bundle  Bundle
 		wantErr string
 	}{
-		"omitted declaration":       {resign(t, Bundle{Epoch: 1, KeyID: "publisher-1", Documents: map[string][]byte{"units.json": []byte(reviewersRead)}}), "declare the ceiling set"},
+		"omitted declaration":       {resign(t, Bundle{Epoch: 1, Info: testInfo("units.json"), KeyID: "publisher-1", Documents: map[string][]byte{"units.json": []byte(reviewersRead)}}), "declare the ceiling set"},
 		"undeclared ceiling":        {withCeiling(true), "ceiling set exactly"},
 		"business declared ceiling": {withCeiling(true, "ceiling.json", "units.json"), "ceiling set exactly"},
 		"missing ceiling document":  {withCeiling(true, "ceiling.json", "gone.json"), "missing"},
@@ -265,5 +275,48 @@ func TestCeilingDeclaration(t *testing.T) {
 	req.SnapshotDigest = snap.Digest
 	if res, err := m.Evaluate(ctx, req); err != nil || res.Actions["read"].Effect != policy.EffectDeny {
 		t.Fatalf("declared ceiling on a draft = %+v, %v; want DENY", res, err)
+	}
+}
+
+// TestManifestEnvironment covers REL-001 and POL-010: an instance prepares a
+// release only for its own audience, evaluator build, registry and limits,
+// and every document is declared in exactly one set.
+func TestManifestEnvironment(t *testing.T) {
+	for name, edit := range map[string]func(*Info){
+		"format":              func(i *Info) { i.Format = "fga.release/v0" },
+		"audience":            func(i *Info) { i.Audience = "fga-storage" },
+		"evaluator version":   func(i *Info) { i.EvaluatorVersion = "fga.evaluator/0" },
+		"expression library":  func(i *Info) { i.ExpressionLibrary = "cel.dev/cel-go v0.1.0" },
+		"functions":           func(i *Info) { i.Functions = "cel-extended/v1" },
+		"schema digest":       func(i *Info) { i.SchemaDigest = "sha256:other" },
+		"operations digest":   func(i *Info) { i.OperationsDigest = "sha256:other" },
+		"cost limit above":    func(i *Info) { i.CostLimit = engine.DefaultOptions.CostLimit + 1 },
+		"no cost limit":       func(i *Info) { i.CostLimit = 0 },
+		"repeated label":      func(i *Info) { i.LabelOrder, i.LabelGeneration = []string{"internal", "internal"}, 1 },
+		"labels without gen":  func(i *Info) { i.LabelOrder = []string{"internal"} },
+		"undeclared business": func(i *Info) { i.Business = nil },
+	} {
+		b := signed(t, 1, reviewersRead)
+		edit(&b.Info)
+		b = resign(t, b)
+		if err := newManager(fixedEpochs{}).Activate(context.Background(), b); err == nil {
+			t.Errorf("%s: a mismatching manifest was activated", name)
+		}
+	}
+	b := signed(t, 1, reviewersRead)
+	b.Info.LabelOrder, b.Info.LabelGeneration = []string{"public", "internal", "confidential"}, 1
+	m := newManager(fixedEpochs{})
+	if err := m.Activate(context.Background(), resign(t, b)); err != nil {
+		t.Fatalf("a valid label order: %v", err)
+	}
+	if snap, _ := m.Snapshot(context.Background(), "t-acme"); snap.Info.LabelGeneration != 1 || snap.Info.EvaluatorVersion != engine.EvaluatorVersion {
+		t.Errorf("snapshot info = %+v", snap.Info)
+	}
+
+	// The manifest is part of the signed digest.
+	tampered := signed(t, 1, reviewersRead)
+	tampered.Info.TestEvidence = "edited after signing"
+	if err := newManager(fixedEpochs{}).Activate(context.Background(), tampered); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Errorf("edited manifest: %v, want a signature failure", err)
 	}
 }

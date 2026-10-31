@@ -6,8 +6,11 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"fga/internal/decision"
@@ -193,12 +196,36 @@ func (r *Resolver) Revalidate(ctx context.Context, bound Resource) error {
 	return nil
 }
 
+// CheckKind says whose authority a check evaluates (specification 2.5,
+// "Decision API", check kinds).
+type CheckKind string
+
+const (
+	// KindOperation checks are evaluated for the request principal.
+	KindOperation CheckKind = "OPERATION"
+	// KindRecipientEligibility checks are evaluated for the recipient that
+	// the check's principal binding (a key fingerprint) resolves to
+	// (RES-009).
+	KindRecipientEligibility CheckKind = "RECIPIENT_ELIGIBILITY"
+)
+
 // CheckSpec is one check an operation needs: an action on the resource bound
-// to Role.
+// to Role. A repeated role is needed once per item of a list, such as once
+// per recipient envelope; it must appear at least once.
 type CheckSpec struct {
 	Role         string
 	ResourceType string
 	Action       string
+	Kind         CheckKind
+	Repeated     bool
+}
+
+// kind returns the check's kind, OPERATION when unset.
+func (c CheckSpec) kind() CheckKind {
+	if c.Kind == "" {
+		return KindOperation
+	}
+	return c.Kind
 }
 
 // Operation is a registered protected operation (RES-001).
@@ -213,7 +240,8 @@ type Operations struct {
 }
 
 // NewOperations validates each operation against types: every check names a
-// registered canonical action, and roles are unique within an operation.
+// registered canonical action and a known kind, and roles are unique within
+// an operation.
 func NewOperations(types *Types, ops []Operation) (*Operations, error) {
 	o := &Operations{byName: map[string]Operation{}}
 	for _, op := range ops {
@@ -228,11 +256,51 @@ func NewOperations(types *Types, ops []Operation) (*Operations, error) {
 			if c.Role == "" || slices.Contains(roles, c.Role) {
 				return nil, fmt.Errorf("registry: operation %q: invalid or duplicate role %q", op.Name, c.Role)
 			}
+			if k := c.kind(); k != KindOperation && k != KindRecipientEligibility {
+				return nil, fmt.Errorf("registry: operation %q: unknown check kind %q", op.Name, c.Kind)
+			}
 			roles = append(roles, c.Role)
 		}
 		o.byName[op.Name] = op
 	}
 	return o, nil
+}
+
+// Lookup returns a registered operation.
+func (o *Operations) Lookup(name string) (Operation, bool) {
+	op, ok := o.byName[name]
+	return op, ok
+}
+
+// Digest identifies the registry's content for release manifests (REL-001):
+// operations by name, each with its checks in registered order.
+func (o *Operations) Digest() string {
+	h := sha256.New()
+	h.Write([]byte("fga.operations/v1\n"))
+	for _, name := range slices.Sorted(maps.Keys(o.byName)) {
+		fmt.Fprintf(h, "op %s\n", name)
+		for _, c := range o.byName[name].Checks {
+			fmt.Fprintf(h, "check %s %s %s %s %t\n", c.Role, c.ResourceType, c.Action, c.kind(), c.Repeated)
+		}
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// Digest identifies the registered types, actions and aliases for release
+// manifests (REL-001).
+func (t *Types) Digest() string {
+	h := sha256.New()
+	h.Write([]byte("fga.types/v1\n"))
+	for _, name := range slices.Sorted(maps.Keys(t.actions)) {
+		fmt.Fprintf(h, "type %s\n", name)
+		for _, a := range slices.Sorted(maps.Keys(t.actions[name])) {
+			fmt.Fprintf(h, "action %s\n", a)
+		}
+		for _, legacy := range slices.Sorted(maps.Keys(t.aliases[name])) {
+			fmt.Fprintf(h, "alias %s %s\n", legacy, t.aliases[name][legacy])
+		}
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // Plan returns the checks for one invocation of the named operation, in the
@@ -244,6 +312,11 @@ func (o *Operations) Plan(name string, bound map[string]Resource) ([]decision.Ch
 	op, ok := o.byName[name]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownOperation, name)
+	}
+	for _, c := range op.Checks {
+		if c.Repeated || c.kind() != KindOperation {
+			return nil, fmt.Errorf("registry: operation %q has repeated or recipient checks; plan it by role", name)
+		}
 	}
 	if len(bound) != len(op.Checks) {
 		return nil, fmt.Errorf("registry: operation %q needs %d bound resources, got %d", name, len(op.Checks), len(bound))

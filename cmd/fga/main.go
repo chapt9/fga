@@ -18,8 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"fga/internal/policy/engine"
-	"fga/internal/registry"
 	"fga/internal/release"
 )
 
@@ -73,12 +71,13 @@ func validate(args []string) error {
 	if err != nil {
 		return err
 	}
+	env := release.R1Environment()
+	env.Stamp(&b.Info)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	if err := signBundle(&b, "validate", priv); err != nil {
 		return err
 	}
-	m := release.NewManager(map[string]ed25519.PublicKey{"validate": pub}, registry.R1Types(), engine.DefaultOptions,
-		noEpochs{}, time.Now)
+	m := release.NewManager(map[string]ed25519.PublicKey{"validate": pub}, env, noEpochs{}, time.Now)
 	if err := m.Activate(context.Background(), b); err != nil {
 		return err
 	}
@@ -107,7 +106,9 @@ func sign(args []string) error {
 	if err != nil {
 		return err
 	}
-	b.Epoch = *epoch
+	// The signer attests the environment it validated against (REL-001).
+	release.R1Environment().Stamp(&m.Info)
+	b.Epoch, b.Info = *epoch, m.Info
 	if err := signBundle(&b, *keyID, priv); err != nil {
 		return err
 	}

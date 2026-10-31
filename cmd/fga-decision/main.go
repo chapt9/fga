@@ -28,7 +28,6 @@ import (
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
 	"fga/internal/gate"
-	"fga/internal/policy/engine"
 	"fga/internal/registry"
 	"fga/internal/release"
 	"fga/internal/signing"
@@ -102,7 +101,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 		publishers[id] = key
 	}
 	types := registry.R1Types()
-	releases := release.NewManager(publishers, types, engine.DefaultOptions, store, time.Now)
+	releases := release.NewManager(publishers, release.R1Environment(), store, time.Now)
 	bundle, _, err := release.LoadBundle(cfg.BundleDir)
 	if err != nil {
 		return nil, err

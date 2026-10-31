@@ -20,6 +20,19 @@ import (
 	"fga/internal/policy/format"
 )
 
+// Environment identity of this evaluator build. A release manifest names
+// the values it was validated against, and an instance prepares only a
+// release that matches its own (REL-001, POL-010).
+const (
+	// EvaluatorVersion changes whenever evaluation semantics change.
+	EvaluatorVersion = "fga.evaluator/1"
+	// ExpressionLibrary is the CEL implementation and its pinned version.
+	ExpressionLibrary = "cel.dev/cel-go v0.33.2"
+	// Functions names the function allowlist: CEL's standard definitions
+	// only, with no extension libraries and no I/O (POL-009).
+	Functions = "cel-standard/v1"
+)
+
 // Options bound condition evaluation.
 type Options struct {
 	// CostLimit is the CEL cost limit for one condition evaluation.
