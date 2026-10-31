@@ -194,5 +194,38 @@ V-128 & The optional managed-client profile is enabled; the runtime preserves it
 \multicolumn{4}{@{}l}{\footnotesize R1-C; core}\\
 V-147$^{f}$ & An unregistered client classifier cannot lower the authoritative label & \code{NOT_APPLIED} & \rr{LAB-002}\\
 V-148$^{f}$ & A registered derived output inherits its source maximum with no managed-client flow service enabled & \code{COMMITTED} & \rr{DRV-007}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-23} (R1-B, R1-C, R2)}\\
+\multicolumn{4}{@{}l}{\footnotesize R1-B; core}\\
+V-155 & A client uploads plaintext through the server-mode write route to a bucket in client mode\newline\textit{A client-mode bucket accepts only the client-encrypted profile; the plaintext is not stored.} & \code{REJECTED} & \rr{ENC-002}\\
+V-156 & A caller allowed to read a client-mode version asks for it through the server-mode read route\newline\textit{No server-held key exists for a client-mode version, and none is created; the caller gets the encrypted package only through the client-mode route.} & \code{REJECTED} & \rr{ENC-002}\\
+V-157 & A client publishes a recipient envelope for a server-mode version\newline\textit{A server-mode version takes no client envelope or client signature in place of its server binding.} & \code{REJECTED} & \rr{ENC-002}\\
+V-158 & A ceiling denies label and create-object when the new label rank is at least restricted and resource.attributes.encryption is not client; A principal allowed by business policy uploads a restricted object to a server-mode bucket\newline\textit{The mode is visible to policy, so a ceiling can require client mode for a label.} & \code{DENY} & \rr{ENC-001}\\
+V-159 & A bucket is changed from client to server mode while an upload intent begun before the change is still open\newline\textit{The open intent publishes in client mode; only uploads begun after the change use server mode, and existing versions keep their mode.} & \code{NOT_APPLIED} & \rr{ENC-001}\\
+V-160 & A server-mode read decision is issued, then the tenant policy epoch advances before the keys role verifies it\newline\textit{The keys role verifies inside the fence and releases no key; the storage role returns no content.} & \code{DENY} & \rr{SSE-003}\\
+V-161 & A read of the current version is decided, then a concurrent overwrite advances the head before the key release\newline\textit{A current-version release binds the head state, so the old version is not served as current without history rights.} & \code{DENY} & \rr{SSE-003}\\
+V-162 & The storage role asks the keys role to unwrap the data key of version B with a signed decision for version A of the same object\newline\textit{A release is bound to the exact operation and version.} & \code{DENY} & \rr{SSE-003}\\
+\multicolumn{4}{@{}l}{\footnotesize R1-C; core}\\
+V-163 & A unit label is raised between the storage role's checks for an original-file read and the key release for that original\newline\textit{Every unit check of the complete-content set is carried into the release fence.} & \code{DENY} & \rr{SSE-003}\\
+\multicolumn{4}{@{}l}{\footnotesize R1-B; core}\\
+V-164 & A server-mode blob is corrupted in its last segment, and a reader with read permission downloads it\newline\textit{The storage role aborts the connection on the authentication failure and never reports a shorter plaintext as complete.} & \code{ABORT_STREAM} & \rr{SSE-005}\\
+V-165 & The ciphertext and wrapped key of one server-mode object version are copied byte for byte to the catalog row of another object\newline\textit{The AAD and the key binding name the original identity, so authentication fails and nothing is served.} & \code{REJECTED} & \rr{SSE-001}\\
+V-166 & The keys role rotates a tenant KEK while server-mode versions exist\newline\textit{Data keys are rewrapped under the new KEK version; ciphertext digests and lengths are unchanged and authorized reads still succeed.} & \code{SAME_DIGEST} & \rr{SSE-002}\\
+V-167 & A backup is restored without the KEK version that some restored wrapped keys refer to\newline\textit{Reconciliation quarantines the affected server-mode versions before admission reopens; reads of them are denied, other versions open normally.} & \code{DENY} & \rr{SSE-006}\\
+V-168 & Server-mode uploads and reads run with debug logging, tracing and a catalog dump enabled\newline\textit{No unwrapped data key, KEK or payload plaintext appears in logs, traces, temporary files or the catalog dump.} & \code{NOT_VISIBLE} & \rr{SSE-004}\\
+\multicolumn{4}{@{}l}{\footnotesize R2; core, mcp}\\
+V-169 & A generic MCP client reads a server-mode document of which the caller may read two of three units\newline\textit{The MCP service returns plaintext of the two permitted units only, through the same storage checks; the third unit leaves no trace.} & \code{FILTERED} & \rr{MCP-005}\\
+V-170 & A generic MCP client reads a client-mode object it may read\newline\textit{The client receives an explicit capability error or the opaque encrypted resource, never plaintext.} & \code{NOT_EXECUTED} & \rr{MCP-005}\\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{T-24} (R1-B, R1-C)}\\
+\multicolumn{4}{@{}l}{\footnotesize R1-B; core}\\
+V-171 & Alice records a grant of read on her object to Bob; No business rule tests resource.attributes.shared\_with; Bob reads the object\newline\textit{A grant is an authority fact, not a permission; default deny holds.} & \code{DENY} & \rr{SHR-002}\\
+V-172 & A rule allows read when principal.id is in resource.attributes.shared\_with with action read; Alice records a grant of read on her server-mode object to Bob; Bob reads the object\newline\textit{In server mode the honored grant is enough for the storage role to decrypt for Bob.} & \code{ALLOW} & \rr{SHR-002}\\
+V-173 & As in V-172, but the grant expired before Bob's request\newline\textit{Only unexpired grantees are visible to policy.} & \code{DENY} & \rr{SHR-002}\\
+V-174 & As in V-172, Bob is streaming the object when Alice removes the grant\newline\textit{Removing the grant advances the access revision; the stream lease aborts at its next check.} & \code{ABORT_STREAM} & \rr{SHR-002}\\
+V-175 & As in V-172, the object's label is above Bob's clearance and a ceiling denies reads above clearance\newline\textit{An honored grant does not lift a ceiling.} & \code{DENY} & \rr{SHR-002}\\
+V-176 & Carol, who may read but not share Alice's object, records a grant to Bob\newline\textit{Recording a grant needs share on the resource.} & \code{DENY} & \rr{SHR-001}\\
+V-177 & Alice records a grant on her object to a principal of another tenant, or for the action delete\newline\textit{Grantees are principals of the same tenant, and only read, stat and discover can be granted.} & \code{REJECTED} & \rr{SHR-001}\\
+V-178 & A rule honors grants; Alice grants read on a client-mode object to Bob but publishes no envelope for Bob; Bob asks for his recipient envelope\newline\textit{In client mode a grant makes Bob eligible but supplies no key; no envelope exists to deliver.} & \code{DENY} & \rr{SHR-003}\\
 \bottomrule
 \end{longtable}

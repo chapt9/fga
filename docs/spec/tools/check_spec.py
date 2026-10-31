@@ -445,7 +445,7 @@ def write_traceability(reqs, tests, cited, vectors_by_test):
 
 def write_mapping(rows, reqs):
     out = ["\\begin{longtable}{@{}P{0.16\\textwidth}P{0.09\\textwidth}P{0.37\\textwidth}P{0.28\\textwidth}@{}}",
-           "\\toprule 1.3 ID & Result & 2.5 requirements & Note\\\\\\midrule\\endhead"]
+           "\\toprule 1.3 ID & Result & 2.6 requirements & Note\\\\\\midrule\\endhead"]
     for r in rows:
         ids = ", ".join(f"\\rr{{{i}}}" for i in r["v2_ids"].split())
         out.append(f"{r['v13_id']} & {r['disposition']} & {ids} & {escape(r['note'])}\\\\")

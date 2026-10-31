@@ -1,4 +1,17 @@
 \section{Revision decisions and review response}\label{app:review}
+\subsection{Version 2.6: encryption modes}
+Version 2.6 records decision D-12. Client-side encryption is no longer mandatory: every payload is still encrypted, but by default the platform encrypts it and decrypts it for authorized readers, and a bucket can opt into client mode, which keeps the 2.5 custody model unchanged. Twelve requirement identifiers are added (ENC-001 to ENC-003, SSE-001 to SSE-006, SHR-001 to SHR-003) with test families T-23 and T-24 and cases V-155 to V-178; none is removed.
+
+\begin{longtable}{@{}P{0.23\textwidth}P{0.48\textwidth}P{0.19\textwidth}@{}}
+\toprule Topic & Revised contract & Requirements\\\midrule\endhead
+Encryption modes & Each bucket is in server mode (default) or client mode; there is no plaintext mode. The mode is visible to policy, versions keep their mode, and no client-mode version is served through a server key. & \rr{ENC-001}, \rr{ENC-002}, \rr{ENC-003}, \rr{CRY-001}, \rr{BKD-005}\\
+Server-held keys & Per-version data keys wrapped under tenant KEKs held only by the \code{keys} role, released only under fresh exact decisions in the authority fence; key lifetime, stream integrity, rotation, recovery and destruction. KEK custody is the new open decision D-13. & \rr{SSE-001} to \rr{SSE-006}, \rr{KEY-013}, \rr{KEY-015}, \rr{MOD-002}, \rr{MOD-004}\\
+Content service and documents & Server-mode reads return plaintext; the storage role splits text and builds manifests in server mode; disclosure, derived outputs, search and MCP name the representation per mode. & \rr{CNT-001}, \rr{PUB-002}, \rr{DOC-001} to \rr{DOC-007}, \rr{DSC-001} to \rr{DSC-006}, \rr{DRV-001}, \rr{DRV-002}, \rr{MCP-005}\\
+Share grants & A user with \code{share} names a reader; the grant takes effect only where a rule honors \code{resource.attributes.shared_with}, and changes advance the access revision. & \rr{SHR-001}, \rr{SHR-002}, \rr{SHR-003}\\
+Guarantees and threats & New guarantee G-09 (mode-bound custody), non-guarantee N-09 (server mode does not protect content from the platform) and threats TH-28, TH-29. & \rr{ENC-002}, \rr{SSE-003}, \rr{SHR-002}\\
+\bottomrule
+\end{longtable}
+
 \subsection{Version 2.5: reconciliation with project decisions}
 Version 2.5 restores decisions D-01 to D-03, which version 2.4 had reverted to the pre-2.2 positions, and closes the consistency and clarity gaps found when 2.4 was read against the existing implementation. No requirement identifier is added or removed.
 
@@ -30,7 +43,7 @@ Fixture readiness & Fault cases establish their successful prerequisites before 
 The security protections added in Version 2.3 remain in force. The source bundle validates document consistency and checker behavior; it does not supply production conformance or cryptographic interoperability evidence. Open Phase 0 decisions and implementation qualification remain release gates.
 
 \subsection{Design decisions retained from earlier revisions}
-R1 delivers encrypted object storage and shared fine-grained authorization; document units are storage resources. R2 adds MCP as a separate client of those services, with model or external-tool execution separately enabled. S3 and custom replication remain R3 extensions. Clients alone hold payload keys and decrypt; the server stores ciphertext, opaque recipient envelopes and declared routing/policy metadata.
+R1 delivers encrypted object storage and shared fine-grained authorization; document units are storage resources. R2 adds MCP as a separate client of those services, with model or external-tool execution separately enabled. S3 and custom replication remain R3 extensions. Every payload is encrypted. Since 2.6 the platform holds server-mode keys and releases them only under decisions; in client mode clients alone hold payload keys and decrypt, and the server stores ciphertext, opaque recipient envelopes and declared routing/policy metadata.
 
 The independently authored Go evaluator uses qualified general-purpose expression and cryptographic libraries. Upstream MinIO and Cerbos implementations are research references, not production dependencies. A matching deny overrides an allow, and always-run platform ceilings stay distinct from business policy. Our own single-node blob store is the R1 backend (D-02); publication requires durable bytes and an authorized catalog transition. External effects retain explicit UNKNOWN and ABANDONED outcomes. Client retention, malicious-client lineage and unmediated egress keep their stated limits.
 

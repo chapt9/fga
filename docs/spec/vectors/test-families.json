@@ -135,6 +135,18 @@
       "features": [
         "core"
       ]
+    },
+    {
+      "id": "T-23",
+      "features": [
+        "core"
+      ]
+    },
+    {
+      "id": "T-24",
+      "features": [
+        "core"
+      ]
     }
   ]
 }

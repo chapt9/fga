@@ -1,24 +1,27 @@
-Specification 2.5 document validation - 31 October 2026
+Specification 2.6 document validation - 31 October 2026
 
-Structural checker: PASS, 277 requirements, 22 test families, 115 cases.
-Concrete fixtures: 10; scenario-only cases: 105.
+Structural checker: PASS, 289 requirements, 24 test families, 139 cases.
+Concrete fixtures: 10; scenario-only cases: 129.
 Historical mapping: all 85 rows checked against the available v1.3 source.
 Checker regression tests: 15 passed.
-Requirement identifiers: all 277 identifiers of 2.4 retained; none added or removed.
-Cases added in 2.5: V-153 (ceiling declaration), V-154 (time-condition form).
+Requirement identifiers: all 277 identifiers of 2.5 retained; 12 added (ENC-001 to ENC-003,
+SSE-001 to SSE-006, SHR-001 to SHR-003); none removed.
+Test families added in 2.6: T-23 (encryption modes and server-side keys), T-24 (share grants).
+Cases added in 2.6: V-155 to V-178, all scenario-only.
 
-Standalone source: no unresolved local input directives.
-Tectonic standalone compilation: PASS, 99 pages.
-No overfull or underfull boxes in the build log; no unresolved ?? markers.
-All 277 requirement markers present in the extracted PDF text.
-Pages 14 and 15 (policy format) were inspected as rendered images. The other pages were not
-inspected visually in this revision.
+Standalone source: expanded from main.tex, no unresolved local input directives.
+Tectonic standalone compilation: PASS, 110 pages.
+No overfull or underfull boxes in the build log; no undefined references.
+All 289 requirement markers present in the extracted PDF text.
+Pages 1 (title), 9 (roles and decisions), 43 (share grants) and 48 (encryption modes) were
+inspected as rendered images. The other pages were not inspected visually in this revision.
 
-Qualification mode still rejects absent implementation evidence: 74 errors for
---qualify R1-B --features core, and 77 with --features core,ha (family T-16 and the
-multi-node cases are added by the ha feature).
+Qualification mode still rejects absent implementation evidence: 97 errors for
+--qualify R1-B --features core, and 100 with --features core,ha. The 23 more than 2.5 are
+the 21 new R1-B cases and the families T-23 and T-24.
 
 These checks validate the document and its checker. They do not qualify any implementation,
 cryptographic interoperability, production concurrency, recovery or performance. This
-revision supplies no implementation execution evidence. Phase 0 decisions D-04 to D-11 and
-applicable implementation evidence remain release gates.
+revision supplies no implementation execution evidence. Server mode is not implemented yet.
+Phase 0 decisions D-04 to D-11 and D-13 and applicable implementation evidence remain
+release gates.

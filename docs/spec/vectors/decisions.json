@@ -1,6 +1,6 @@
 {
   "schema": "fga.vectors/v2",
-  "note": "Case catalogue for specification 2.5. scenario_only entries are requirements, not executable evidence. fixture_ready entries name concrete inputs, ordering and assertions in fixtures/. Every case declares minimum phase and required features. No implementation or upstream-oracle run is claimed by this catalogue.",
+  "note": "Case catalogue for specification 2.6. scenario_only entries are requirements, not executable evidence. fixture_ready entries name concrete inputs, ordering and assertions in fixtures/. Every case declares minimum phase and required features. No implementation or upstream-oracle run is claimed by this catalogue.",
   "vectors": [
     {
       "id": "V-001",
@@ -2082,6 +2082,422 @@
       "expect": "REJECT_BUNDLE",
       "note": "No sound next-change bound exists, so the bundle is rejected.",
       "min_phase": "R1-A",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-155",
+      "test": "T-23",
+      "requirements": [
+        "ENC-002"
+      ],
+      "given": [
+        "A client uploads plaintext through the server-mode write route to a bucket in client mode"
+      ],
+      "expect": "REJECTED",
+      "note": "A client-mode bucket accepts only the client-encrypted profile; the plaintext is not stored.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-156",
+      "test": "T-23",
+      "requirements": [
+        "ENC-002"
+      ],
+      "given": [
+        "A caller allowed to read a client-mode version asks for it through the server-mode read route"
+      ],
+      "expect": "REJECTED",
+      "note": "No server-held key exists for a client-mode version, and none is created; the caller gets the encrypted package only through the client-mode route.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-157",
+      "test": "T-23",
+      "requirements": [
+        "ENC-002"
+      ],
+      "given": [
+        "A client publishes a recipient envelope for a server-mode version"
+      ],
+      "expect": "REJECTED",
+      "note": "A server-mode version takes no client envelope or client signature in place of its server binding.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-158",
+      "test": "T-23",
+      "requirements": [
+        "ENC-001"
+      ],
+      "given": [
+        "A ceiling denies label and create-object when the new label rank is at least restricted and resource.attributes.encryption is not client",
+        "A principal allowed by business policy uploads a restricted object to a server-mode bucket"
+      ],
+      "expect": "DENY",
+      "note": "The mode is visible to policy, so a ceiling can require client mode for a label.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-159",
+      "test": "T-23",
+      "requirements": [
+        "ENC-001"
+      ],
+      "given": [
+        "A bucket is changed from client to server mode while an upload intent begun before the change is still open"
+      ],
+      "expect": "NOT_APPLIED",
+      "note": "The open intent publishes in client mode; only uploads begun after the change use server mode, and existing versions keep their mode.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-160",
+      "test": "T-23",
+      "requirements": [
+        "SSE-003"
+      ],
+      "given": [
+        "A server-mode read decision is issued, then the tenant policy epoch advances before the keys role verifies it"
+      ],
+      "expect": "DENY",
+      "note": "The keys role verifies inside the fence and releases no key; the storage role returns no content.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-161",
+      "test": "T-23",
+      "requirements": [
+        "SSE-003"
+      ],
+      "given": [
+        "A read of the current version is decided, then a concurrent overwrite advances the head before the key release"
+      ],
+      "expect": "DENY",
+      "note": "A current-version release binds the head state, so the old version is not served as current without history rights.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-162",
+      "test": "T-23",
+      "requirements": [
+        "SSE-003"
+      ],
+      "given": [
+        "The storage role asks the keys role to unwrap the data key of version B with a signed decision for version A of the same object"
+      ],
+      "expect": "DENY",
+      "note": "A release is bound to the exact operation and version.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-163",
+      "test": "T-23",
+      "requirements": [
+        "SSE-003"
+      ],
+      "given": [
+        "A unit label is raised between the storage role's checks for an original-file read and the key release for that original"
+      ],
+      "expect": "DENY",
+      "note": "Every unit check of the complete-content set is carried into the release fence.",
+      "min_phase": "R1-C",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-164",
+      "test": "T-23",
+      "requirements": [
+        "SSE-005"
+      ],
+      "given": [
+        "A server-mode blob is corrupted in its last segment, and a reader with read permission downloads it"
+      ],
+      "expect": "ABORT_STREAM",
+      "note": "The storage role aborts the connection on the authentication failure and never reports a shorter plaintext as complete.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-165",
+      "test": "T-23",
+      "requirements": [
+        "SSE-001"
+      ],
+      "given": [
+        "The ciphertext and wrapped key of one server-mode object version are copied byte for byte to the catalog row of another object"
+      ],
+      "expect": "REJECTED",
+      "note": "The AAD and the key binding name the original identity, so authentication fails and nothing is served.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-166",
+      "test": "T-23",
+      "requirements": [
+        "SSE-002"
+      ],
+      "given": [
+        "The keys role rotates a tenant KEK while server-mode versions exist"
+      ],
+      "expect": "SAME_DIGEST",
+      "note": "Data keys are rewrapped under the new KEK version; ciphertext digests and lengths are unchanged and authorized reads still succeed.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-167",
+      "test": "T-23",
+      "requirements": [
+        "SSE-006"
+      ],
+      "given": [
+        "A backup is restored without the KEK version that some restored wrapped keys refer to"
+      ],
+      "expect": "DENY",
+      "note": "Reconciliation quarantines the affected server-mode versions before admission reopens; reads of them are denied, other versions open normally.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-168",
+      "test": "T-23",
+      "requirements": [
+        "SSE-004"
+      ],
+      "given": [
+        "Server-mode uploads and reads run with debug logging, tracing and a catalog dump enabled"
+      ],
+      "expect": "NOT_VISIBLE",
+      "note": "No unwrapped data key, KEK or payload plaintext appears in logs, traces, temporary files or the catalog dump.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-169",
+      "test": "T-23",
+      "requirements": [
+        "MCP-005"
+      ],
+      "given": [
+        "A generic MCP client reads a server-mode document of which the caller may read two of three units"
+      ],
+      "expect": "FILTERED",
+      "note": "The MCP service returns plaintext of the two permitted units only, through the same storage checks; the third unit leaves no trace.",
+      "min_phase": "R2",
+      "features": [
+        "core",
+        "mcp"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-170",
+      "test": "T-23",
+      "requirements": [
+        "MCP-005"
+      ],
+      "given": [
+        "A generic MCP client reads a client-mode object it may read"
+      ],
+      "expect": "NOT_EXECUTED",
+      "note": "The client receives an explicit capability error or the opaque encrypted resource, never plaintext.",
+      "min_phase": "R2",
+      "features": [
+        "core",
+        "mcp"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-171",
+      "test": "T-24",
+      "requirements": [
+        "SHR-002"
+      ],
+      "given": [
+        "Alice records a grant of read on her object to Bob",
+        "No business rule tests resource.attributes.shared_with",
+        "Bob reads the object"
+      ],
+      "expect": "DENY",
+      "note": "A grant is an authority fact, not a permission; default deny holds.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-172",
+      "test": "T-24",
+      "requirements": [
+        "SHR-002"
+      ],
+      "given": [
+        "A rule allows read when principal.id is in resource.attributes.shared_with with action read",
+        "Alice records a grant of read on her server-mode object to Bob",
+        "Bob reads the object"
+      ],
+      "expect": "ALLOW",
+      "note": "In server mode the honored grant is enough for the storage role to decrypt for Bob.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-173",
+      "test": "T-24",
+      "requirements": [
+        "SHR-002"
+      ],
+      "given": [
+        "As in V-172, but the grant expired before Bob's request"
+      ],
+      "expect": "DENY",
+      "note": "Only unexpired grantees are visible to policy.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-174",
+      "test": "T-24",
+      "requirements": [
+        "SHR-002"
+      ],
+      "given": [
+        "As in V-172, Bob is streaming the object when Alice removes the grant"
+      ],
+      "expect": "ABORT_STREAM",
+      "note": "Removing the grant advances the access revision; the stream lease aborts at its next check.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-175",
+      "test": "T-24",
+      "requirements": [
+        "SHR-002"
+      ],
+      "given": [
+        "As in V-172, the object's label is above Bob's clearance and a ceiling denies reads above clearance"
+      ],
+      "expect": "DENY",
+      "note": "An honored grant does not lift a ceiling.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-176",
+      "test": "T-24",
+      "requirements": [
+        "SHR-001"
+      ],
+      "given": [
+        "Carol, who may read but not share Alice's object, records a grant to Bob"
+      ],
+      "expect": "DENY",
+      "note": "Recording a grant needs share on the resource.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-177",
+      "test": "T-24",
+      "requirements": [
+        "SHR-001"
+      ],
+      "given": [
+        "Alice records a grant on her object to a principal of another tenant, or for the action delete"
+      ],
+      "expect": "REJECTED",
+      "note": "Grantees are principals of the same tenant, and only read, stat and discover can be granted.",
+      "min_phase": "R1-B",
+      "features": [
+        "core"
+      ],
+      "status": "scenario_only"
+    },
+    {
+      "id": "V-178",
+      "test": "T-24",
+      "requirements": [
+        "SHR-003"
+      ],
+      "given": [
+        "A rule honors grants; Alice grants read on a client-mode object to Bob but publishes no envelope for Bob",
+        "Bob asks for his recipient envelope"
+      ],
+      "expect": "DENY",
+      "note": "In client mode a grant makes Bob eligible but supplies no key; no envelope exists to deliver.",
+      "min_phase": "R1-B",
       "features": [
         "core"
       ],
