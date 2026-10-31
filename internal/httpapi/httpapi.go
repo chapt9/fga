@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/enforce"
 	"fga/internal/strictjson"
@@ -27,6 +28,7 @@ const (
 	CodePrecondition = "PRECONDITION_FAILED"
 	CodeTooLarge     = "TOO_LARGE"
 	CodeUnavailable  = "UNAVAILABLE"
+	CodeOverloaded   = "OVERLOADED"
 )
 
 // TokenVerifier verifies access tokens; authn.Verifier implements it.
@@ -117,4 +119,21 @@ type EnvelopeBody struct {
 	Context    []byte `json:"context"`
 	Ciphertext []byte `json:"ciphertext"`
 	Signature  string `json:"signature"`
+}
+
+// Admitted wraps an authenticated handler with the tenant admission limits
+// (AVL-006): a request over a bound gets 429 OVERLOADED at once. A stream
+// holds its slot until the handler returns, that is until the body is
+// sent or received.
+func Admitted(l *admission.Limiter, stream bool, h func(http.ResponseWriter, *http.Request, enforce.Caller)) func(http.ResponseWriter, *http.Request, enforce.Caller) {
+	return func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
+		release, ok := l.Acquire(c.Tenant, stream)
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			WriteError(w, http.StatusTooManyRequests, CodeOverloaded)
+			return
+		}
+		defer release()
+		h(w, r, c)
+	}
 }

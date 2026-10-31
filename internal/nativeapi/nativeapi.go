@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"fga/internal/admission"
 	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/httpapi"
@@ -82,11 +83,14 @@ type (
 )
 
 // Storage returns the storage role's handler.
-func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bool) http.Handler {
+func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bool, limiter *admission.Limiter) http.Handler {
 	mux := http.NewServeMux()
 	httpapi.Health(mux, ready)
 	auth := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-		return httpapi.Authed(tokens, content.Audience, h)
+		return httpapi.Authed(tokens, content.Audience, httpapi.Admitted(limiter, false, h))
+	}
+	stream := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
+		return httpapi.Authed(tokens, content.Audience, httpapi.Admitted(limiter, true, h))
 	}
 	mux.HandleFunc("POST /v1/buckets/{bucket}/uploads", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		var b beginBody
@@ -108,7 +112,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			AttemptID: in.Attempt.String(), Suite: in.Suite, Format: in.Format, MaxCiphertextLength: in.MaxCiphertext,
 			ExpiresAt: in.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")})
 	}))
-	mux.HandleFunc("PUT /v1/uploads/{intent}/ciphertext", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+	mux.HandleFunc("PUT /v1/uploads/{intent}/ciphertext", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		id, err := cryptowire.ParseUUID(r.PathValue("intent"))
 		sum, err2 := cryptowire.ParseDigest(r.Header.Get("Fga-Ciphertext-Sha256"))
 		if err != nil || err2 != nil || r.ContentLength <= 0 {
@@ -197,7 +201,7 @@ func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bo
 			EnvelopeID: p.Envelope.EnvelopeID, Envelope: httpapi.EnvelopeBody{Context: p.Envelope.Context, Ciphertext: p.Envelope.Ciphertext,
 				Signature: p.Envelope.Signature}, Receipt: p.Envelope.Receipt, ReceiptSignature: p.Envelope.ReceiptSignature})
 	}))
-	mux.HandleFunc("GET /v1/buckets/{bucket}/object/ciphertext", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+	mux.HandleFunc("GET /v1/buckets/{bucket}/object/ciphertext", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		if !ok {
 			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)

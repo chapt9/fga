@@ -127,7 +127,7 @@ func run(path string) error {
 		defer cancel()
 		return pool.Ping(pctx) == nil
 	}
-	server, _, err := cfg.Server(nativeapi.Storage(svc, tokens, ready))
+	server, _, err := cfg.Server(nativeapi.Storage(svc, tokens, ready, cfg.Limiter()))
 	if err != nil {
 		return err
 	}

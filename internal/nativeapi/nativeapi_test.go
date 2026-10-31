@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
 	"fga/internal/r1test"
@@ -25,16 +26,18 @@ type deployment struct {
 	keys    *httptest.Server
 }
 
-func deploy(t *testing.T) *deployment {
+func deploy(t *testing.T) *deployment { return deployWith(t, admission.DefaultLimits) }
+
+func deployWith(t *testing.T, limits admission.Limits) *deployment {
 	t.Helper()
 	st := r1test.New(t)
 	keys := httptest.NewServer(keysapi.Keys(st.Envelopes, st.Tokens, func(r *http.Request) (string, error) {
 		return r.Header.Get("X-Test-Workload"), nil
-	}, r1test.StorageAdapter, func() bool { return true }))
+	}, r1test.StorageAdapter, func() bool { return true }, admission.New(admission.DefaultLimits)))
 	t.Cleanup(keys.Close)
 	// The storage role reaches the keys role over HTTP as its workload.
 	st.Keys = rpc.KeysClient{BaseURL: keys.URL, HTTP: &http.Client{Transport: workload{r1test.StorageAdapter}}}
-	storage := httptest.NewServer(nativeapi.Storage(st.Content, st.Tokens, func() bool { return true }))
+	storage := httptest.NewServer(nativeapi.Storage(st.Content, st.Tokens, func() bool { return true }, admission.New(limits)))
 	t.Cleanup(storage.Close)
 	return &deployment{st: st, storage: storage, keys: keys}
 }
@@ -167,4 +170,40 @@ func TestHTTPBoundaries(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("internal delivery from another workload: %d", resp.StatusCode)
 	}
+}
+
+// TestTenantStreamLimit covers AVL-006 over HTTP: while one tenant's
+// ciphertext download is in progress, a second stream of that tenant is
+// refused with 429. That other tenants keep their own bounds is covered by
+// the limiter's unit test.
+func TestTenantStreamLimit(t *testing.T) {
+	d := deployWith(t, admission.Limits{TenantRequests: 4, TenantStreams: 1, TotalRequests: 16})
+	d.st.Bucket("reports", "p1")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	if _, err := a.Put("reports", "big", bytes.Repeat([]byte("x"), 16<<20)); err != nil {
+		t.Fatal(err)
+	}
+	get := func(token string) *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, d.storage.URL+"/v1/buckets/reports/object/ciphertext?key=big", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	first := get(a.Caller.Token)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first stream: %d", first.StatusCode)
+	}
+	buf := make([]byte, 1024)
+	if _, err := io.ReadFull(first.Body, buf); err != nil {
+		t.Fatal(err)
+	}
+	second := get(d.st.Caller("alice").Token)
+	second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests || second.Header.Get("Retry-After") == "" {
+		t.Fatalf("second stream of the tenant: %d", second.StatusCode)
+	}
+	first.Body.Close()
 }

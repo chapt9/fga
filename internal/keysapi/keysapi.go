@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 
+	"fga/internal/admission"
 	"fga/internal/enforce"
 	"fga/internal/envelope"
 	"fga/internal/httpapi"
@@ -63,11 +64,12 @@ type (
 // Keys returns the keys role's handler. adapterOf identifies the workload
 // calling the internal delivery endpoint, which only storage may call
 // (TB3); its decision is verified as well (TRU-005).
-func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*http.Request) (string, error), storageAdapter string, ready func() bool) http.Handler {
+func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*http.Request) (string, error), storageAdapter string, ready func() bool,
+	limiter *admission.Limiter) http.Handler {
 	mux := http.NewServeMux()
 	httpapi.Health(mux, ready)
 	auth := func(h func(http.ResponseWriter, *http.Request, enforce.Caller)) http.HandlerFunc {
-		return httpapi.Authed(tokens, enforce.KeysAudience, h)
+		return httpapi.Authed(tokens, enforce.KeysAudience, httpapi.Admitted(limiter, false, h))
 	}
 	mux.HandleFunc("POST /v1/recipients", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
 		var b enrollBody

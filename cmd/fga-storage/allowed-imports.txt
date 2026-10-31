@@ -2,6 +2,7 @@
 # line. Adding a line needs review: it widens the role's attack surface. No
 # client decryption, key unwrapping, MCP or executor package belongs here.
 fga/cmd/fga-storage
+fga/internal/admission
 fga/internal/audit
 fga/internal/authn
 fga/internal/blob

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/content"
 	"fga/internal/decisionsvc"
 	"fga/internal/keysapi"
@@ -117,7 +118,7 @@ func TestRolesOverMutualTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := serve(t, p, keysapi.Keys(st.Envelopes, st.Tokens, adapterOf, r1test.StorageAdapter, func() bool { return true }), keysServer.TLSConfig)
+	keys := serve(t, p, keysapi.Keys(st.Envelopes, st.Tokens, adapterOf, r1test.StorageAdapter, func() bool { return true }, admission.New(admission.DefaultLimits)), keysServer.TLSConfig)
 
 	storageCert, storageKey := p.issue(t, r1test.StorageAdapter, false)
 	storageHTTP, err := roleconfig.Peer{URL: decision.URL, CertFile: storageCert, KeyFile: storageKey, CAFile: p.ca()}.Client()

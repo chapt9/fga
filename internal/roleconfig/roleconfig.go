@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/decisionsvc"
 	"fga/internal/signing"
@@ -47,6 +48,17 @@ type Common struct {
 	// key ID (base64 Ed25519).
 	Decision     Peer              `json:"decision"`
 	DecisionKeys map[string]string `json:"decision_keys"`
+	// Admission bounds per-tenant and total work (AVL-006); absent means
+	// admission.DefaultLimits.
+	Admission *admission.Limits `json:"admission,omitempty"`
+}
+
+// Limiter returns the admission limiter of the configuration.
+func (c Common) Limiter() *admission.Limiter {
+	if c.Admission == nil {
+		return admission.New(admission.DefaultLimits)
+	}
+	return admission.New(*c.Admission)
 }
 
 // TLS names the server certificate and the CA of workload client
@@ -117,6 +129,11 @@ func (c Common) Validate() []error {
 	}
 	if c.TokenIssuer.Issuer == "" || len(c.TokenIssuer.Keys) == 0 || len(c.DecisionKeys) == 0 {
 		fail("token_issuer and decision_keys are required")
+	}
+	if c.Admission != nil {
+		if err := c.Admission.Validate(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errs
 }

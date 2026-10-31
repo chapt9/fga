@@ -112,7 +112,7 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	server.Handler = keysapi.Keys(svc, tokens, adapterOf, cfg.StorageAdapter, ready)
+	server.Handler = keysapi.Keys(svc, tokens, adapterOf, cfg.StorageAdapter, ready, cfg.Limiter())
 	slog.Info("fga-keys listening", "addr", cfg.Listen, "profile", cfg.Profile)
 	return cfg.Serve(ctx, server)
 }
