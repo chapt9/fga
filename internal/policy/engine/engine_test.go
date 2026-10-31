@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -218,5 +219,73 @@ func TestExpressionLibraryMatchesModule(t *testing.T) {
 	}
 	if !strings.Contains(string(mod), "\n\t"+ExpressionLibrary+"\n") {
 		t.Fatalf("go.mod does not require %q", ExpressionLibrary)
+	}
+}
+
+// TestTimeRule covers V-154: request.now is accepted only as one side of a
+// direct comparison with a timestamp literal; every other use is rejected
+// at compilation because no sound next-change bound exists for it.
+func TestTimeRule(t *testing.T) {
+	doc := func(when string) []string {
+		return []string{`{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+		  {"id":"r","effect":"allow","actions":["read"],"roles":["*"],"when":` + strconv.Quote(when) + `}]}`}
+	}
+	compile := func(when string) error {
+		var parsed []format.Document
+		for _, d := range doc(when) {
+			p, err := format.Parse([]byte(d))
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed = append(parsed, p)
+		}
+		_, err := Compile("sha256:test", parsed, schema, DefaultOptions)
+		return err
+	}
+	for _, when := range []string{
+		`request.now < timestamp("2027-01-15T09:00:00Z")`,
+		`timestamp("2027-01-15T09:00:00Z") >= request.now && resource.attributes.state == "LIVE"`,
+		`request.now != timestamp("2027-01-15T09:00:00.5Z") || request.operation.size < 10`,
+	} {
+		if err := compile(when); err != nil {
+			t.Errorf("%s: rejected: %v", when, err)
+		}
+	}
+	for _, when := range []string{
+		`request.now + duration("1h") < timestamp("2027-01-15T09:00:00Z")`,
+		`request.now < resource.attributes.expires_at`,
+		`request.now.getHours() < 9`,
+		`request.now < timestamp(resource.attributes.end)`,
+		`has(request.now)`,
+		`request["now"] < timestamp("2027-01-15T09:00:00Z")`,
+		`[request.now].size() == 1`,
+		`request.now < timestamp("next tuesday")`,
+	} {
+		if err := compile(when); err == nil {
+			t.Errorf("%s: accepted, want a rejection", when)
+		}
+	}
+}
+
+// TestNextChange covers the time-condition bound: the earliest literal not
+// before the request time among all rules that list the action, whether or
+// not their roles or conditions match. Literals in the past and rules for
+// other actions do not bound it.
+func TestNextChange(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	e := compileBundle(t, []string{`{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+	  {"id":"a","effect":"allow","actions":["read"],"roles":["reviewer"],"when":"request.now < timestamp('` + at(time.Hour) + `')"},
+	  {"id":"b","effect":"deny","actions":["read"],"roles":["auditor"],"when":"request.now >= timestamp('` + at(10*time.Minute) + `')"},
+	  {"id":"c","effect":"deny","actions":["read"],"roles":["*"],"when":"request.now < timestamp('` + at(-time.Hour) + `')"},
+	  {"id":"d","effect":"allow","actions":["stat"],"roles":["*"],"when":"request.now < timestamp('` + at(time.Minute) + `')"}]}`})
+	req := request(policy.SetBusiness, "user-42", []string{"reviewer"}, "", nil, "read")
+	res, err := e.Evaluate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Actions["read"]
+	if got.Effect != policy.EffectAllow || !got.NextChange.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("read = %+v, want ALLOW with next change at +10m (rule b, whose role does not match)", got)
 	}
 }

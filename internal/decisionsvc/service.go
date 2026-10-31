@@ -235,6 +235,14 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		}
 		return fail(ReasonCatalogUnavailable)
 	}
+	// A time condition bounds validity (POL-008, DEC-005). A bound that has
+	// already arrived leaves nothing to sign.
+	if !d.NextChange.IsZero() && d.NextChange.Before(binding.ValidUntil) {
+		binding.ValidUntil = d.NextChange
+	}
+	if !s.d.Now().Before(binding.ValidUntil) {
+		return deny(gate.ReasonDecisionExpired)
+	}
 	signed, err := s.d.Signer.Sign(s.record(resp.DecisionID, req, binding, bound, snap))
 	if err != nil {
 		return fail(ReasonSigningFailed)

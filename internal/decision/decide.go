@@ -127,6 +127,9 @@ type CheckResult struct {
 	Reason   Reason
 	// Requires lists the prerequisites of an allowed check.
 	Requires []string
+	// NextChange is the earliest next change of a time condition in either
+	// set for this check; zero means none (DEC-005).
+	NextChange time.Time
 }
 
 // Decision is the result for a batch. Results follow the order of the
@@ -137,6 +140,9 @@ type Decision struct {
 	Results []CheckResult
 	// Requires is the union of the checks' prerequisites, sorted.
 	Requires []string
+	// NextChange is the earliest NextChange of any check; zero means none.
+	// The decision is valid only before it (POL-008, DEC-005).
+	NextChange time.Time
 }
 
 // Rejection is the error a Gate returns to deny a batch before any policy is
@@ -202,6 +208,7 @@ func (d *Decider) DecideBatch(ctx context.Context, b Batch) Decision {
 			return Decision{Outcome: OutcomeError, Reason: reason, Results: results}
 		}
 		results[i] = result
+		decision.NextChange = earliest(decision.NextChange, result.NextChange)
 		if result.Effect != CheckAllow && decision.Outcome == OutcomeAllow {
 			decision.Outcome = OutcomeDeny
 			decision.Reason = result.Reason
@@ -256,13 +263,26 @@ func (d *Decider) decideCheck(ctx context.Context, b Batch, principal policy.Pri
 	}
 	effect, reason := combine(ceiling, business)
 	return CheckResult{
-		CheckID:  c.ID,
-		Business: business.Effect,
-		Ceiling:  ceiling.Effect,
-		Effect:   effect,
-		Reason:   reason,
-		Requires: requiresOf(effect, business),
+		CheckID:    c.ID,
+		Business:   business.Effect,
+		Ceiling:    ceiling.Effect,
+		Effect:     effect,
+		Reason:     reason,
+		Requires:   requiresOf(effect, business),
+		NextChange: earliest(ceiling.NextChange, business.NextChange),
 	}, nil
+}
+
+// earliest returns the earlier of two bounds, where zero means no bound.
+func earliest(a, b time.Time) time.Time {
+	switch {
+	case a.IsZero():
+		return b
+	case b.IsZero() || a.Before(b):
+		return a
+	default:
+		return b
+	}
 }
 
 // requiresOf returns the prerequisites of an allowed check.

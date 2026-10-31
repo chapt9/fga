@@ -208,3 +208,20 @@ func TestBindValidUntil(t *testing.T) {
 		t.Errorf("delegation revisions = %v, want [3]", short.DelegationRevisions)
 	}
 }
+
+// TestIdentityExpiry covers DEC-005: an expired identity is rejected at
+// admission, and an identity's expiry bounds valid_until.
+func TestIdentityExpiry(t *testing.T) {
+	f := newFixture(t)
+	f.identities.Put(identity.Identity{ID: "user-42", Tenant: "t-acme", Revision: 88, Roles: []string{"reviewer"},
+		ExpiresAt: start.Add(10 * time.Second)})
+	env := delegatedBatch("read").Envelope
+	b, err := f.gate.Bind(context.Background(), env, nil, 5, time.Minute)
+	if err != nil || !b.ValidUntil.Equal(start.Add(10*time.Second)) {
+		t.Fatalf("Bind = %v, %v; want valid until the subject's expiry", b.ValidUntil, err)
+	}
+	*f.clock = start.Add(10 * time.Second)
+	if _, err := f.gate.Admit(context.Background(), delegatedBatch("read")); reason(err) != ReasonIdentityExpired {
+		t.Fatalf("Admit at expiry = %v, want %s", err, ReasonIdentityExpired)
+	}
+}

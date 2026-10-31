@@ -12,8 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"cel.dev/cel-go/cel"
+	celast "cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/interpreter"
 
 	"fga/internal/policy"
@@ -61,6 +64,8 @@ type rule struct {
 	roles    map[string]bool
 	requires []string
 	program  cel.Program // nil when the rule has no condition
+	// times are the timestamp literals that request.now is compared with.
+	times []time.Time
 }
 
 // Compile validates docs against schema and compiles every condition. The
@@ -101,12 +106,12 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 				requires: r.Requires,
 			}
 			if r.When != "" {
-				prg, err := compileCondition(env, r.When, opts)
+				prg, times, err := compileCondition(env, r.When, opts)
 				if err != nil {
 					errs = append(errs, fmt.Errorf("rule %q: %w", r.ID, err))
 					continue
 				}
-				compiled.program = prg
+				compiled.program, compiled.times = prg, times
 			}
 			e.rules[key] = append(e.rules[key], compiled)
 		}
@@ -117,15 +122,82 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 	return e, nil
 }
 
-func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, error) {
+func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, []time.Time, error) {
 	ast, issues := env.Compile(expr)
 	if issues.Err() != nil {
-		return nil, issues.Err()
+		return nil, nil, issues.Err()
 	}
 	if !ast.OutputType().IsExactType(cel.BoolType) {
-		return nil, fmt.Errorf("condition has type %s, want bool", ast.OutputType())
+		return nil, nil, fmt.Errorf("condition has type %s, want bool", ast.OutputType())
 	}
-	return env.Program(ast, cel.CostLimit(opts.CostLimit), cel.InterruptCheckFrequency(100))
+	times, err := timeLiterals(ast)
+	if err != nil {
+		return nil, nil, err
+	}
+	prg, err := env.Program(ast, cel.CostLimit(opts.CostLimit), cel.InterruptCheckFrequency(100))
+	return prg, times, err
+}
+
+// ErrUnboundedTime rejects a use of request.now for which no sound
+// next-change bound exists (POL-008, "Policy format", time conditions).
+var ErrUnboundedTime = errors.New("request.now may only be compared directly with a timestamp literal")
+
+var comparisons = map[string]bool{
+	operators.Less: true, operators.LessEquals: true, operators.Greater: true,
+	operators.GreaterEquals: true, operators.Equals: true, operators.NotEquals: true,
+}
+
+// timeLiterals enforces the time rule: request.now appears only as one side
+// of a direct comparison whose other side is timestamp("<RFC 3339 literal>").
+// It returns those literals. The request variable itself may be used only
+// through field selection, so request.now cannot be reached another way.
+func timeLiterals(ast *cel.Ast) ([]time.Time, error) {
+	root := celast.NavigateAST(ast.NativeRep())
+	var times []time.Time
+	for _, ident := range celast.MatchDescendants(root, celast.KindMatcher(celast.IdentKind)) {
+		if ident.AsIdent() != "request" {
+			continue
+		}
+		sel, ok := ident.Parent()
+		if !ok || sel.Kind() != celast.SelectKind || sel.AsSelect().IsTestOnly() {
+			return nil, errors.New("request may be used only through its fields")
+		}
+		if sel.AsSelect().FieldName() != "now" {
+			continue
+		}
+		cmp, ok := sel.Parent()
+		if !ok || cmp.Kind() != celast.CallKind || !comparisons[cmp.AsCall().FunctionName()] || len(cmp.AsCall().Args()) != 2 {
+			return nil, ErrUnboundedTime
+		}
+		other := cmp.AsCall().Args()[0]
+		if other.ID() == sel.ID() {
+			other = cmp.AsCall().Args()[1]
+		}
+		t, ok := timestampLiteral(other)
+		if !ok {
+			return nil, ErrUnboundedTime
+		}
+		times = append(times, t)
+	}
+	return times, nil
+}
+
+// timestampLiteral reports the value of timestamp("...") with a constant
+// RFC 3339 argument.
+func timestampLiteral(e celast.Expr) (time.Time, bool) {
+	if e.Kind() != celast.CallKind || e.AsCall().FunctionName() != "timestamp" || e.AsCall().IsMemberFunction() || len(e.AsCall().Args()) != 1 {
+		return time.Time{}, false
+	}
+	arg := e.AsCall().Args()[0]
+	if arg.Kind() != celast.LiteralKind {
+		return time.Time{}, false
+	}
+	str, ok := arg.AsLiteral().Value().(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, str)
+	return t, err == nil
 }
 
 func sortedKeys(m map[string]bool) []string {
@@ -177,9 +249,20 @@ func (e *Engine) Evaluate(ctx context.Context, req policy.Request) (policy.Resul
 // evaluateAction applies the rules of Section "Policy format" to one action.
 func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars map[string]any, action string) (policy.ActionResult, error) {
 	var allowed, denied, errored bool
+	var next time.Time
 	requires := map[string]bool{}
 	for _, scope := range format.ScopeChain(req.Resource.Scope) {
 		for _, r := range e.rules[ruleKey{set: req.Set, resource: req.Resource.Kind, scope: scope}] {
+			if !r.listsAction(action) {
+				continue
+			}
+			// Every rule that lists the action bounds validity, whether or
+			// not its roles or condition match (DEC-005).
+			for _, t := range r.times {
+				if !t.Before(req.Now) && (next.IsZero() || t.Before(next)) {
+					next = t
+				}
+			}
 			if !r.applies(action, req.Principal.Roles) {
 				continue
 			}
@@ -202,23 +285,28 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 			}
 		}
 	}
+	var res policy.ActionResult
 	switch {
 	case errored:
-		return policy.ActionResult{Effect: policy.EffectDeny, Errored: true}, nil
+		res = policy.ActionResult{Effect: policy.EffectDeny, Errored: true}
 	case denied:
-		return policy.ActionResult{Effect: policy.EffectDeny}, nil
+		res = policy.ActionResult{Effect: policy.EffectDeny}
 	case req.Set == policy.SetCeiling:
 		// No ceiling rule objects. This is not a grant.
-		return policy.ActionResult{Effect: policy.EffectAllow}, nil
+		res = policy.ActionResult{Effect: policy.EffectAllow}
 	case allowed:
-		return policy.ActionResult{Effect: policy.EffectAllow, Requires: sortedKeys(requires)}, nil
+		res = policy.ActionResult{Effect: policy.EffectAllow, Requires: sortedKeys(requires)}
 	default:
-		return policy.ActionResult{Effect: policy.EffectDeny}, nil
+		res = policy.ActionResult{Effect: policy.EffectDeny}
 	}
+	res.NextChange = next
+	return res, nil
 }
 
+func (r rule) listsAction(action string) bool { return r.actions[action] || r.actions[format.Wildcard] }
+
 func (r rule) applies(action string, roles []string) bool {
-	if !r.actions[action] && !r.actions[format.Wildcard] {
+	if !r.listsAction(action) {
 		return false
 	}
 	if r.roles[format.Wildcard] {

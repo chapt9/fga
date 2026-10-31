@@ -53,6 +53,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, outboxCapacity int) *fixture {
 	t.Helper()
+	return newFixtureWith(t, outboxCapacity, business)
+}
+
+func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture {
+	t.Helper()
 	ctx := context.Background()
 	clock := func() time.Time { return now }
 	types := registry.R1Types()
@@ -237,5 +242,25 @@ func TestHTTP(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("readyz = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestTimeConditionBoundsValidity covers V-143 at the decision boundary:
+// a grant that ends at a timestamp literal yields a decision valid only
+// until that literal, even when the decision-age limit is later (POL-008,
+// DEC-005). At the literal itself the grant no longer holds.
+func TestTimeConditionBoundsValidity(t *testing.T) {
+	cutoff := now.Add(20 * time.Second)
+	timed := `{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+	  {"id":"read-until-cutoff","effect":"allow","actions":["read"],"roles":["reviewer"],
+	   "when":"request.now < timestamp('` + cutoff.UTC().Format(time.RFC3339) + `')"}]}`
+	f := newFixtureWith(t, 10, timed)
+	resp := f.svc.Decide(context.Background(), "tools-gw-1", request("doc://q3#overview"))
+	if resp.Outcome != "ALLOW" || resp.ValidUntil == nil || !resp.ValidUntil.Equal(cutoff) {
+		t.Fatalf("response = %+v, want ALLOW valid until %v (the age limit is +30s)", resp, cutoff)
+	}
+	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	if rec, err := f.verifier.Verify(context.Background(), signing.Signed{Payload: payload, JWS: resp.Signed.JWS}); err != nil || !rec.ValidUntil.Equal(cutoff) {
+		t.Fatalf("signed record = %+v, %v", rec, err)
 	}
 }

@@ -134,11 +134,15 @@ func migrateOne(ctx context.Context, pool *pgxpool.Pool, name string) error {
 // GetIdentity reads one identity of a tenant.
 func (s *Store) GetIdentity(ctx context.Context, tenant, id string) (identity.Identity, error) {
 	i := identity.Identity{ID: id, Tenant: tenant}
+	var expires *time.Time
 	err := s.pool.QueryRow(ctx,
-		`SELECT revision, disabled, roles, attributes FROM identities WHERE tenant = $1 AND id = $2`,
-		tenant, id).Scan(&i.Revision, &i.Disabled, &i.Roles, &i.Attributes)
+		`SELECT revision, disabled, expires_at, roles, attributes FROM identities WHERE tenant = $1 AND id = $2`,
+		tenant, id).Scan(&i.Revision, &i.Disabled, &expires, &i.Roles, &i.Attributes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return identity.Identity{}, identity.ErrUnknown
+	}
+	if expires != nil {
+		i.ExpiresAt = *expires
 	}
 	return i, err
 }

@@ -24,6 +24,7 @@ const (
 	ReasonIdentityUnknown       decision.Reason = "IDENTITY_UNKNOWN"
 	ReasonIdentityStale         decision.Reason = "IDENTITY_STALE"
 	ReasonIdentityDisabled      decision.Reason = "IDENTITY_DISABLED"
+	ReasonIdentityExpired       decision.Reason = "IDENTITY_EXPIRED"
 	ReasonDelegationUnknown     decision.Reason = "DELEGATION_UNKNOWN"
 	ReasonDelegationExpired     decision.Reason = "DELEGATION_EXPIRED"
 	ReasonDelegationRevoked     decision.Reason = "DELEGATION_REVOKED"
@@ -140,6 +141,8 @@ func (g *Gate) current(ctx context.Context, tenant string, ref decision.Ref) (id
 		return identity.Identity{}, fmt.Errorf("gate: identity: %w", err)
 	case id.Disabled:
 		return identity.Identity{}, reject(ReasonIdentityDisabled)
+	case id.ExpiredAt(g.now()):
+		return identity.Identity{}, reject(ReasonIdentityExpired)
 	case id.Revision != ref.Revision:
 		return identity.Identity{}, reject(ReasonIdentityStale)
 	}
@@ -186,9 +189,23 @@ type Binding struct {
 }
 
 // Bind records the authority behind an allowed decision. ValidUntil is the
-// earliest of the decision-age limit and every delegation expiry (DEC-005).
+// earliest of the decision-age limit, the actor's and subject's identity
+// expiry and every delegation expiry (DEC-005).
 func (g *Gate) Bind(ctx context.Context, env decision.Envelope, resources []registry.Resource, policyEpoch uint64, maxAge time.Duration) (Binding, error) {
 	b := Binding{Envelope: env, Resources: slices.Clone(resources), PolicyEpoch: policyEpoch, ValidUntil: g.now().Add(maxAge)}
+	refs := []decision.Ref{env.Actor}
+	if env.Delegation != "" {
+		refs = append(refs, env.Subject)
+	}
+	for _, ref := range refs {
+		id, err := g.current(ctx, env.Tenant, ref)
+		if err != nil {
+			return Binding{}, err
+		}
+		if !id.ExpiresAt.IsZero() && id.ExpiresAt.Before(b.ValidUntil) {
+			b.ValidUntil = id.ExpiresAt
+		}
+	}
 	if env.Delegation != "" {
 		chain, err := g.chain(ctx, env)
 		if err != nil {

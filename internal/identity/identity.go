@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"time"
 )
 
 // ErrUnknown is returned for an identity that does not exist in a tenant.
@@ -18,10 +19,18 @@ type Identity struct {
 	ID     string
 	Tenant string
 	// Revision advances on every change to status, roles or attributes.
-	Revision   uint64
-	Disabled   bool
+	Revision uint64
+	Disabled bool
+	// ExpiresAt ends the identity's validity; zero means no expiry. A
+	// decision is never valid past it (DEC-005).
+	ExpiresAt  time.Time
 	Roles      []string
 	Attributes map[string]any
+}
+
+// ExpiredAt reports whether the identity has expired at now.
+func (i Identity) ExpiredAt(now time.Time) bool {
+	return !i.ExpiresAt.IsZero() && !now.Before(i.ExpiresAt)
 }
 
 // Store reads identities from authoritative state.

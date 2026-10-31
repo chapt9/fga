@@ -102,6 +102,11 @@ type ActionResult struct {
 	// Requires lists the prerequisites of an allow, sorted and without
 	// duplicates: the union over every matching allow rule (APR-007).
 	Requires []string
+	// NextChange is the earliest time, not before the request time, at
+	// which a time condition of any rule listing the action can change its
+	// value. Zero means no time condition applies. A decision is valid only
+	// before it (POL-008, DEC-005).
+	NextChange time.Time
 }
 
 // Result maps each requested action to its result. An action that is absent
