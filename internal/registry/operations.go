@@ -195,7 +195,38 @@ const (
 	RoleObjectRead  = "object-read"
 	// RoleGrantTarget is the resource a share grant names.
 	RoleGrantTarget = "target"
+	// RoleTool is an MCP operation, an agent.tool resource.
+	RoleTool = "tool"
 )
+
+// MCP operations (MCP-003, specification 2.6.2): calling an MCP tool is
+// invoke on its agent.tool resource, and tools/list shows the tools the
+// caller may discover. Neither authorizes the content the call reaches,
+// which the storage role checks as for any client. A decision for
+// OpMCPInvoke, addressed to the storage role, is also what the MCP role
+// presents there for the user (TB3).
+const (
+	OpMCPInvoke   = "mcp.tool.invoke"
+	OpMCPDiscover = "mcp.tool.discover"
+	// MCPToolNamespace is the alias namespace of the MCP tools.
+	MCPToolNamespace = "mcp.tool"
+)
+
+// MCPTools are the operations the MCP service offers, each an agent.tool
+// resource of every tenant that enables MCP.
+var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export"}
+
+// CoreOperations returns the registered operations of the core types: R1's
+// and the MCP service's.
+func CoreOperations(types *Types) *Operations {
+	o, err := NewOperations(types, append(r1Operations(), Operation{Name: OpMCPInvoke,
+		Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "invoke"}}},
+		Operation{Name: OpMCPDiscover, Checks: []CheckSpec{{Role: RoleTool, ResourceType: "agent.tool", Action: "discover", Repeated: true}}}))
+	if err != nil {
+		panic(err) // the table is static; a failure is a programming error
+	}
+	return o
+}
 
 // Share grants (SHR-001): recording, removing and listing the grants of a
 // resource need share on it. Each grantable type has its own operations,

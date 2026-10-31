@@ -12,11 +12,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -165,10 +167,42 @@ type Signed struct {
 	JWS     string
 }
 
+// EvidencePrefix marks a signed decision presented on a later hop as the
+// proof of who the user is (TRU-003, TB3): the MCP role's decision for a
+// tool call, which the storage role accepts from it and passes to the
+// decision role as evidence.
+const EvidencePrefix = "fga-decision:"
+
+// Evidence encodes s for a header or an evidence field.
+func (s Signed) Evidence() string {
+	return EvidencePrefix + base64.RawURLEncoding.EncodeToString(s.Payload) + ":" + s.JWS
+}
+
+// ParseEvidence decodes Evidence. It verifies nothing.
+func ParseEvidence(e string) (Signed, bool) {
+	rest, ok := strings.CutPrefix(e, EvidencePrefix)
+	if !ok {
+		return Signed{}, false
+	}
+	payload, jws, ok := strings.Cut(rest, ":")
+	if !ok || jws == "" {
+		return Signed{}, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil || len(b) == 0 {
+		return Signed{}, false
+	}
+	return Signed{Payload: b, JWS: jws}, true
+}
+
 // Signer signs records with one decision-signing key.
 type Signer struct {
 	signer jose.Signer
+	public ed25519.PublicKey
 }
+
+// Public is the signing key's public half.
+func (s *Signer) Public() ed25519.PublicKey { return s.public }
 
 // NewSigner returns a signer for the key with the given ID. The key is used
 // for nothing but decision signing (DEC-012).
@@ -178,7 +212,7 @@ func NewSigner(keyID string, key ed25519.PrivateKey) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
 	}
-	return &Signer{signer: s}, nil
+	return &Signer{signer: s, public: key.Public().(ed25519.PublicKey)}, nil
 }
 
 // Sign fills in the record's version and digests, serializes it once and

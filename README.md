@@ -19,7 +19,8 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
   - derived outputs with signed lineage.
 
   The fixes for the eight findings of the 31 October code review (`code_review_v1.txt`) each have a regression test.
-- **R2 and R3:** not built.
+- **R2, MCP over encrypted storage:** in progress (MCP role, then the optional executor). The storage and decision roles accept the MCP role's calls for its users through a signed decision per MCP tool call ([mcp-gateway.md](docs/design/mcp-gateway.md), ruling 8); the `fga-mcp` role itself is not built yet.
+- **R3:** not built.
 
 **Nothing here is qualified (GATE-001).** No release manifest exists and no execution evidence is recorded. Passing tests and a passing smoke run are development evidence only.
 

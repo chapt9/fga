@@ -13,6 +13,7 @@ import (
 	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/enforce"
+	"fga/internal/signing"
 	"fga/internal/strictjson"
 )
 
@@ -94,8 +95,58 @@ func Authenticate(tokens TokenVerifier, audience string, r *http.Request) (enfor
 
 // Authed wraps h with bearer-token authentication for audience.
 func Authed(tokens TokenVerifier, audience string, h func(http.ResponseWriter, *http.Request, enforce.Caller)) http.HandlerFunc {
+	return AuthedVia(tokens, audience, nil, h)
+}
+
+// DecisionHeader carries a gateway's decision for the user's MCP tool
+// call, in signing.Evidence form (TB3).
+const DecisionHeader = "Fga-Decision"
+
+// Gateway authenticates calls a gateway (the MCP role) makes for its users
+// (TB3): the calling workload must be one of Adapters, and it presents its
+// decision for the user's call, for Operation, addressed to this role
+// (Verifier's audience), requested by that same workload, and still valid.
+// The user is the decision's actor, acting for themself, and the decision
+// goes on to the decision role as the user's evidence. A gateway's own
+// claims about the user are never accepted (TRU-003, V-028).
+type Gateway struct {
+	AdapterOf func(*http.Request) (string, error)
+	Adapters  map[string]bool
+	Operation string
+	Verifier  *signing.Verifier
+}
+
+func (g *Gateway) authenticate(r *http.Request) (enforce.Caller, bool) {
+	signed, ok := signing.ParseEvidence(r.Header.Get(DecisionHeader))
+	if g == nil || !ok {
+		return enforce.Caller{}, false
+	}
+	adapter, err := g.AdapterOf(r)
+	if err != nil || !g.Adapters[adapter] {
+		return enforce.Caller{}, false
+	}
+	rec, err := g.Verifier.Check(signed)
+	if err != nil || rec.Operation != g.Operation || rec.Adapter != adapter || rec.Delegation != "" || rec.Subject.ID != "" {
+		return enforce.Caller{}, false
+	}
+	approval := r.Header.Get(ApprovalHeader)
+	if len(approval) > 64 {
+		return enforce.Caller{}, false
+	}
+	return enforce.Caller{Tenant: rec.Tenant, Principal: rec.Actor.ID, Token: signed.Evidence(), Approval: approval}, true
+}
+
+// AuthedVia is Authed that also accepts gateway calls: a request without a
+// bearer token that carries a gateway's decision is authenticated by gw.
+func AuthedVia(tokens TokenVerifier, audience string, gw *Gateway, h func(http.ResponseWriter, *http.Request, enforce.Caller)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, ok := Authenticate(tokens, audience, r)
+		var c enforce.Caller
+		var ok bool
+		if r.Header.Get("Authorization") == "" && r.Header.Get(DecisionHeader) != "" {
+			c, ok = gw.authenticate(r)
+		} else {
+			c, ok = Authenticate(tokens, audience, r)
+		}
 		if !ok {
 			WriteError(w, http.StatusUnauthorized, CodeUnauth)
 			return

@@ -102,8 +102,8 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 		}
 		publishers[id] = key
 	}
-	types := registry.R1Types()
-	releases := release.NewManager(publishers, release.R1Environment(), store, time.Now)
+	types := registry.CoreTypes()
+	releases := release.NewManager(publishers, release.CoreEnvironment(), store, time.Now)
 	bundle, _, err := release.LoadBundle(cfg.BundleDir)
 	if err != nil {
 		return nil, err
@@ -136,9 +136,14 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 		return nil, err
 	}
 	maxAge, _ := time.ParseDuration(cfg.DecisionMaxAge) // validated by Config.Validate
+	// The role checks its own decisions when a gateway's decision comes
+	// back as a user's evidence (TB3).
+	self := signing.NewVerifier("", func() map[string]signing.Key {
+		return map[string]signing.Key{cfg.SigningKeyID: {Public: signer.Public(), NotAfter: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	}, nil, time.Now)
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
-		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience,
-		Operations: registry.R1Operations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
+		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience, Gateways: cfg.Gateways, SelfVerifier: self,
+		Operations: registry.CoreOperations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
 		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits, Now: time.Now})
 }
 

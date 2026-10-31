@@ -8,11 +8,11 @@ import (
 // AudienceDecision is the audience of releases for the decision role.
 const AudienceDecision = "fga-decision"
 
-// R1Environment is the environment of an R1 decision role built from this
-// source tree: the R1 resource types and operations, this evaluator build
-// and the cost limit of DEC-009.
-func R1Environment() Environment {
-	types := registry.R1Types()
-	return Environment{Schema: types, SchemaDigest: types.Digest(), OperationsDigest: registry.R1Operations(types).Digest(),
+// CoreEnvironment is the environment of a decision role built from this
+// source tree: the core resource types and operations (R1 and the MCP
+// service's tools), this evaluator build and the cost limit of DEC-009.
+func CoreEnvironment() Environment {
+	types := registry.CoreTypes()
+	return Environment{Schema: types, SchemaDigest: types.Digest(), OperationsDigest: registry.CoreOperations(types).Digest(),
 		Audience: AudienceDecision, MaxCostLimit: engine.DefaultOptions.CostLimit}
 }

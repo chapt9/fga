@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"time"
 
 	"fga/internal/strictjson"
@@ -33,6 +34,10 @@ type Config struct {
 	// it serves; PublicAudience is the audience of the public facade.
 	AdapterAudiences map[string][]string `json:"adapter_audiences,omitempty"`
 	PublicAudience   string              `json:"public_audience,omitempty"`
+	// Gateways maps each gateway adapter (the MCP role) to the audiences
+	// its decisions for MCP tool calls may be addressed to; the role it
+	// calls presents such a decision as the user's evidence (TB3).
+	Gateways map[string][]string `json:"gateways,omitempty"`
 }
 
 // TokenIssuerConfig names one token issuer and its Ed25519 verification
@@ -130,6 +135,16 @@ func (c Config) Validate() error {
 		}
 		if ti.Issuer == devIssuer && c.Profile == profileProduction {
 			fail("the development token issuer is not allowed in production")
+		}
+	}
+	for gw, audiences := range c.Gateways {
+		if len(c.AdapterAudiences[gw]) == 0 {
+			fail("gateway %s needs adapter_audiences for its users' tokens", gw)
+		}
+		for _, a := range audiences {
+			if !slices.Contains(c.Audiences, a) {
+				fail("gateway %s may address only audiences the role signs for, not %s", gw, a)
+			}
 		}
 	}
 	if (len(c.AdapterAudiences) > 0 || c.PublicAudience != "") && c.TokenIssuer == nil {

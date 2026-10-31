@@ -188,13 +188,20 @@ type (
 
 // Storage returns the storage role's handler.
 func Storage(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bool, limiter *admission.Limiter) http.Handler {
+	return StorageWith(svc, tokens, ready, limiter, nil)
+}
+
+// StorageWith is Storage that also serves gw's gateway calls: the MCP
+// role's requests for its users, each carrying the decision for the
+// user's MCP tool call (TB3). Every route checks them as any other caller.
+func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func() bool, limiter *admission.Limiter, gw *httpapi.Gateway) http.Handler {
 	mux := http.NewServeMux()
 	httpapi.Health(mux, ready)
 	auth := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-		return httpapi.Authed(tokens, content.Audience, httpapi.Admitted(limiter, false, h))
+		return httpapi.AuthedVia(tokens, content.Audience, gw, httpapi.Admitted(limiter, false, h))
 	}
 	stream := func(h func(http.ResponseWriter, *http.Request, content.Caller)) http.HandlerFunc {
-		return httpapi.Authed(tokens, content.Audience, httpapi.Admitted(limiter, true, h))
+		return httpapi.AuthedVia(tokens, content.Audience, gw, httpapi.Admitted(limiter, true, h))
 	}
 	mux.HandleFunc("POST /v1/buckets/{bucket}/uploads", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		var b beginBody

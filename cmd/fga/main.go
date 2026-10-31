@@ -94,7 +94,7 @@ func validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	env := release.R1Environment()
+	env := release.CoreEnvironment()
 	env.Stamp(&b.Info)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	if err := signBundle(&b, "validate", priv); err != nil {
@@ -126,7 +126,7 @@ func sign(args []string) error {
 		return err
 	}
 	// The signer attests the environment it validated against (REL-001).
-	release.R1Environment().Stamp(&m.Info)
+	release.CoreEnvironment().Stamp(&m.Info)
 	b.Epoch, b.Info = *epoch, m.Info
 	if err := signBundle(&b, *keyID, priv); err != nil {
 		return err

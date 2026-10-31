@@ -8,6 +8,7 @@
 // Commands:
 //
 //	bucket create      -tenant T -name N [-project P] [-label L] [-scope S] [-encryption server|client]
+//	mcp enable         -tenant T                   register the MCP service's tools for the tenant (policy decides who uses them)
 //	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]
 //	identity disable   -tenant T -id ID                      (journaled)
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
@@ -61,6 +62,7 @@ import (
 	"fga/internal/kek"
 	"fga/internal/keyfile"
 	"fga/internal/recovery"
+	"fga/internal/registry"
 )
 
 func main() {
@@ -82,6 +84,7 @@ var StoragePreset = map[string][]string{
 	"text.entry":         {"read", "use-in-model", "update", "share"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
+	"agent.tool":         {"discover", "invoke"},
 }
 
 // ApproverPreset lets an actor decide approvals (ruling 6); policies still
@@ -232,6 +235,15 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println("journal", j.ID())
+		return nil
+	case "mcp enable":
+		if err := need(*tenant); err != nil {
+			return err
+		}
+		if err := e.store.EnableMCP(ctx, *tenant); err != nil {
+			return err
+		}
+		fmt.Printf("tenant %s: %d MCP tools registered\n", *tenant, len(registry.MCPTools))
 		return nil
 	case "bucket create":
 		if err := need(*tenant, *name); err != nil {

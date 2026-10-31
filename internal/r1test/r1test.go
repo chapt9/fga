@@ -42,6 +42,14 @@ const Tenant = "t-acme"
 // StorageAdapter is the workload name of the storage role.
 const StorageAdapter = "storage-1"
 
+// MCPAdapter is the MCP role's adapter, a gateway whose decisions for MCP
+// tool calls the storage role accepts for the user (TB3); its users
+// present tokens for MCPAudience.
+const (
+	MCPAdapter  = "mcp-1"
+	MCPAudience = "fga-mcp"
+)
+
 // LabelOrder is the fixture release's label order (D-06), generation 1.
 var LabelOrder = []string{"public", "internal", "confidential", "restricted"}
 
@@ -136,6 +144,10 @@ var Policies = map[string]string{
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"leads-approve-entries","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"}]}`,
+	// Members may discover and invoke the MCP service's tools; the content
+	// a call reaches is checked as for any other client (MCP-003).
+	"tools.json": `{"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
+  {"id":"members-use-mcp","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"mcp\""}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
 	   "when":"resource.attributes.status != \"ACTIVE\""}]}`,
@@ -153,6 +165,7 @@ var UserActions = map[string][]string{
 	"text.entry":         {"read", "use-in-model", "update", "share", "approve"},
 	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
 	"crypto.signing-key": {"discover"},
+	"agent.tool":         {"discover", "invoke"},
 }
 
 // Stack is a running fixture.
@@ -262,8 +275,8 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	st := &Stack{T: t, Pool: pool, Catalog: catalog.New(pool, 10_000), Clock: &clock}
 	now := func() time.Time { return *st.Clock }
 
-	types := registry.R1Types()
-	env := release.R1Environment()
+	types := registry.CoreTypes()
+	env := release.CoreEnvironment()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	releases := release.NewManager(map[string]ed25519.PublicKey{"pub-1": pub}, env, st.Catalog, now)
 	info := release.Info{Audience: release.AudienceDecision, CostLimit: engine.DefaultOptions.CostLimit, TestEvidence: "r1test",
@@ -314,10 +327,12 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	tokens := authn.NewVerifier("fga-dev", map[string]ed25519.PublicKey{"tok-1": tokPub}, now)
 	st.Tokens = tokens
 	st.Decisions, err = decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
-		Operations: registry.R1Operations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
+		Operations: registry.CoreOperations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
 		Approvals: approval.New(pool, now),
 		Audiences: []string{content.Audience, content.KeysAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
-		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience}}})
+		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience},
+			MCPAdapter: {MCPAudience}},
+		Gateways: map[string][]string{MCPAdapter: {content.Audience}}, SelfVerifier: st.Verifier(content.Audience)})
 	if err != nil {
 		t.Fatal(err)
 	}

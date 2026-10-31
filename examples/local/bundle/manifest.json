@@ -1,7 +1,7 @@
 {
   "epoch": 0,
   "audience": "fga-decision",
-  "business": ["buckets.json", "derived.json", "documents.json", "entries.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json", "units.json"],
+  "business": ["buckets.json", "derived.json", "documents.json", "entries.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json", "tools.json", "units.json"],
   "ceiling": ["ceiling-recipients.json"],
   "cost_limit": 10000,
   "label_order": ["public", "internal", "confidential", "restricted"],

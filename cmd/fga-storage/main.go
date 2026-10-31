@@ -25,8 +25,10 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/content"
 	"fga/internal/fence"
+	"fga/internal/httpapi"
 	"fga/internal/journal"
 	"fga/internal/nativeapi"
+	"fga/internal/registry"
 	"fga/internal/roleconfig"
 	"fga/internal/rpc"
 )
@@ -45,6 +47,9 @@ type Config struct {
 	// JournalDir is the security journal, shared with the keys role: the
 	// storage role journals removed share grants (AVL-008).
 	JournalDir string `json:"journal_dir"`
+	// MCPAdapters are the MCP role's workload identities (TB3): their calls
+	// carry the decision for the user's MCP tool call instead of a token.
+	MCPAdapters []string `json:"mcp_adapters,omitempty"`
 }
 
 // Validate reports every configuration problem.
@@ -136,10 +141,18 @@ func run(path string) error {
 		defer cancel()
 		return pool.Ping(pctx) == nil
 	}
-	server, _, err := cfg.Server(nativeapi.Storage(svc, tokens, ready, cfg.Limiter()))
+	server, adapterOf, err := cfg.Server(nil)
 	if err != nil {
 		return err
 	}
+	var gw *httpapi.Gateway
+	if len(cfg.MCPAdapters) > 0 {
+		gw = &httpapi.Gateway{AdapterOf: adapterOf, Adapters: map[string]bool{}, Operation: registry.OpMCPInvoke, Verifier: verifier}
+		for _, a := range cfg.MCPAdapters {
+			gw.Adapters[a] = true
+		}
+	}
+	server.Handler = nativeapi.StorageWith(svc, tokens, ready, cfg.Limiter(), gw)
 	slog.Info("fga-storage listening", "addr", cfg.Listen, "profile", cfg.Profile)
 	return cfg.Serve(ctx, server)
 }

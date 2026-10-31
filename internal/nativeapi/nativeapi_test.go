@@ -3,6 +3,7 @@ package nativeapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,12 +19,17 @@ import (
 	"time"
 
 	"fga/internal/admission"
+	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/datakeysapi"
+	"fga/internal/decisionsvc"
+	"fga/internal/httpapi"
 	"fga/internal/keysapi"
 	"fga/internal/nativeapi"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 	"fga/internal/rpc"
+	"fga/internal/signing"
 	"fga/sdk/go/client"
 	"fga/sdk/go/crypto"
 )
@@ -52,7 +58,11 @@ func deployFull(t *testing.T, limits admission.Limits, opts r1test.Options) *dep
 	// for envelopes and for server-mode data keys.
 	keysClient := rpc.KeysClient{BaseURL: keys.URL, HTTP: &http.Client{Transport: workload{r1test.StorageAdapter}}}
 	st.Keys, st.DataKeysVia = keysClient, keysClient
-	storage := httptest.NewServer(nativeapi.Storage(st.Content, st.Tokens, func() bool { return true }, admission.New(limits)))
+	// The storage role serves the MCP role's gateway calls too (TB3); the
+	// test identifies workloads by a header.
+	gw := &httpapi.Gateway{AdapterOf: workloadOf, Adapters: map[string]bool{r1test.MCPAdapter: true}, Operation: registry.OpMCPInvoke,
+		Verifier: st.Verifier(content.Audience)}
+	storage := httptest.NewServer(nativeapi.StorageWith(st.Content, st.Tokens, func() bool { return true }, admission.New(limits), gw))
 	t.Cleanup(storage.Close)
 	return &deployment{st: st, storage: storage, keys: keys}
 }
@@ -467,5 +477,180 @@ func TestGrantsHTTP(t *testing.T) {
 	}
 	if _, err := bob.GetPlain(ctx, "vault", "plan.txt", "", io.Discard); !errors.As(err, &apiErr) || apiErr.Status != 404 {
 		t.Fatalf("bob after the removal: %v", err)
+	}
+}
+
+// mcpDecision is the MCP role's decision for principal's call of an MCP
+// tool, requested as adapter with the user's token, addressed to the
+// storage role (TB3).
+func mcpDecision(t *testing.T, d *deployment, adapter, principal, tool, token, op string) (signing.Signed, bool) {
+	t.Helper()
+	id, err := d.st.Catalog.GetIdentity(context.Background(), r1test.Tenant, principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := d.st.Decisions.Decide(context.Background(), adapter, decisionsvc.Request{RequestID: cryptowire.NewUUID().String(), Tenant: r1test.Tenant,
+		Operation: op, OperationID: cryptowire.NewUUID().String(), Audience: content.Audience,
+		Actor: decisionsvc.Ref{ID: principal, Revision: id.Revision}, Evidence: token,
+		Checks: []decisionsvc.Check{{ID: "tool", Role: registry.RoleTool, Action: map[string]string{registry.OpMCPInvoke: "invoke",
+			registry.OpMCPDiscover: "discover"}[op], Resource: decisionsvc.Alias{Namespace: registry.MCPToolNamespace, Name: tool}}}})
+	if resp.Outcome != "ALLOW" || resp.Signed == nil {
+		return signing.Signed{}, false
+	}
+	payload, err := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signing.Signed{Payload: payload, JWS: resp.Signed.JWS}, true
+}
+
+// TestMCPGatewayHTTP covers TB3 and V-028 for the MCP role's calls: the
+// role's decision for the user's MCP tool call, presented by the MCP
+// workload, lets the storage role act for the user, and the decision role
+// accepts it as the user's evidence for the storage role's own checks.
+// The MCP workload's own claims, the user's MCP token passed through, a
+// decision presented by another workload, for another operation, from
+// another adapter or expired, are all refused.
+func TestMCPGatewayHTTP(t *testing.T) {
+	d := deploy(t)
+	ctx := context.Background()
+	d.st.ModeBucket("vault", "p1", "internal", "server")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	alice := d.client(t, a)
+	if _, err := alice.PutPlain(ctx, "vault", "plan.txt", strings.NewReader("the plan"), 8, client.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	mcpToken, err := d.st.Issuer.Issue("alice", r1test.Tenant, r1test.MCPAudience, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(workload string, header map[string]string) int {
+		req, _ := http.NewRequest(http.MethodGet, d.storage.URL+"/v1/buckets/vault/object/content?key=plan.txt", nil)
+		req.Header.Set("X-Test-Workload", workload)
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusOK && string(body) != "the plan" {
+			t.Fatalf("read %q", body)
+		}
+		return resp.StatusCode
+	}
+
+	// Without the tools registered for the tenant there is no MCP access.
+	if _, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", "resources.read", mcpToken, registry.OpMCPInvoke); ok {
+		t.Fatal("an MCP decision before the tenant enabled MCP")
+	}
+	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	signed, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", "resources.read", mcpToken, registry.OpMCPInvoke)
+	if !ok {
+		t.Fatal("no MCP decision for alice")
+	}
+	if code := read(r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}); code != http.StatusOK {
+		t.Fatalf("the MCP role reads for alice: %d", code)
+	}
+
+	// V-028 and the other refusals.
+	keysToken, err := d.st.Issuer.Issue("alice", r1test.Tenant, content.KeysAudience, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromKeys, ok := mcpDecision(t, d, "keys-1", "alice", "resources.read", keysToken, registry.OpMCPInvoke)
+	if !ok {
+		t.Fatal("no decision for the keys adapter")
+	}
+	discover, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", "resources.read", mcpToken, registry.OpMCPDiscover)
+	if !ok {
+		t.Fatal("no discover decision")
+	}
+	for name, c := range map[string]struct {
+		workload string
+		header   map[string]string
+	}{
+		"the MCP workload's own claim":          {r1test.MCPAdapter, map[string]string{"Fga-Actor": "alice"}},
+		"the user's MCP token passed through":   {r1test.MCPAdapter, map[string]string{"Authorization": "Bearer " + mcpToken}},
+		"the decision from another workload":    {r1test.StorageAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}},
+		"a decision another adapter requested":  {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: fromKeys.Evidence()}},
+		"a decision for another operation":      {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: discover.Evidence()}},
+		"a decision whose signature was broken": {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence() + "x"}},
+	} {
+		if code := read(c.workload, c.header); code == http.StatusOK {
+			t.Errorf("%s: %d", name, code)
+		}
+	}
+	*d.st.Clock = d.st.Clock.Add(time.Minute)
+	if code := read(r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}); code == http.StatusOK {
+		t.Fatal("an expired MCP decision was accepted")
+	}
+}
+
+// TestChainedEvidence covers the decision role's side of TB3: a gateway's
+// decision is the user's evidence only for that user and tenant, only when
+// a configured gateway requested it for an MCP tool call, and only in the
+// recovery incarnation it was made in.
+func TestChainedEvidence(t *testing.T) {
+	d := deploy(t)
+	ctx := context.Background()
+	d.st.Bucket("reports", "p1")
+	d.st.Client("alice", []string{"member"}, "p1")
+	bob := d.st.Client("bob", []string{"member"}, "p1")
+	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	var bucket string
+	if err := d.st.Pool.QueryRow(ctx, `SELECT id::text FROM buckets WHERE name = 'reports'`).Scan(&bucket); err != nil {
+		t.Fatal(err)
+	}
+	list := func(principal, evidence string) decisionsvc.Response {
+		id, err := d.st.Catalog.GetIdentity(ctx, r1test.Tenant, principal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.st.Decisions.Decide(ctx, r1test.StorageAdapter, decisionsvc.Request{RequestID: cryptowire.NewUUID().String(),
+			Tenant: r1test.Tenant, Operation: registry.OpListBucket, OperationID: cryptowire.NewUUID().String(), Audience: content.Audience,
+			Actor: decisionsvc.Ref{ID: principal, Revision: id.Revision}, Evidence: evidence,
+			Checks: []decisionsvc.Check{{ID: "bucket", Role: registry.RoleBucket, Action: "list", Resource: decisionsvc.Alias{Type: "storage.bucket", ID: bucket}}}})
+	}
+	token := func(audience string) string {
+		tok, err := d.st.Issuer.Issue("alice", r1test.Tenant, audience, 30*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	mcp, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", "documents.read", token(r1test.MCPAudience), registry.OpMCPInvoke)
+	if !ok {
+		t.Fatal("no MCP decision")
+	}
+	fromKeys, ok := mcpDecision(t, d, "keys-1", "alice", "documents.read", token(content.KeysAudience), registry.OpMCPInvoke)
+	if !ok {
+		t.Fatal("no keys-adapter decision")
+	}
+	if r := list("alice", mcp.Evidence()); r.Outcome != "ALLOW" {
+		t.Fatalf("alice with the gateway's decision: %s %s", r.Outcome, r.Reason)
+	}
+	for name, r := range map[string]decisionsvc.Response{
+		"another user with alice's decision":  list(bob.Caller.Principal, mcp.Evidence()),
+		"a decision a non-gateway requested":  list("alice", fromKeys.Evidence()),
+		"the user's MCP token at the storage": list("alice", token(r1test.MCPAudience)),
+	} {
+		if r.Outcome == "ALLOW" {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	// After a restore, a decision from the earlier incarnation proves
+	// nothing.
+	if _, err := d.st.Pool.Exec(ctx, `UPDATE authority_state SET incarnation = incarnation + 1`); err != nil {
+		t.Fatal(err)
+	}
+	if r := list("alice", mcp.Evidence()); r.Outcome == "ALLOW" {
+		t.Fatal("a gateway decision from an earlier incarnation was accepted")
 	}
 }

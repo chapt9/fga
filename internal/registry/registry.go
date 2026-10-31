@@ -97,11 +97,18 @@ var r1TypeDefs = []TypeDef{
 	{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
 }
 
-// executorTypeDefs are the R2 types of the optional executor (feature
-// executor). agent.tool also carries the approval and reconciliation
-// actions that executor uses.
-var executorTypeDefs = []TypeDef{
+// mcpTypeDefs are the R2 types of the MCP service (MCP-003): each
+// operation the MCP service offers is an agent.tool resource, which policy
+// allows to discover (tools/list) and invoke, apart from the content the
+// call reaches. The optional executor shares the type and uses its
+// approval and reconciliation actions.
+var mcpTypeDefs = []TypeDef{
 	{Name: "agent.tool", Actions: []string{"discover", "invoke", "configure", "approve", "resolve", "write-off"}},
+}
+
+// executorTypeDefs are the further R2 types of the optional executor
+// (feature executor).
+var executorTypeDefs = []TypeDef{
 	{Name: "network.destination", Actions: []string{"connect", "send"}},
 	{Name: "business.record", Actions: []string{"read", "update", "approve", "export"}},
 	{Name: "ai.model", Actions: []string{"submit", "configure"}},
@@ -110,9 +117,15 @@ var executorTypeDefs = []TypeDef{
 // R1Types returns the resource types of release R1.
 func R1Types() *Types { return mustTypes(r1TypeDefs) }
 
-// ExecutorTypes returns the R1 types plus the types of the optional R2
+// CoreTypes returns the resource types the platform's roles serve: those
+// of release R1 and the MCP service's agent.tool (R2).
+func CoreTypes() *Types { return mustTypes(slices.Concat(r1TypeDefs, mcpTypeDefs)) }
+
+// ExecutorTypes returns the core types plus the types of the optional R2
 // executor. Only roles that enable the executor use it.
-func ExecutorTypes() *Types { return mustTypes(append(slices.Clone(r1TypeDefs), executorTypeDefs...)) }
+func ExecutorTypes() *Types {
+	return mustTypes(slices.Concat(r1TypeDefs, mcpTypeDefs, executorTypeDefs))
+}
 
 func mustTypes(defs []TypeDef) *Types {
 	t, err := NewTypes(defs)

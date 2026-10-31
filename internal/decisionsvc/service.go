@@ -92,7 +92,8 @@ type Request struct {
 	Subject         *Ref   `json:"subject,omitempty"`
 	Delegation      string `json:"delegation,omitempty"`
 	// Evidence is the user's bearer access token, passed on unchanged by the
-	// adapter (TRU-003). It authenticates the actor.
+	// adapter (TRU-003), or, on a later hop, a gateway's decision for an MCP
+	// tool call in signing.Evidence form (TB3). It authenticates the actor.
 	Evidence string  `json:"evidence,omitempty"`
 	Checks   []Check `json:"checks"`
 	// Plan is the operation's canonical plan, as the enforcing role renders
@@ -197,9 +198,17 @@ type Deps struct {
 	// facade.
 	Authn            TokenVerifier
 	AdapterAudiences map[string][]string
-	PublicAudience   string
-	Signer           *signing.Signer
-	Outbox           audit.Outbox
+	// Gateways maps each gateway adapter (the MCP role) to the audiences
+	// its decisions for MCP tool calls may be addressed to. Such a decision
+	// is accepted as evidence from an adapter serving that audience, for
+	// the same tenant and user, while it is valid and from the current
+	// recovery incarnation (TB3). SelfVerifier checks this role's own
+	// signature on it.
+	Gateways       map[string][]string
+	SelfVerifier   *signing.Verifier
+	PublicAudience string
+	Signer         *signing.Signer
+	Outbox         audit.Outbox
 	// Approvals is optional; without it, NEEDS_APPROVAL is final.
 	Approvals Approvals
 	Audiences []string
@@ -274,7 +283,8 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if req.Tenant == "" || adapter == "" || len(req.Checks) == 0 || len(req.Checks) > s.d.Limits.MaxChecks || !s.audiences[req.Audience] {
 		return deny(ReasonInvalidRequest)
 	}
-	if !s.authenticated(adapter, req) {
+	authOK, chainedIncarnation := s.authenticated(adapter, req)
+	if !authOK {
 		return deny(ReasonAuthentication)
 	}
 	op, ok := s.d.Operations.Lookup(req.Operation)
@@ -290,6 +300,9 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return fail(ReasonCatalogUnavailable)
 	case !open:
 		return fail(ReasonAdmissionClosed)
+	case chainedIncarnation != 0 && chainedIncarnation != incarnation:
+		// A gateway decision from before a restore proves nothing now.
+		return deny(ReasonAuthentication)
 	}
 
 	snap, err := s.d.Releases.Snapshot(ctx, req.Tenant)
@@ -431,26 +444,49 @@ func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound 
 // name a delegation, which the gate verifies against authoritative state;
 // otherwise caller-asserted identity plus a workload identity would be
 // enough, which TRU-003 forbids.
-func (s *Service) authenticated(adapter string, req Request) bool {
+func (s *Service) authenticated(adapter string, req Request) (bool, uint64) {
 	if req.Evidence == "" {
-		return req.Delegation != "" && adapter != PublicAdapter
+		return req.Delegation != "" && adapter != PublicAdapter, 0
+	}
+	if signed, ok := signing.ParseEvidence(req.Evidence); ok {
+		return s.chained(adapter, req, signed)
 	}
 	audiences := s.d.AdapterAudiences[adapter]
 	if adapter == PublicAdapter {
 		audiences = []string{s.d.PublicAudience}
 	}
 	if s.d.Authn == nil {
-		return false
+		return false, 0
 	}
 	for _, audience := range audiences {
 		if audience == "" {
 			continue
 		}
 		if c, err := s.d.Authn.Verify(req.Evidence, audience); err == nil {
-			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID
+			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID, 0
 		}
 	}
-	return false
+	return false, 0
+}
+
+// chained accepts a gateway's earlier decision as the user's evidence
+// (TB3): signed by this role, for an MCP tool call, requested by a
+// configured gateway and addressed to an audience the gateway may address
+// and the requesting adapter serves, for the same tenant and user acting
+// for themself, and still valid. The caller compares the returned recovery
+// incarnation with the current one.
+func (s *Service) chained(adapter string, req Request, signed signing.Signed) (bool, uint64) {
+	if s.d.SelfVerifier == nil || adapter == PublicAdapter {
+		return false, 0
+	}
+	rec, err := s.d.SelfVerifier.Inspect(signed)
+	switch {
+	case err != nil, rec.Operation != registry.OpMCPInvoke,
+		!slices.Contains(s.d.Gateways[rec.Adapter], rec.Audience), !slices.Contains(s.d.AdapterAudiences[adapter], rec.Audience),
+		rec.Tenant != req.Tenant, rec.Actor.ID != req.Actor.ID, rec.Delegation != "" || req.Delegation != "" || req.Subject != nil:
+		return false, 0
+	}
+	return true, rec.RecoveryIncarnation
 }
 
 // DecidePublic serves the public facade: the caller is the token's subject

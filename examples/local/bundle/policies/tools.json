@@ -1,0 +1,2 @@
+{"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
+  {"id":"members-use-mcp","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"mcp\""}]}
