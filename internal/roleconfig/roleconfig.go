@@ -251,9 +251,9 @@ func (c Common) Server(handler http.Handler) (*http.Server, decisionsvc.AdapterO
 
 // Serve runs server until ctx ends, then shuts it down. A panic in a
 // request is answered 500 and logged, and the role goes on serving
-// (internal/guard).
+// (internal/guard); a slow client is held to guard.IOIdle and guard.IOMinRate.
 func (c Common) Serve(ctx context.Context, server *http.Server) error {
-	server.Handler = guard.Handler(nil, server.Handler)
+	server.Handler = guard.Handler(nil, guard.Progress(server.Handler))
 	errc := make(chan error, 1)
 	go func() {
 		if c.TLS != nil {

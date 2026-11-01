@@ -1,6 +1,7 @@
 // Package guard keeps a panic inside the request or goroutine it happens
 // in, so that one failure does not end a role's process
-// (docs/design/fault-isolation.md). It catches panics only. A fatal
+// (docs/design/fault-isolation.md). It catches panics, and Progress ends
+// requests whose client is too slow (progress.go). A fatal
 // runtime error (out of memory, a concurrent map write, stack exhaustion)
 // still ends the process, which the role's supervisor restarts; that is
 // why every role is a process of its own.

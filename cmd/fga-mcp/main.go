@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"fga/internal/authn"
+	"fga/internal/guard"
 	"fga/internal/mcpsvc"
 	"fga/internal/strictjson"
 )
@@ -289,7 +290,7 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Addr: cfg.Listen, Handler: svc.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: cfg.Listen, Handler: guard.Progress(svc.Handler()), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	errc := make(chan error, 1)
