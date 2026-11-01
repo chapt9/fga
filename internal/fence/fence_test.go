@@ -207,6 +207,44 @@ func TestFenceOrdersAgainstRevocation(t *testing.T) {
 	}
 }
 
+// TestRecipientLockOrder covers fga-audit F-09: a revocation, which
+// changes a recipient key and its resource, and an operation that locks
+// the key and then its resource (a publication's fence) take the locks in
+// one order, so neither deadlocks the other.
+func TestRecipientLockOrder(t *testing.T) {
+	f, _, pool := setup(t)
+	ctx := context.Background()
+	pgtest.Exec(t, pool, `INSERT INTO resources VALUES ('t-acme','sha256:77','crypto.recipient','acme',1,4,1,'{}')`)
+	reader, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback(ctx)
+	if _, err := reader.Exec(ctx, `SELECT 1 FROM recipient_keys WHERE tenant = 't-acme' AND fingerprint = 'sha256:77' FOR SHARE`); err != nil {
+		t.Fatal(err)
+	}
+	revoke := Binding{DecisionID: "d-revoke", Tenant: "t-acme", Incarnation: 1, PolicyEpoch: 5, ValidUntil: now.Add(30 * time.Second),
+		Identities: []Ref{{ID: "user-77", Revision: 5}},
+		Resources:  []Resource{{Type: "crypto.recipient", ID: "sha256:77", Generation: 4, MetadataRevision: 1}}}
+	done := make(chan error, 1)
+	go func() {
+		done <- f.Run(ctx, revoke, []string{"sha256:77"}, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE recipient_keys SET status = 'REVOKED' WHERE tenant = 't-acme' AND fingerprint = 'sha256:77'`)
+			return err
+		})
+	}()
+	time.Sleep(300 * time.Millisecond) // the revocation is waiting for the key
+	if _, err := reader.Exec(ctx, `SELECT 1 FROM resources WHERE tenant = 't-acme' AND type = 'crypto.recipient' AND id = 'sha256:77' FOR SHARE`); err != nil {
+		t.Fatalf("the reader's resource lock: %v", err)
+	}
+	if err := reader.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the revocation: %v", err)
+	}
+}
+
 func TestCheckIsReadOnly(t *testing.T) {
 	f, s, _ := setup(t)
 	ctx := context.Background()

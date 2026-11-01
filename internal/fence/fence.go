@@ -355,7 +355,17 @@ func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string
 		}
 	}
 
-	// 5. Recipient keys.
+	// 5. Recipient keys. A key whose crypto.recipient resource the
+	// operation changes is locked for update first, here and not after
+	// the resources of step 6: every reader of a key locks it before its
+	// resource, so the two orders never cross (fga-audit F-09).
+	for _, r := range b.Resources {
+		if r.Type == "crypto.recipient" && slices.Contains(mutate, r.ID) {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2 FOR UPDATE`, b.Tenant, r.ID); err != nil {
+				return fmt.Errorf("fence: recipient key: %w", err)
+			}
+		}
+	}
 	for _, r := range b.Keys {
 		var rev uint64
 		var status string
