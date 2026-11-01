@@ -67,4 +67,6 @@ After a restore, reconcile replays the entries in journal order. Each `identity-
  "bundle_dir": "/etc/fga/bundle", "publisher_keys": {"publisher-1": "BASE64"}}
 ```
 
+`outbox_capacity` (default 100,000) bounds the undelivered audit events, and `outbox_tenant_capacity`, if set, each tenant's share of them, as in the other roles (AUD-002, audit F6).
+
 `scripts/smoke.sh` runs it in the development profile on loopback and drives it with curl.

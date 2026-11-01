@@ -49,6 +49,24 @@ type ServeConfig struct {
 	BundleDir      string            `json:"bundle_dir"`
 	PublisherKeys  map[string]string `json:"publisher_keys"`
 	OutboxCapacity int               `json:"outbox_capacity,omitempty"`
+	// OutboxTenantCapacity, if set, bounds each tenant's undelivered audit
+	// events below the outbox capacity, as in every other role, so one
+	// tenant's administration cannot fill the outbox for every other
+	// (AUD-002, audit F6).
+	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
+}
+
+// outboxCapacity is outbox_capacity, 100,000 events when not given.
+func (c ServeConfig) outboxCapacity() int {
+	if c.OutboxCapacity == 0 {
+		return 100_000
+	}
+	return c.OutboxCapacity
+}
+
+// store is the catalog the admin API changes, with the outbox bounds.
+func (c ServeConfig) store(pool *pgxpool.Pool) *catalog.Store {
+	return catalog.New(pool, c.outboxCapacity()).LimitTenants(c.OutboxTenantCapacity)
 }
 
 // Validate reports every configuration problem.
@@ -104,6 +122,9 @@ func (c ServeConfig) Validate() error {
 	if c.OutboxCapacity < 0 {
 		fail("outbox_capacity is positive when given")
 	}
+	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.outboxCapacity() {
+		fail("outbox_tenant_capacity must be in [0, outbox_capacity]")
+	}
 	return errors.Join(errs...)
 }
 
@@ -144,17 +165,13 @@ func serve(args []string) error {
 	if err := catalog.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	capacity := cfg.OutboxCapacity
-	if capacity == 0 {
-		capacity = 100_000
-	}
 	common := roleconfig.Common{Profile: cfg.Profile, Listen: cfg.Listen, TLS: cfg.TLS, DevAdapter: cfg.DevConsole}
 	server, consoleOf, err := common.Server(nil)
 	if err != nil {
 		return err
 	}
 	server.Handler = adminapi.Handler(adminapi.Config{
-		Ops:    adminops.Ops{Store: catalog.New(pool, capacity), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now},
+		Ops:    adminops.Ops{Store: cfg.store(pool), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now},
 		Tokens: tokens, Audience: cfg.Audience, Admins: cfg.Admins, Consoles: cfg.Consoles, ConsoleOf: consoleOf,
 		Policy: func() (adminapi.Policy, error) { return adminapi.LoadPolicy(cfg.BundleDir, publishers) },
 		Logger: slog.Default(),
