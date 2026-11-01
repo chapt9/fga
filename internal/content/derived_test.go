@@ -2,6 +2,8 @@ package content_test
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -10,6 +12,8 @@ import (
 	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/r1test"
+	"fga/internal/registry"
+	"fga/internal/signing"
 	"fga/sdk/go/crypto"
 )
 
@@ -289,5 +293,69 @@ func TestDerivedVersions(t *testing.T) {
 	}
 	if _, err := alice.Put("reports", "summary", []byte("x")); err == nil {
 		t.Fatal("an object version was published over a derived key")
+	}
+}
+
+// deliverFunc is a content.EnvelopeDelivery written as a function.
+type deliverFunc func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error)
+
+func (f deliverFunc) Deliver(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
+	return f(ctx, d, id, extra...)
+}
+
+// TestDerivedDeliveryKeepsOneAuthority covers review v5 F03 for client
+// mode: the keys role delivers a derived output's envelope only with a
+// recipient path decided for the delivery's own authority. A storage role
+// that is not honest (the storage role itself checks each decision against
+// its request) presents alice's recipient-source decision changed to name
+// bob as the subject, validly signed; the keys role refuses the delivery.
+func TestDerivedDeliveryKeepsOneAuthority(t *testing.T) {
+	st := r1test.New(t)
+	st.LabeledBucket("reports", "p1", "public")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	st.Client("bob", []string{"member"}, "p1")
+	bob, err := st.Catalog.GetIdentity(ctx, r1test.Tenant, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := alice.PrepareDocumentSpecs(ctx, "reports", "src.md", []string{"u1", "u2"},
+		[]content.DocumentUnitSpec{{Label: "internal"}, {Label: "internal"}}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.PutDerived("reports", "summary", []byte("summary"), unitSources(up), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readDerived(t, st, alice, "summary"); err != nil || got != "summary" {
+		t.Fatalf("alice reads her output: %q, %v", got, err)
+	}
+	altered := 0
+	st.Keys = deliverFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
+		for i, x := range extra {
+			var rec signing.Record
+			if err := json.Unmarshal(x.Payload, &rec); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Operation != registry.OpDerivedRecipientSources {
+				continue
+			}
+			rec.Subject = signing.Ref{ID: "bob", Revision: bob.Revision}
+			if extra[i], err = st.DecisionSigner.Sign(rec); err != nil {
+				t.Fatal(err)
+			}
+			altered++
+		}
+		return st.Envelopes.Deliver(ctx, d, id, extra...)
+	})
+	defer func() { st.Keys = st.Envelopes }()
+	_, err = st.Content.DerivedPackage(ctx, alice.Caller, "reports", "summary", "", alice.Recipient.Fingerprint().String())
+	if altered == 0 {
+		t.Fatal("no recipient-source decision reached the keys role")
+	}
+	if err == nil {
+		t.Fatal("the envelope was delivered with a recipient path for another subject")
 	}
 }

@@ -11,6 +11,7 @@ package keycheck
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
@@ -22,8 +23,18 @@ import (
 // ErrDecision means the further decisions do not authorize the release.
 var ErrDecision = errors.New("keycheck: the decisions do not cover the release")
 
+// SameAuthority reports whether rec was decided for primary's authority:
+// its tenant, its actor, the subject the actor acts for and the delegation
+// it acts under. A release combines only such decisions, so an agent
+// acting for two subjects, or for one under two delegations, cannot add
+// up what neither authority holds alone (review v5 F03).
+func SameAuthority(primary, rec signing.Record) bool {
+	return rec.Tenant == primary.Tenant && rec.Actor == primary.Actor && rec.Subject == primary.Subject &&
+		rec.Delegation == primary.Delegation && slices.Equal(rec.DelegationChain, primary.DelegationChain)
+}
+
 // CompleteContent verifies that extra are single-use document.raw-read
-// decisions of primary's tenant and actor, each naming raw-read on
+// decisions of primary's authority (SameAuthority), each naming raw-read on
 // documentVersion, that together name read on every unit version of that
 // document version exactly once, and nothing else. It returns their fence
 // bindings.
@@ -51,7 +62,7 @@ func CompleteContent(ctx context.Context, q catalog.Querier, v *signing.Verifier
 	var out []fence.Binding
 	for _, x := range extra {
 		rec, err := v.Check(x)
-		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead || !SameAuthority(primary, rec) {
 			return nil, ErrDecision
 		}
 		version := false
@@ -111,14 +122,14 @@ func DependsOnLineage(ctx context.Context, q catalog.Querier, rec signing.Record
 // derived.declassify-reader decision with deliver and declassify on this
 // output and version, bound to its lineage, or derived.sources decisions whose checks name the
 // version's transitive lineage exactly. All are the caller's own operation
-// checks, single-use, of primary's tenant and actor. It returns their fence
+// checks, single-use, for primary's authority (SameAuthority). It returns their fence
 // bindings.
 func ReaderPath(ctx context.Context, q catalog.Querier, v *signing.Verifier, primary signing.Record, output, version cryptowire.UUID,
 	extra []signing.Signed) ([]fence.Binding, error) {
 	var recs []signing.Record
 	for _, x := range extra {
 		rec, err := v.Check(x)
-		if err != nil || !rec.SingleUse || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+		if err != nil || !rec.SingleUse || !SameAuthority(primary, rec) {
 			return nil, ErrDecision
 		}
 		for _, c := range rec.Checks {

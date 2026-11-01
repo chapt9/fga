@@ -186,7 +186,12 @@ type Stack struct {
 	Issuer     *authn.Issuer
 	Tokens     *authn.Verifier
 	DecisionPK ed25519.PublicKey
-	Clock      *time.Time
+	// DecisionSigner is the decision service's signer. Tests use it to
+	// sign records the service would not make, to test what an
+	// enforcement point does with validly signed decisions it must not
+	// combine.
+	DecisionSigner *signing.Signer
+	Clock          *time.Time
 	// Envelopes is the keys role. Keys is the envelope delivery the content
 	// service calls; it is Envelopes unless a test replaces it.
 	Envelopes  *envelope.Service
@@ -337,6 +342,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	st.DecisionSigner = signer
 	tokPub, tokPriv, _ := ed25519.GenerateKey(rand.Reader)
 	if st.Issuer, err = authn.NewIssuer("fga-dev", "tok-1", tokPriv, now); err != nil {
 		t.Fatal(err)

@@ -394,7 +394,7 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 
 // completeContent verifies the complete-content decisions of an original's
 // delivery: each is a single-use document.raw-read decision for the keys
-// role, by the same tenant and actor as the delivery decision, with
+// role, for the same authority as the delivery decision, with
 // raw-read on this document version and read on units of it; together
 // they name every unit version of the version exactly once.
 func (s *Service) completeContent(ctx context.Context, primary signing.Record, documentVersion cryptowire.UUID, extra []signing.Signed) ([]fence.Binding, error) {
@@ -410,13 +410,13 @@ func (s *Service) completeContent(ctx context.Context, primary signing.Record, d
 // output, version and recipient, bound to its lineage, or recipient-source
 // decisions whose
 // checks, all for this recipient, name the version's transitive lineage
-// exactly. Each is single-use, of the same tenant and actor as the
-// delivery, and is admitted in the same fence (DRV-009).
+// exactly. Each is single-use, for the same authority as the delivery
+// (keycheck.SameAuthority), and is admitted in the same fence (DRV-009).
 func (s *Service) recipientPath(ctx context.Context, primary signing.Record, e stored, extra []signing.Signed) ([]fence.Binding, error) {
 	var recs []signing.Record
 	for _, x := range extra {
 		rec, err := s.d.Verifier.Check(x)
-		if err != nil || !rec.SingleUse || rec.Tenant != primary.Tenant || rec.Actor != primary.Actor {
+		if err != nil || !rec.SingleUse || !keycheck.SameAuthority(primary, rec) {
 			return nil, ErrDecision
 		}
 		recs = append(recs, rec)

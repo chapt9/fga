@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -566,5 +567,107 @@ func TestReleaseDerived(t *testing.T) {
 	}
 	if k, err := f.svc.ReleaseDerived(ctx, primary(), []signing.Signed{declassify(out)}, out.Version); err != nil || len(k) != kek.DataKeySize {
 		t.Fatalf("this output's declassification: %v", err)
+	}
+}
+
+// resign returns d's record changed by alter and signed by the decision
+// service's key: a validly signed decision the service did not make.
+func (f *fixture) resign(t *testing.T, d signing.Signed, alter func(*signing.Record)) signing.Signed {
+	t.Helper()
+	var rec signing.Record
+	if err := json.Unmarshal(d.Payload, &rec); err != nil {
+		t.Fatal(err)
+	}
+	alter(&rec)
+	out, err := f.st.DecisionSigner.Sign(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestReleaseKeepsOneAuthority covers review v5 F03: the further decisions
+// of a release are combined only when they are for the release's own
+// authority, its tenant, actor, subject and delegation. Validly signed
+// decisions of the same actor for another subject, as an agent acting for
+// alice and for bob has, or for the same subject under another
+// delegation, neither complete an original's content nor make a derived
+// output's reader path.
+func TestReleaseKeepsOneAuthority(t *testing.T) {
+	f := setup(t)
+	f.st.User("bob", []string{"member"}, "p1")
+	ref := func(id string) signing.Ref {
+		t.Helper()
+		rec, err := f.st.Catalog.GetIdentity(ctx, r1test.Tenant, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signing.Ref{ID: id, Revision: rec.Revision}
+	}
+	alice, bob := ref("alice"), ref("bob")
+	as := func(subject signing.Ref, dlg string) func(signing.Signed) signing.Signed {
+		return func(d signing.Signed) signing.Signed {
+			return f.resign(t, d, func(r *signing.Record) { r.Subject, r.Delegation = subject, dlg })
+		}
+	}
+	same := func(d signing.Signed) signing.Signed { return d }
+	// own is the authority of the release and its other decisions; other
+	// that of the decision it must not be combined with.
+	cases := map[string]struct {
+		own, other func(signing.Signed) signing.Signed
+	}{
+		"another subject":    {same, as(bob, "")},
+		"another delegation": {as(alice, "dlg-1"), as(alice, "dlg-2")},
+	}
+
+	p, err := f.st.Content.PutDocumentText(ctx, f.alice.Caller, content.TextRequest{Bucket: "vault", Key: "r.md", IdempotencyKey: "o1",
+		Original: strings.NewReader("the original file")}, []byte("one\n\ntwo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.st.Content.ListUnits(ctx, f.alice.Caller, "vault", "r.md", "", 10, "")
+	if err != nil || len(page.Units) != 2 {
+		t.Fatalf("units: %+v %v", page, err)
+	}
+	rawRead := decisionsvc.Check{ID: "version", Role: registry.RoleVersion, Action: "raw-read", Resource: decisionsvc.Alias{Type: "document.version", ID: p.DocumentVersion}}
+	complete := func(u content.UnitEntry) signing.Signed {
+		return f.decide(t, f.alice, registry.OpDocRawRead, rawRead, decisionsvc.Check{ID: "unit-0", Role: registry.RoleUnit, Action: "read",
+			Resource: decisionsvc.Alias{Type: "document.text_unit", ID: u.Unit}, Version: u.UnitVersion})
+	}
+	for name, c := range cases {
+		primary := c.own(f.decide(t, f.alice, registry.OpKeyReleaseOriginal, rawRead))
+		extra := []signing.Signed{c.own(complete(page.Units[0])), c.other(complete(page.Units[1]))}
+		if _, err := f.svc.ReleaseOriginal(ctx, primary, extra, p.DocumentVersion); !errors.Is(err, datakeys.ErrDecision) {
+			t.Errorf("an original with a unit's read for %s: %v", name, err)
+		}
+	}
+	// The same decisions under one authority release the key.
+	own := cases["another delegation"].own
+	primary := own(f.decide(t, f.alice, registry.OpKeyReleaseOriginal, rawRead))
+	if _, err := f.svc.ReleaseOriginal(ctx, primary, []signing.Signed{own(complete(page.Units[0])), own(complete(page.Units[1]))},
+		p.DocumentVersion); err != nil {
+		t.Fatalf("an original under one delegation: %v", err)
+	}
+
+	src, err := f.st.Content.PutObject(ctx, f.alice.Caller, content.BeginRequest{Bucket: "vault", Key: "src.txt", IdempotencyKey: "src"},
+		6, strings.NewReader("source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.st.Content.PutDerivedPlain(ctx, f.alice.Caller, content.BeginRequest{Bucket: "vault", Key: "out.txt", IdempotencyKey: "out"},
+		[]cryptowire.LineageSource{{Type: cryptowire.SourceObject, ID: src.Object, Version: src.Version}}, -1, strings.NewReader("derived"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver := decisionsvc.Check{ID: "output", Role: registry.RoleOutput, Action: "deliver", Resource: decisionsvc.Alias{Type: "document.derived", ID: out.Object},
+		Version: out.Version}
+	sourceRead := decisionsvc.Check{ID: "source-0", Role: registry.RoleSourceObject, Action: "read",
+		Resource: decisionsvc.Alias{Type: "storage.object", ID: src.Object}, Version: src.Version}
+	for name, c := range cases {
+		primary := c.own(f.decide(t, f.alice, registry.OpKeyReleaseDerived, deliver))
+		path := c.other(f.decide(t, f.alice, registry.OpDerivedSources, sourceRead))
+		if _, err := f.svc.ReleaseDerived(ctx, primary, []signing.Signed{path}, out.Version); !errors.Is(err, datakeys.ErrDecision) {
+			t.Errorf("a derived output with a reader path for %s: %v", name, err)
+		}
 	}
 }
