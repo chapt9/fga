@@ -142,7 +142,7 @@ func (s *Store) putDelegation(ctx context.Context, q Querier, d delegation.Deleg
 	}
 	var parent *string
 	if d.Parent != "" {
-		chain, err := delegation.Resolve(ctx, s.Delegations(), d.Tenant, d.Parent, now)
+		chain, err := delegation.Resolve(ctx, delegationView{q}, d.Tenant, d.Parent, now)
 		if err != nil {
 			return fmt.Errorf("catalog: parent delegation: %w", err)
 		}

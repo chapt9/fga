@@ -49,8 +49,10 @@ var (
 // The identity, delegation and registry stores each have a Get method with
 // their own signature, so the catalog serves them through small views.
 type (
-	identityView   struct{ s *Store }
-	delegationView struct{ s *Store }
+	identityView struct{ s *Store }
+	// delegationView reads over the pool, or over the transaction a
+	// child delegation is recorded in (audit F4).
+	delegationView struct{ q Querier }
 	resourceView   struct{ s *Store }
 )
 
@@ -58,7 +60,7 @@ type (
 func (s *Store) Identities() identity.Store { return identityView{s} }
 
 // Delegations returns the catalog as a delegation.Store.
-func (s *Store) Delegations() delegation.Store { return delegationView{s} }
+func (s *Store) Delegations() delegation.Store { return delegationView{s.pool} }
 
 // Resources returns the catalog as a registry.Catalog.
 func (s *Store) Resources() registry.Catalog { return resourceView{s} }
@@ -68,7 +70,7 @@ func (v identityView) Get(ctx context.Context, tenant, id string) (identity.Iden
 }
 
 func (v delegationView) Get(ctx context.Context, tenant string, id delegation.ID) (delegation.Delegation, error) {
-	return v.s.GetDelegation(ctx, tenant, id)
+	return getDelegation(ctx, v.q, tenant, id)
 }
 
 func (v resourceView) Get(ctx context.Context, tenant, id string) (registry.Resource, error) {
@@ -172,10 +174,14 @@ type grantJSON struct {
 
 // GetDelegation reads one delegation of a tenant.
 func (s *Store) GetDelegation(ctx context.Context, tenant string, id delegation.ID) (delegation.Delegation, error) {
+	return getDelegation(ctx, s.pool, tenant, id)
+}
+
+func getDelegation(ctx context.Context, q Querier, tenant string, id delegation.ID) (delegation.Delegation, error) {
 	d := delegation.Delegation{ID: id, Tenant: tenant}
 	var grants []grantJSON
 	var parent *string
-	err := s.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT actor, subject, audience, grants, expires_at, parent, revision, revoked
 		   FROM delegations WHERE tenant = $1 AND id = $2`, tenant, string(id)).
 		Scan(&d.Actor, &d.Subject, &d.Audience, &grants, &d.ExpiresAt, &parent, &d.Revision, &d.Revoked)

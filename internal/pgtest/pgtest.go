@@ -56,6 +56,21 @@ func Pool(t testing.TB, migrate func(context.Context, *pgxpool.Pool) error) *pgx
 	return pool
 }
 
+// OneConn returns another pool on pool's schema that holds at most one
+// connection, closed when the test ends. Work that holds a transaction and
+// asks the pool for a second connection waits on it until its context ends.
+func OneConn(t testing.TB, pool *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	cfg := pool.Config()
+	cfg.MaxConns, cfg.MinConns = 1, 0
+	one, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(one.Close)
+	return one
+}
+
 // Exec runs fixture statements and fails the test on the first error.
 func Exec(t testing.TB, pool *pgxpool.Pool, stmts ...string) {
 	t.Helper()

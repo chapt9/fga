@@ -141,6 +141,25 @@ func TestPutDelegation(t *testing.T) {
 	}
 }
 
+// TestParentInTheTransaction covers audit F4: an administration resolves a
+// child delegation's parent through its own transaction, so the child is
+// recorded on a pool whose one connection that transaction holds.
+func TestParentInTheTransaction(t *testing.T) {
+	_, pool := testStore(t)
+	pgtest.Exec(t, pool, `INSERT INTO identities VALUES ('t-acme','agent-8',1,false,'{agent}','{}')`)
+	s := New(pgtest.OneConn(t, pool), 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	child := delegation.Delegation{ID: "dlg-6", Tenant: "t-acme", Actor: "agent-8", Subject: "user-42", Audience: "tools-gw-1",
+		Grants: []delegation.Grant{{ResourceType: "document.text_unit", Actions: []string{"read"}}}, ExpiresAt: now.Add(30 * time.Minute), Parent: "dlg-5"}
+	if err := s.Administer(ctx, adminEvent(), Journal{}, func(a *Admin) error { return a.PutDelegation(ctx, child, now) }); err != nil {
+		t.Fatalf("a child delegation: %v", err)
+	}
+	if chain, err := delegation.Resolve(ctx, s.Delegations(), "t-acme", "dlg-6", now); err != nil || len(chain) != 2 {
+		t.Fatalf("the child's chain: %v %v", chain, err)
+	}
+}
+
 func TestGateOverCatalog(t *testing.T) {
 	s, _ := testStore(t)
 	g, err := gate.New(gate.Deps{Recipients: gate.MemoryRecipients{}, Identities: s.Identities(), Delegations: s.Delegations(), Capabilities: s,

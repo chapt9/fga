@@ -10,5 +10,6 @@
 | Maintainers | Jack Christensen and contributors. |
 | Advisories | None checked yet. `govulncheck` must run in CI before release (LIB-003). |
 | Our evidence | `internal/catalog` tests against a local PostgreSQL 18 (`make check-pg`): tenant scoping, cross-tenant foreign keys, consumption exactly once across connections, outbox capacity and idempotency, and the gate wired to the catalog. |
+| Use | Code that holds a transaction or a connection takes no second one from the pool: every read it needs goes through what it holds, so a full pool cannot leave transactions waiting on each other (audit F4, review v5 F04). `pgtest.OneConn` gives a test a pool of one connection to show it. |
 | Transitive footprint | `github.com/jackc/puddle/v2` (pool), `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, plus `golang.org/x/text` and `golang.org/x/sync`. |
 | Replacement path | SQL is confined to `internal/catalog`; the other packages depend only on their store interfaces. |

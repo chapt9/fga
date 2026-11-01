@@ -65,4 +65,5 @@ A role may also present a delegation itself, with no token: the request names th
 | `internal/nativeapi` `TestChainedEvidence` | The decision role names the subject from the delegation; the gateway's decision is evidence only for the same actor, subject and delegation |
 | `internal/executor` `TestResolution` | An agent for a lead resolves another's call, never the lead's own |
 | `internal/catalog` `TestPutDelegation` | Creation: a child narrows its parent in actions and lifetime; no overwrite, no self-delegation, no past expiry, no unknown actor, no empty grant |
+| `internal/catalog` `TestParentInTheTransaction` | A child delegation recorded by an administration resolves its parent through that transaction, on a pool of one connection (audit F4) |
 | `scripts/smoke.sh` | An agent under a delegation reads the user's document through MCP; without it, nothing; its session is bound to it |
