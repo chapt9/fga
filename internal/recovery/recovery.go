@@ -440,6 +440,12 @@ func ReadManifest(dir string, sealer Sealer) (Manifest, error) {
 	if err := strictjson.Decode(b, &m); err != nil || m.Format != Format {
 		return m, fmt.Errorf("recovery: malformed manifest: %v", err)
 	}
+	// Restore empties every table of Tables and loads those the manifest
+	// names, so they must be the same: a table left out would be emptied,
+	// one added would be written (fga-audit F-17).
+	if !slices.EqualFunc(m.Tables, Tables, func(f FileEntry, name string) bool { return f.Name == name }) {
+		return m, errors.New("recovery: the backup's tables are not this version's; restore it with the version that took it")
+	}
 	for _, f := range m.Tables {
 		if sum, err := fileDigest(filepath.Join(dir, f.File)); err != nil || sum != f.SHA256 {
 			return m, fmt.Errorf("recovery: table file %s does not match the manifest", f.File)
