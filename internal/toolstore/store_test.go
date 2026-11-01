@@ -110,3 +110,23 @@ func TestDestinations(t *testing.T) {
 		t.Errorf("another tenant's destination: %v", err)
 	}
 }
+
+// TestBudgetCurrency covers fga-audit F-15: a budget's currency changes
+// only while nothing is reserved or spent in it.
+func TestBudgetCurrency(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	if err := s.PutBudget(ctx, "t-acme", "travel", tools.Money{Currency: "EUR", Minor: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutBudget(ctx, "t-acme", "travel", tools.Money{Currency: "USD", Minor: 1000}); err != nil {
+		t.Fatalf("a change of currency while nothing is held: %v", err)
+	}
+	pgtest.Exec(t, pool, `UPDATE budgets SET reserved_minor = 100 WHERE tenant = 't-acme' AND id = 'travel'`)
+	if err := s.PutBudget(ctx, "t-acme", "travel", tools.Money{Currency: "EUR", Minor: 1000}); !errors.Is(err, ErrCurrency) {
+		t.Fatalf("a change of currency while an amount is held: %v", err)
+	}
+	if err := s.PutBudget(ctx, "t-acme", "travel", tools.Money{Currency: "USD", Minor: 2000}); err != nil {
+		t.Fatalf("a new limit in the same currency: %v", err)
+	}
+}

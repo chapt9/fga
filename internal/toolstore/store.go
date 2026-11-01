@@ -41,6 +41,7 @@ var (
 	ErrUnknownTool        = errors.New("unknown tool")
 	ErrToolNotReviewed    = errors.New("tool record changed since it was reviewed")
 	ErrUnknownDestination = errors.New("unknown destination")
+	ErrCurrency           = errors.New("the budget holds reserved or spent amounts in its currency")
 )
 
 // Store is the tools role's view of the catalog database.
@@ -205,11 +206,16 @@ func destination(_ context.Context, row pgx.Row, id string) (tools.Destination, 
 }
 
 // PutBudget creates or replaces a budget's limit. Reserved and spent amounts
-// are kept.
+// are kept, so the currency changes only while they are zero: otherwise
+// they would be read in another currency (fga-audit F-15).
 func (s *Store) PutBudget(ctx context.Context, tenant, id string, limit tools.Money) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO budgets (tenant, id, currency, limit_minor) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (tenant, id) DO UPDATE SET currency = EXCLUDED.currency, limit_minor = EXCLUDED.limit_minor`,
+		ON CONFLICT (tenant, id) DO UPDATE SET currency = EXCLUDED.currency, limit_minor = EXCLUDED.limit_minor
+		WHERE budgets.currency = EXCLUDED.currency OR budgets.reserved_minor = 0 AND budgets.spent_minor = 0`,
 		tenant, id, limit.Currency, limit.Minor)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrCurrency
+	}
 	return err
 }
