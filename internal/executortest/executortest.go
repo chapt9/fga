@@ -199,11 +199,12 @@ func Install(t *testing.T, st *r1test.Stack, o Options) *Fixture {
 	if o.Reconcilable {
 		d.ReconcilePath = "/payments/{key}"
 	}
-	must(ts.PutTool(ctx, r1test.Tenant, Pay, true))
+	must(ts.PutTool(ctx, r1test.Tenant, Pay, false))
 	must(executor.RegisterDestination(ctx, st.Pool, r1test.Tenant, d, map[string]any{"approved": true}))
 	must(ts.PutBudget(ctx, r1test.Tenant, "ops", tools.Money{Currency: "EUR", Minor: o.Limit}))
-	must(st.Catalog.RegisterTool(ctx, r1test.Tenant, "pay", Pay.Operation(), map[string]any{"name": "pay", "kind": "executor", "destination": "bank"}))
-	_, err := st.Pool.Exec(ctx, `INSERT INTO resources VALUES ($1, 'record:acct-1', 'business.record', '', 1, 1, 1, '{"project":"p1"}')`, r1test.Tenant)
+	_, err := executor.ReviewTool(ctx, st.Pool, r1test.Tenant, "pay")
+	must(err)
+	_, err = st.Pool.Exec(ctx, `INSERT INTO resources VALUES ($1, 'record:acct-1', 'business.record', '', 1, 1, 1, '{"project":"p1"}')`, r1test.Tenant)
 	must(err)
 	_, err = st.Pool.Exec(ctx, `INSERT INTO aliases VALUES ($1, 'account', 'acct-1', 'record:acct-1')`, r1test.Tenant)
 	must(err)

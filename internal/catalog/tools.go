@@ -11,14 +11,15 @@ import (
 	"fga/internal/registry"
 )
 
-// RegisterTool records a reviewed tool for a tenant (AGT-001): its
+// RegisterToolTx records a reviewed tool for a tenant inside tx, the
+// transaction that marks it reviewed (AGT-001, executor.ReviewTool): its
 // agent.tool resource "tool:<id>", aliased in registry.ToolNamespace, and
 // its invocation's operation with exactly its checks. A changed
 // registration advances the resource's generation and metadata revision,
 // so a decision made under the earlier one fails at its fence. op must be
 // valid for the core types; attrs are the resource's attributes, which
 // policy sees.
-func (s *Store) RegisterTool(ctx context.Context, tenant, id string, op registry.Operation, attrs map[string]any) error {
+func RegisterToolTx(ctx context.Context, tx pgx.Tx, tenant, id string, op registry.Operation, attrs map[string]any) error {
 	if _, err := registry.NewOperations(registry.CoreTypes(), []registry.Operation{op}); err != nil || op.Name != registry.ToolOperationPrefix+id {
 		return fmt.Errorf("catalog: tool %q: operation %q is not valid: %v", id, op.Name, err)
 	}
@@ -31,22 +32,20 @@ func (s *Store) RegisterTool(ctx context.Context, tenant, id string, op registry
 		return err
 	}
 	rid := registry.ToolOperationPrefix + id
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO resources VALUES ($1, $2, 'agent.tool', '', 1, 1, 1, $3)
-			ON CONFLICT (tenant, id) DO UPDATE SET attributes = EXCLUDED.attributes,
-			       generation = resources.generation + 1, metadata_revision = resources.metadata_revision + 1
-			 WHERE resources.type = 'agent.tool'`, tenant, rid, a); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO aliases VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-			tenant, registry.ToolNamespace, id, rid); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO tool_operations VALUES ($1, $2, $3)
-			ON CONFLICT (tenant, name) DO UPDATE SET checks = EXCLUDED.checks`, tenant, op.Name, checks)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO resources VALUES ($1, $2, 'agent.tool', '', 1, 1, 1, $3)
+		ON CONFLICT (tenant, id) DO UPDATE SET attributes = EXCLUDED.attributes,
+		       generation = resources.generation + 1, metadata_revision = resources.metadata_revision + 1
+		 WHERE resources.type = 'agent.tool'`, tenant, rid, a); err != nil {
 		return err
-	})
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO aliases VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+		tenant, registry.ToolNamespace, id, rid); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO tool_operations VALUES ($1, $2, $3)
+		ON CONFLICT (tenant, name) DO UPDATE SET checks = EXCLUDED.checks`, tenant, op.Name, checks)
+	return err
 }
 
 // RegisterDestination records a network.destination resource

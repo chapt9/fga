@@ -462,6 +462,32 @@ func TestDispatchBinding(t *testing.T) {
 			t.Fatalf("a call over a transport its decision did not see: %v, %d and %d calls", err, f.Dest.Count(), elsewhere.Count())
 		}
 	})
+	// Review v5 F02: a reviewed tool record runs only as the resource the
+	// decision saw records it. Here version 2 is reviewed while the
+	// catalog still shows version 1, as when registration failed after
+	// review or had not run yet.
+	t.Run("a tool reviewed apart from its resource", func(t *testing.T) {
+		f := deploy(t, plainInvoke, nil, http.StatusOK, 10_000)
+		alice := f.Caller(t, "alice", "member")
+		v2 := pay
+		v2.Version, v2.Description = 2, "pay an invoice, version 2"
+		if err := toolstore.New(f.St.Pool).PutTool(ctx, r1test.Tenant, v2, true); err != nil {
+			t.Fatal(err)
+		}
+		r := payment("b-3", 100)
+		r.Version = 2
+		if _, err := f.Svc.Invoke(ctx, alice, r); !errors.Is(err, executor.ErrConflict) || f.Dest.Count() != 0 {
+			t.Fatalf("version 2 under version 1's resource: %v, %d calls", err, f.Dest.Count())
+		}
+		// Reviewed and registered together, version 2 is called.
+		if _, err := executor.ReviewTool(ctx, f.St.Pool, r1test.Tenant, "pay"); err != nil {
+			t.Fatal(err)
+		}
+		r.IdempotencyKey = "b-4"
+		if res, err := f.Svc.Invoke(ctx, alice, r); err != nil || res.State != string(invocation.StateSucceeded) || f.Dest.Count() != 1 {
+			t.Fatalf("version 2 after its review: %+v %v, %d calls", res, err, f.Dest.Count())
+		}
+	})
 	t.Run("no time left in the lease", func(t *testing.T) {
 		f := deploy(t, plainInvoke, nil, http.StatusOK, 10_000)
 		alice := f.Caller(t, "alice", "member")

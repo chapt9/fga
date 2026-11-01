@@ -11,7 +11,7 @@ A tool is administered out of band with `fga-tools` subcommands. Nothing an agen
 | Command | Effect |
 |---|---|
 | `tool add -tenant T -file tool.json` | Stores the record: ID, version, destination, endpoint, strict argument schema, budget and amount argument, maximum hold age. The tool is unusable until reviewed |
-| `tool review -tenant T -id ID` | Marks the current record reviewed and registers it in the catalog: the `agent.tool` resource `tool:<id>` (alias namespace `tool`, attributes `kind: executor`, destination, version) and the operation `tool:<id>` with exactly its checks (`tool_operations`). A changed registration advances the resource's generation, so earlier decisions fail at their fence |
+| `tool review -tenant T -id ID` | Marks the current record reviewed and registers it in the catalog, in one transaction: the `agent.tool` resource `tool:<id>` (alias namespace `tool`, attributes `kind: executor`, destination, version and the record's `schema_digest`) and the operation `tool:<id>` with exactly its checks (`tool_operations`). A changed registration advances the resource's generation, so earlier decisions fail at their fence. A tool registered before `schema_digest` existed is refused at dispatch until it is reviewed again |
 | `destination add -tenant T -id D -url U -cidrs … [-credential-file F] [-approved]` | Registers the destination in one transaction: the base URL, allowed address ranges, the destination's own credential, and a `network.destination` resource `destination:<id>` whose `approved` attribute policy may test and whose `transport` attribute is the transport's digest |
 | `budget set -tenant T -id B -currency C -limit N` | A budget in integer minor units (DAT-005) |
 
@@ -42,6 +42,7 @@ The executor's resource types (`network.destination`, `business.record`, `ai.mod
    - consumes the decision and the approval;
    - moves the invocation to DISPATCHING under the worker's lease and fencing token;
    - holds the reservation on the tool's budget, which the database bounds whatever the concurrency (APR-004);
+   - checks the tool record against the `schema_digest` of the tool resource the decision bound: a record reviewed apart from its resource is refused, so the definition sent is the one the decision saw (review v5 F02);
    - reads the destination's transport, locked until commit, and checks it against the `transport` digest of the destination resource the decision bound: a transport changed apart from its resource is refused;
    - records that transport and the tool's maximum hold age on the invocation (its binding), and the worker's lease expiry as its send deadline;
    - records the audit event.
@@ -98,7 +99,7 @@ A pass that panics is contained; the next pass runs.
 | `TestInvokeReservation` | Reserved in the dispatch's transaction; charged on success, released on refusal, held while unknown; a payment beyond the budget sent nowhere; no reservation without the mapping |
 | `TestResolution` | The actor cannot resolve; evidence is required; ABANDONED keeps the charge and never redispatches; another lead writes it off; an agent for a lead resolves another's call, never the lead's own |
 | `TestDispatchFence` | A revocation between decision and dispatch leaves the call unsent |
-| `TestDispatchBinding` | A transport changed apart from its resource is refused, nothing sent; a worker without time left in its lease sends nothing |
+| `TestDispatchBinding` | A transport changed apart from its resource is refused, nothing sent; a tool record reviewed apart from its resource (version 2 while the resource shows version 1) is refused, nothing sent, and called once reviewed and registered together (review v5 F02); a worker without time left in its lease sends nothing |
 | `TestOutcomeAudited` | An outcome whose audit event cannot be recorded is not recorded either; reconciliation records both later |
 | `TestReconcile` | Calls are asked of the destination they were sent to, not one registered since; a key never received is UNKNOWN within the send window and FAILED after it, the reservations settled, nothing sent again; every open call is reached in bounded passes; without a reconcile path, a stalled dispatch stays UNKNOWN with its charge held and is escalated once past the hold age |
 | `internal/mcpsvc` `TestMCPRegisteredTools` | Listing and calling through the MCP role, approvals included |

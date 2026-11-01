@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fga/internal/pgtest"
@@ -37,7 +38,13 @@ func TestToolsNeedReview(t *testing.T) {
 	if _, err := s.Tool(ctx, "t-acme", tl.ID); !errors.Is(err, ErrToolNotReviewed) {
 		t.Fatalf("unreviewed tool: %v", err)
 	}
-	if err := s.ReviewTool(ctx, "t-acme", tl.ID); err != nil {
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		got, err := ReviewToolTx(ctx, tx, "t-acme", tl.ID)
+		if err == nil && got.SchemaDigest() != tl.SchemaDigest() {
+			t.Errorf("review returned %+v", got)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.Tool(ctx, "t-acme", tl.ID); err != nil || got.SchemaDigest() != tl.SchemaDigest() {

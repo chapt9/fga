@@ -280,7 +280,8 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		return Result{}, ErrBudget
 	case errors.Is(err, toolstore.ErrUnknownDestination):
 		return Result{}, ErrNotFound
-	case errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval), errors.Is(err, errTransportChanged), isAuthorityChange(err):
+	case errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval), errors.Is(err, errTransportChanged), errors.Is(err, errToolChanged),
+		isAuthorityChange(err):
 		return Result{}, ErrConflict
 	case err != nil:
 		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -306,6 +307,10 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 // policy-visible resource records.
 var errTransportChanged = errors.New("executor: the destination's transport changed")
 
+// errToolChanged is a tool record that is not the one its policy-visible
+// resource records.
+var errToolChanged = errors.New("executor: the tool is not the one its resource records")
+
 // binding is what a dispatch was authorized for, recorded with it: the
 // destination's transport as it was in the dispatch's fence, and the
 // tool's maximum hold age. Reconciliation asks that destination, never
@@ -319,11 +324,20 @@ type binding struct {
 	MaxHoldAge     string   `json:"max_hold_age"`
 }
 
-// bind reads the tool's destination in tx, locked until the dispatch
-// commits, and checks that its transport is the one the destination's
-// resource records: the resource the decision bound and the fence
-// rechecks, so the transport used is the one the decision saw.
+// bind checks in tx that the tool is the one its resource records, and
+// reads the tool's destination, locked until the dispatch commits, and
+// checks that its transport is the one the destination's resource
+// records. Both resources are the ones the decision bound and the fence
+// rechecks, so the tool definition and the transport used are the ones
+// the decision saw (review v5 F02, review v4 F03).
 func (s *Service) bind(ctx context.Context, tx pgx.Tx, tenant string, t tools.Tool) (tools.Destination, []byte, error) {
+	tool, err := catalog.ResourceAttributesTx(ctx, tx, tenant, registry.ToolOperationPrefix+t.ID)
+	if err != nil {
+		return tools.Destination{}, nil, err
+	}
+	if tool[ToolDigestAttribute] != t.SchemaDigest() {
+		return tools.Destination{}, nil, errToolChanged
+	}
 	d, err := toolstore.DestinationTx(ctx, tx, tenant, t.Destination)
 	if err != nil {
 		return tools.Destination{}, nil, err
@@ -347,6 +361,10 @@ func (s *Service) bind(ctx context.Context, tx pgx.Tx, tenant string, t tools.To
 // TransportAttribute is the destination resource's attribute that records
 // its transport digest (tools.Destination.TransportDigest).
 const TransportAttribute = "transport"
+
+// ToolDigestAttribute is the tool resource's attribute that records the
+// schema digest of its reviewed record (tools.Tool.SchemaDigest).
+const ToolDigestAttribute = "schema_digest"
 
 // bound returns the binding an invocation was dispatched with.
 func bound(inv invocation.Invocation) (binding, tools.Destination, bool) {
@@ -529,4 +547,22 @@ func RegisterDestination(ctx context.Context, db Beginner, tenant string, d tool
 		}
 		return catalog.RegisterDestinationTx(ctx, tx, tenant, d.ID, a)
 	})
+}
+
+// ReviewTool records that a tenant's tool, as stored, was reviewed, and
+// registers it in the catalog with its version and schema digest, in one
+// transaction: a record becomes usable only together with the resource
+// policy sees for it, and dispatch requires the two to match (AGT-001,
+// review v5 F02).
+func ReviewTool(ctx context.Context, db Beginner, tenant, id string) (tools.Tool, error) {
+	var t tools.Tool
+	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		var err error
+		if t, err = toolstore.ReviewToolTx(ctx, tx, tenant, id); err != nil {
+			return err
+		}
+		return catalog.RegisterToolTx(ctx, tx, tenant, t.ID, t.Operation(), map[string]any{"name": t.ID, "kind": "executor",
+			"destination": t.Destination, "version": t.Version, ToolDigestAttribute: t.SchemaDigest()})
+	})
+	return t, err
 }

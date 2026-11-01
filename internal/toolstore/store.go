@@ -68,10 +68,25 @@ func (s *Store) PutTool(ctx context.Context, tenant string, t tools.Tool, review
 	return err
 }
 
-// ReviewTool records that the tool's current record was reviewed.
-func (s *Store) ReviewTool(ctx context.Context, tenant, id string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE tools SET reviewed_digest = schema_digest WHERE tenant = $1 AND id = $2`, tenant, id)
-	return err
+// ReviewToolTx records inside tx that the tool's current record was
+// reviewed, and returns it. The same transaction registers it in the
+// catalog (executor.ReviewTool), so the record is never usable apart from
+// the resource policy sees for it.
+func ReviewToolTx(ctx context.Context, tx pgx.Tx, tenant, id string) (tools.Tool, error) {
+	var record []byte
+	err := tx.QueryRow(ctx, `UPDATE tools SET reviewed_digest = schema_digest WHERE tenant = $1 AND id = $2 RETURNING record`, tenant, id).
+		Scan(&record)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tools.Tool{}, ErrUnknownTool
+	}
+	if err != nil {
+		return tools.Tool{}, err
+	}
+	var t tools.Tool
+	if err := strictjson.Decode(record, &t); err != nil {
+		return tools.Tool{}, fmt.Errorf("catalog: tool %q: %w", id, err)
+	}
+	return t, nil
 }
 
 // Tool returns a usable tool. The digest is recomputed from the stored

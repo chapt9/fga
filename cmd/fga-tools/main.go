@@ -245,15 +245,8 @@ func admin(ctx context.Context, pool *pgxpool.Pool, store *catalog.Store, ts *to
 		fmt.Printf("tool %s version %d stored, schema digest %s; it is unusable until reviewed\n", t.ID, t.Version, t.SchemaDigest())
 		return nil
 	case "tool review":
-		if err := ts.ReviewTool(ctx, *tenant, *id); err != nil {
-			return err
-		}
-		t, err := ts.Tool(ctx, *tenant, *id)
+		t, err := executor.ReviewTool(ctx, pool, *tenant, *id)
 		if err != nil {
-			return err
-		}
-		if err := store.RegisterTool(ctx, *tenant, t.ID, t.Operation(), map[string]any{"name": t.ID, "kind": "executor",
-			"destination": t.Destination, "version": t.Version}); err != nil {
 			return err
 		}
 		fmt.Printf("tool %s version %d reviewed and registered (%s)\n", t.ID, t.Version, t.SchemaDigest())
