@@ -114,11 +114,14 @@ func TestBackupHoldsSealedKeysOnly(t *testing.T) {
 	}
 }
 
-// TestReconcileChecksKeys covers SSE-006 and AVL-008: after a restore,
-// reconcile refuses to reopen admission without the KEK ring; a ring
-// lacking the KEK version quarantines the versions whose keys it sealed;
-// a sealed key that does not open under its binding is quarantined; with
-// the right ring the keys open and the content reads.
+// TestReconcileChecksKeys covers SSE-006 and the owner's restore safeguard
+// of 1 November 2026: reconcile refuses to reopen admission without the
+// KEK ring. A ring that lacks a KEK version the catalog records, or holds
+// another key under its number so that none of its data keys opens,
+// keeps admission closed and quarantines nothing, since quarantine cannot
+// be undone; only an operator's accepted loss, audited, quarantines those
+// versions. A sealed key that does not open among keys that do is
+// quarantined; with the right ring the keys open and the content reads.
 func TestReconcileChecksKeys(t *testing.T) {
 	st := r1test.New(t)
 	st.ModeBucket("vault", "p1", "internal", "server")
@@ -135,6 +138,10 @@ func TestReconcileChecksKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	quarantined := func() int {
+		t.Helper()
+		return st.Count(`SELECT count(*) FROM object_versions WHERE state = 'QUARANTINED'`)
+	}
 
 	restore()
 	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); !errors.Is(err, recovery.ErrNoKEKs) {
@@ -143,9 +150,28 @@ func TestReconcileChecksKeys(t *testing.T) {
 	if _, err := readServer(st, st.Caller("alice"), "a.txt"); !errors.Is(err, content.ErrUnavailable) {
 		t.Fatalf("a read while admission stays closed: %v", err)
 	}
-	rep, err := recovery.ReconcileWith(ctx, st.Catalog, st.Blobs, st.Journal, recovery.Options{KEKs: kek.NewRing()})
-	if err != nil || rep.Quarantined != 2 || rep.KeysChecked != 0 || len(rep.MissingKEKs) != 1 || rep.MissingKEKs[0] != r1test.Tenant+"/1" {
-		t.Fatalf("reconcile with a ring lacking the KEK: %+v, %v", rep, err)
+	other := kek.NewRing()
+	if _, err := other.Add(r1test.Tenant, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for name, ring := range map[string]*kek.Ring{"a ring lacking the KEK": kek.NewRing(), "another key under its number": other} {
+		rep, err := recovery.ReconcileWith(ctx, st.Catalog, st.Blobs, st.Journal, recovery.Options{KEKs: ring})
+		if !errors.Is(err, recovery.ErrKEKsMissing) || len(rep.MissingKEKs) != 1 || rep.MissingKEKs[0] != r1test.Tenant+"/1" {
+			t.Fatalf("%s: %+v, %v", name, rep, err)
+		}
+		if n := quarantined(); n != 0 {
+			t.Fatalf("%s: %d versions quarantined", name, n)
+		}
+		if _, err := readServer(st, st.Caller("alice"), "a.txt"); !errors.Is(err, content.ErrUnavailable) {
+			t.Fatalf("%s: a read: %v", name, err)
+		}
+	}
+	rep, err := recovery.ReconcileWith(ctx, st.Catalog, st.Blobs, st.Journal, recovery.Options{KEKs: other, AcceptKEKLoss: true})
+	if err != nil || rep.Quarantined != 2 || len(rep.MissingKEKs) != 1 {
+		t.Fatalf("reconcile accepting the KEK's loss: %+v, %v", rep, err)
+	}
+	if n := st.Count(`SELECT count(*) FROM audit_outbox WHERE event->>'outcome' = 'KEK_LOSS_ACCEPTED'`); n != 1 {
+		t.Fatalf("%d audited acceptances", n)
 	}
 	if _, err := readServer(st, st.Caller("alice"), "a.txt"); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a quarantined version: %v", err)

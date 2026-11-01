@@ -11,6 +11,8 @@
 // before it is refused. Reconcile replays the security journal,
 // quarantines versions whose ciphertext is missing or altered or whose
 // data key does not open under the ring, and only then reopens admission.
+// A ring that lacks a KEK version the catalog records keeps admission
+// closed and quarantines nothing, unless the operator accepts the loss.
 package recovery
 
 import (
@@ -24,6 +26,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -97,8 +100,13 @@ type Options struct {
 	// KEKs is the keys role's KEK ring, recovered apart from backups
 	// (SSE-006). Reconcile needs it when the catalog holds server-mode
 	// data keys, and quarantines every version whose key does not open
-	// under it.
+	// under it, once the ring holds every KEK version.
 	KEKs *kek.Ring
+	// AcceptKEKLoss proceeds although the ring lacks KEK versions the
+	// catalog records: the versions whose keys they sealed are quarantined,
+	// which cannot be undone. Only an operator who knows those KEKs are
+	// lost may set it; it is audited.
+	AcceptKEKLoss bool
 }
 
 // ErrJournalUnproven means the restore had no catalog record of the
@@ -111,6 +119,14 @@ var ErrJournalUnproven = errors.New("recovery: restored without the catalog's re
 // ErrNoKEKs means the catalog holds server-mode data keys and no KEK ring
 // was given to check them. Admission stays closed.
 var ErrNoKEKs = errors.New("recovery: server-mode data keys need the KEK ring to be checked; admission stays closed")
+
+// ErrKEKsMissing means the ring lacks KEK versions the catalog records: a
+// version absent from it, or one under which none of its data keys opens,
+// such as another installation's key under the same number. Quarantine
+// cannot be undone, so admission stays closed and nothing is quarantined
+// until the right ring is given, or the operator accepts the loss
+// (Options.AcceptKEKLoss; owner's decision of 1 November 2026).
+var ErrKEKsMissing = errors.New("recovery: the KEK ring lacks key-encryption keys the catalog records; admission stays closed")
 
 // ErrJournalContinuity means the security journal is not the one the
 // catalog is bound to, has fewer entries than the catalog recorded, lacks
@@ -634,6 +650,23 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 			return rep, ErrNoKEKs
 		}
 	}
+	locked, err := checkKeys(ctx, pool, opts.KEKs, &rep)
+	if err != nil {
+		return rep, err
+	}
+	if len(rep.MissingKEKs) > 0 {
+		if !opts.AcceptKEKLoss {
+			return rep, fmt.Errorf("%w: %s", ErrKEKsMissing, strings.Join(rep.MissingKEKs, ", "))
+		}
+		targets := make([]audit.Target, len(rep.MissingKEKs))
+		for i, m := range rep.MissingKEKs {
+			targets[i] = audit.Target{Type: "crypto.kek", ID: m}
+		}
+		if err := store.Append(ctx, audit.Event{ID: cryptowire.NewUUID().String(), Kind: audit.KindMutation, Actor: "operator",
+			Outcome: "KEK_LOSS_ACCEPTED", Targets: targets, At: time.Now().UTC()}); err != nil {
+			return rep, err
+		}
+	}
 	// A restore without the catalog's record of the journal reopens only on
 	// an operator's audited statement that the journal is complete, or an
 	// accepted loss (specification 2.6.2, AVL-008, review v3 F02).
@@ -734,10 +767,6 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 	if err != nil {
 		return rep, err
 	}
-	locked, err := checkKeys(ctx, pool, opts.KEKs, &rep)
-	if err != nil {
-		return rep, err
-	}
 	quarantine = append(quarantine, locked...)
 	for _, q := range quarantine {
 		tag, err := pool.Exec(ctx, `UPDATE object_versions SET state = 'QUARANTINED' WHERE tenant = $1 AND id = $2 AND state <> 'QUARANTINED'`,
@@ -796,8 +825,10 @@ func unverified(rows rowScanner, blobs receiptVerifier) ([]keyed, error) {
 // must be in the ring, and the sealed key of every LIVE or WITHDRAWN
 // server-mode version must open under its tenant's KEK version and its
 // binding. The opened key is cleared at once. It returns the versions
-// whose key does not open; without a ring (the catalog then holds no
-// sealed key) there is nothing to check.
+// whose key does not open, and reports as missing every KEK version
+// absent from the ring or under which none of its keys opens; without a
+// ring (the catalog then holds no sealed key) there is nothing to check.
+// It only reads.
 func checkKeys(ctx context.Context, pool *pgxpool.Pool, ring *kek.Ring, rep *Report) ([]keyed, error) {
 	if ring == nil {
 		return nil, nil
@@ -830,6 +861,7 @@ func checkKeys(ctx context.Context, pool *pgxpool.Pool, ring *kek.Ring, rep *Rep
 	}
 	defer rows.Close()
 	var locked []keyed
+	opened, failed := map[string]bool{}, map[string]bool{}
 	for rows.Next() {
 		var k keyed
 		var b kek.Binding
@@ -839,13 +871,27 @@ func checkKeys(ctx context.Context, pool *pgxpool.Pool, ring *kek.Ring, rep *Rep
 			return nil, err
 		}
 		b.Version = k.version
+		name := k.tenant + "/" + strconv.FormatUint(uint64(version), 10)
 		dataKey, err := ring.Open(k.tenant, version, sealed, b)
 		clear(dataKey)
 		if err != nil {
 			locked = append(locked, k)
+			failed[name] = true
 			continue
 		}
+		opened[name] = true
 		rep.KeysChecked++
 	}
-	return locked, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// A KEK version under which no data key opens is not the one that
+	// sealed them: another installation's ring, or an old copy.
+	for name := range failed {
+		if !opened[name] && !slices.Contains(rep.MissingKEKs, name) {
+			rep.MissingKEKs = append(rep.MissingKEKs, name)
+		}
+	}
+	slices.Sort(rep.MissingKEKs)
+	return locked, nil
 }

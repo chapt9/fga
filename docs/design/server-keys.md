@@ -64,6 +64,8 @@ Document units, originals, exports and derived outputs get their release operati
 - **Reconcile** (`fga-admin reconcile -kek-file FILE`). Without the ring it refuses before changing anything, and admission stays closed. With it, reconcile checks the following before reopening admission, and opened keys are cleared at once:
   - every KEK version that `kek_versions` records must be in the ring; a missing one is reported as `tenant/version`;
   - the sealed key of every LIVE or WITHDRAWN server-mode version (objects, units, originals and derived outputs alike) must open under its tenant's KEK version and its binding. A version whose key does not open is quarantined.
+
+  A KEK version absent from the ring, or one under which none of its keys opens (another installation's key, or an old copy, under the same number; the catalog stores no fingerprint of a KEK), counts as missing. Quarantine cannot be undone, so with any KEK version missing, reconcile refuses before changing anything: admission stays closed and nothing is quarantined until the ring that holds it is given. Only `-accept-kek-loss` proceeds; it quarantines the versions those KEKs sealed and is audited (`KEK_LOSS_ACCEPTED`, one `crypto.kek` target per version). A sealed key that does not open among keys of its KEK version that do is quarantined as before (owner's decision of 1 November 2026).
 - **Final removal** (`fga-admin reclaim`). Retiring a withdrawn server-mode version destroys its sealed key and records when (`key_destroyed_at`, migration 0021). It also removes the upload intent's copy of the key, so the catalog no longer holds it. The command reports the destroyed keys and says that backups taken before that time still hold them: the content is unrecoverable only once every such backup is deleted. Reclaim also destroys the sealed keys of aborted uploads and drops the redundant copies held by committed ones.
 
 ## Tests
@@ -80,6 +82,6 @@ Document units, originals, exports and derived outputs get their release operati
 | `cmd/fga-keys` | The allowlist; production refusing `kek_file` |
 | `internal/kms` `TestSealAndOpen`, `cmd/fga-kms` | Seal and open through the key management role; another binding, an unknown version, a workload that is not a client; production rules (mutual TLS, protected ring, passphrase file); the role's allowlist |
 | `internal/recovery` `TestBackupHoldsSealedKeysOnly` | A backup holds the sealed key, never the unsealed key or a KEK |
-| `TestReconcileChecksKeys` | No ring: admission stays closed; a ring without the KEK version, or an altered sealed key, quarantines; the right ring reopens and the content reads |
+| `TestReconcileChecksKeys` | No ring: admission stays closed; a ring without the KEK version, or with another key under its number, keeps admission closed and quarantines nothing; an accepted loss quarantines and is audited; an altered sealed key among good ones is quarantined; the right ring reopens and the content reads |
 | `TestReclaimDestroysKeys` | Retirement destroys the version's and the intent's sealed keys; a backup taken before still restores them |
 | `scripts/smoke.sh` | A protected ring, the first rotation, and the keys role sealing and opening through `fga-kms`; reclaim destroying a withdrawn version's key; reconcile refusing without the ring and reopening with it |

@@ -43,11 +43,12 @@
 //	                   cannot be read, unless -allow-missing lists it in the manifest as missing
 //	journal init                          create the security journal once, at setup
 //	restore            -backup-key FILE -from DIR [-accept-journal-loss]
-//	reconcile          [-accept-journal-loss | -journal-complete] [-kek-file FILE]
+//	reconcile          [-accept-journal-loss | -journal-complete] [-kek-file FILE [-accept-kek-loss]]
 //	                   -journal-complete: after a restore without the catalog's record of the journal (onto an empty
 //	                   catalog), the operator states, audited, that the journal holds every change since the backup
 //	                   -kek-file is needed when the catalog holds server-mode
-//	                   data keys: each must open under the ring, or its version is quarantined (SSE-006)
+//	                   data keys: each must open under the ring, or its version is quarantined (SSE-006). A ring
+//	                   lacking a KEK version keeps admission closed; -accept-kek-loss quarantines what it sealed (audited)
 //	reclaim                                          retire withdrawn versions; destroys their server-mode data keys;
 //	                                                 prunes expired consumption, admission, challenge and delivered audit rows
 //	audit-key generate -out FILE [-encrypt]         create the audit export signing key; prints its public key
@@ -199,6 +200,8 @@ func run(args []string) error {
 	allowMissing := fs.Bool("allow-missing", false, "backup: complete although blobs of live versions cannot be read, listing them as missing")
 	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
 		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
+	acceptKEKLoss := fs.Bool("accept-kek-loss", false,
+		"reconcile although the KEK ring lacks KEK versions the catalog records; the versions they sealed are quarantined for good (audited)")
 	if err := fs.Parse(sub); err != nil {
 		return err
 	}
@@ -532,18 +535,22 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		opts := recovery.Options{AcceptJournalLoss: *acceptJournalLoss, JournalComplete: *journalComplete}
+		opts := recovery.Options{AcceptJournalLoss: *acceptJournalLoss, JournalComplete: *journalComplete, AcceptKEKLoss: *acceptKEKLoss}
 		if *kekFile != "" {
 			if opts.KEKs, err = kek.ReadRing(*kekFile, kekPassphrase); err != nil {
 				return err
 			}
 		}
 		rep, err := recovery.ReconcileWith(ctx, e.store, blobs, j, opts)
+		if errors.Is(err, recovery.ErrKEKsMissing) {
+			return fmt.Errorf("%w; give -kek-file the ring that holds them, or, only if they are lost, add -accept-kek-loss", err)
+		}
 		if err != nil {
 			return err
 		}
 		if len(rep.MissingKEKs) > 0 {
-			fmt.Printf("KEK versions missing from the ring: %s; their data keys do not open\n", strings.Join(rep.MissingKEKs, ", "))
+			fmt.Printf("KEK versions missing from the ring, accepted as lost: %s; the versions they sealed are quarantined\n",
+				strings.Join(rep.MissingKEKs, ", "))
 		}
 		fmt.Printf("replayed %d journal entries, checked %d server-mode data keys, quarantined %d versions; admission is open\n",
 			rep.Replayed, rep.KeysChecked, rep.Quarantined)
