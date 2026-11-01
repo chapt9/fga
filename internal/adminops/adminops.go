@@ -218,6 +218,11 @@ func ParseGrants(list string) ([]delegation.Grant, error) {
 		if !ok {
 			return nil, invalid("%q is not resource-type:actions", part)
 		}
+		// A type given without actions stays, so Grants refuses it rather
+		// than drop it unnoticed (audit F7).
+		if _, seen := m[typ]; !seen {
+			m[typ] = nil
+		}
 		for _, a := range strings.Split(acts, ",") {
 			if a = strings.TrimSpace(a); a != "" {
 				m[typ] = append(m[typ], a)

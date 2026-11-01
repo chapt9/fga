@@ -47,7 +47,10 @@ func TestParseGrants(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("grants = %+v, %v", got, err)
 	}
-	for _, bad := range []string{"", "storage.object", "storage.object:", "storage.vault:read", "storage.object:fly"} {
+	// A type given without actions, or an unknown one, is refused even
+	// beside a valid part, never dropped (audit F7).
+	for _, bad := range []string{"", "storage.object", "storage.object:", "storage.vault:read", "storage.object:fly",
+		"storage.object:read;storage.bucket:", "storage.object:read;bogus:", "bogus:"} {
 		if _, err := ParseGrants(bad); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%q: %v", bad, err)
 		}

@@ -18,7 +18,7 @@ The effective authority is the intersection of the three. The agent's own roles 
 
 `fga-admin delegation add -tenant T -id ID -actor AGENT -subject USER -audience WORKLOAD -grants 'type:a,b;type:c' -expires 24h [-parent ID]`
 
-- The grants name core resource types and their actions, or `*`.
+- The grants name core resource types and their actions, or `*`. A type given without actions, or an unknown type, is refused, never dropped (audit F7).
 - The audience is the workload that presents the delegation: for an agent using MCP, the MCP role's workload identity.
 - A child (`-parent`) must narrow its parent: the same subject, no later expiry, and no grant its parent lacks.
 - A delegation is never changed. `fga-admin delegation revoke` ends it, journaled, and every decision bound to it fails at its fence (DLG-005).
