@@ -95,7 +95,7 @@ func (s *Store) ReserveTx(ctx context.Context, tx pgx.Tx, tenant, budget, invoca
 		return Reservation{}, err
 	}
 	if tag.RowsAffected() != 1 {
-		return Reservation{}, s.whyNot(ctx, tenant, budget, amount)
+		return Reservation{}, whyNot(ctx, tx, tenant, budget, amount)
 	}
 	r := Reservation{ID: newID(), Budget: budget, Invocation: invocation, AmountMinor: amount.Minor, State: StateHeld}
 	if _, err := tx.Exec(ctx, `
@@ -106,9 +106,11 @@ func (s *Store) ReserveTx(ctx context.Context, tx pgx.Tx, tenant, budget, invoca
 	return r, nil
 }
 
-func (s *Store) whyNot(ctx context.Context, tenant, budget string, amount tools.Money) error {
+// whyNot reads the budget through tx, which holds the caller's connection
+// (review v5 F04).
+func whyNot(ctx context.Context, tx pgx.Tx, tenant, budget string, amount tools.Money) error {
 	var currency string
-	err := s.pool.QueryRow(ctx, `SELECT currency FROM budgets WHERE tenant = $1 AND id = $2`, tenant, budget).Scan(&currency)
+	err := tx.QueryRow(ctx, `SELECT currency FROM budgets WHERE tenant = $1 AND id = $2`, tenant, budget).Scan(&currency)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ErrUnknownBudget

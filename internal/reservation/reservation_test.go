@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -91,6 +92,29 @@ func TestReserveChecks(t *testing.T) {
 	again, err := s.Reserve(ctx, "t-acme", "team-travel", "inv-1", eur(500))
 	if err != nil || again.ID != first.ID {
 		t.Fatalf("reserving again = %+v, %v; want the first reservation", again, err)
+	}
+}
+
+// TestRefusalOnOneConnection covers review v5 F04: a refused reservation
+// learns why through its own transaction, so it answers on a pool whose
+// one connection that transaction holds.
+func TestRefusalOnOneConnection(t *testing.T) {
+	_, pool := setup(t, "inv-1")
+	s := New(pgtest.OneConn(t, pool))
+	for _, c := range []struct {
+		name, budget string
+		amount       tools.Money
+		want         error
+	}{
+		{"other currency", "team-travel", tools.Money{Currency: "USD", Minor: 1}, ErrCurrency},
+		{"unknown budget", "no-such-budget", eur(1), ErrUnknownBudget},
+		{"beyond the limit", "team-travel", eur(100001), ErrInsufficient},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if _, err := s.Reserve(ctx, "t-acme", c.budget, "inv-1", c.amount); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
+		cancel()
 	}
 }
 
