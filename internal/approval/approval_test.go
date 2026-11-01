@@ -5,8 +5,6 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,54 +57,8 @@ func TestDecide(t *testing.T) {
 	if err := s.Decide(ctx, "t-acme", a.ID, "finance-1", true); !errors.Is(err, ErrNotPending) {
 		t.Errorf("deciding twice: %v, want %v", err, ErrNotPending)
 	}
-	if ok, _ := s.Usable(ctx, "t-acme", a.ID, a.OperationDigest); ok {
-		t.Error("a rejected approval is usable")
-	}
-}
-
-// TestApprovalIsBoundToTheOperation covers V-030: an approval for one
-// digest does not cover a changed operation.
-func TestApprovalIsBoundToTheOperation(t *testing.T) {
-	s, _, a := setup(t)
-	ctx := context.Background()
-	_ = s.Decide(ctx, "t-acme", a.ID, "finance-1", true)
-	if ok, _ := s.Usable(ctx, "t-acme", a.ID, a.OperationDigest); !ok {
-		t.Fatal("approved approval is not usable for its own operation")
-	}
-	if ok, _ := s.Usable(ctx, "t-acme", a.ID, "sha256:changed-amount"); ok {
-		t.Fatal("approval is usable for a changed operation")
-	}
-}
-
-// TestConsumedOnce covers V-040: of concurrent dispatch transactions, one
-// consumes the approval.
-func TestConsumedOnce(t *testing.T) {
-	s, pool, a := setup(t)
-	ctx := context.Background()
-	_ = s.Decide(ctx, "t-acme", a.ID, "finance-1", true)
-	var wins atomic.Int32
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			defer tx.Rollback(ctx) //nolint:errcheck
-			if err := ConsumeTx(ctx, tx, "t-acme", a.ID, a.OperationDigest, now); err == nil && tx.Commit(ctx) == nil {
-				wins.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if wins.Load() != 1 {
-		t.Fatalf("%d transactions consumed the approval, want 1", wins.Load())
-	}
-	if got, _ := s.Get(ctx, "t-acme", a.ID); got.State != StateConsumed {
-		t.Errorf("state = %s, want %s", got.State, StateConsumed)
+	if got, _ := s.Get(ctx, "t-acme", a.ID); got.State == StateApproved {
+		t.Error("a rejected approval is approved")
 	}
 }
 

@@ -195,7 +195,7 @@ func (c Common) Verifier(audience string) (*signing.Verifier, error) {
 		}
 		keys[id] = signing.Key{Public: k, NotAfter: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}
 	}
-	return signing.NewVerifier(audience, func() map[string]signing.Key { return keys }, signing.NewMemoryConsumption(), time.Now), nil
+	return signing.NewVerifier(audience, func() map[string]signing.Key { return keys }, time.Now), nil
 }
 
 // Client returns the HTTP client for calling p: mutual TLS when a client

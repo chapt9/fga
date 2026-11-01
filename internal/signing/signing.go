@@ -9,7 +9,6 @@
 package signing
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -57,6 +56,9 @@ const (
 const MaxClockSkew = 5 * time.Second
 
 // Errors returned by verification and consumption.
+// DecisionType is the JWS type of a signed decision record.
+const DecisionType = "fga-decision+jws"
+
 var (
 	ErrSignature   = errors.New("decision signature does not verify")
 	ErrUnknownKey  = errors.New("decision signed with an unknown key")
@@ -66,7 +68,6 @@ var (
 	ErrAudience    = errors.New("decision is for another audience")
 	ErrExpired     = errors.New("decision expired")
 	ErrNotYetValid = errors.New("decision issued in the future")
-	ErrReplayed    = errors.New("single-use decision already consumed")
 	ErrObligation  = errors.New("decision carries obligations this enforcement point cannot apply")
 	ErrBinding     = errors.New("decision's binding digests do not match its content")
 )
@@ -262,7 +263,7 @@ func (s *Signer) Public() ed25519.PublicKey { return s.public }
 // for nothing but decision signing (DEC-012).
 func NewSigner(keyID string, key ed25519.PrivateKey) (*Signer, error) {
 	s, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.EdDSA, Key: jose.JSONWebKey{Key: key, KeyID: keyID}},
-		(&jose.SignerOptions{}).WithType("fga-decision+jws"))
+		(&jose.SignerOptions{}).WithType(DecisionType))
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
 	}
@@ -311,21 +312,12 @@ type Key struct {
 	Revoked   bool
 }
 
-// Consumption records single-use decisions. Consume must be atomic and
-// durable, and shared by every replica of the verifying role (DEC-011).
-type Consumption interface {
-	// Consume returns true the first time a decision ID is consumed and false
-	// afterwards. An error means it could not record the consumption.
-	Consume(ctx context.Context, decisionID string, until time.Time) (bool, error)
-}
-
 // Verifier verifies decisions for one audience (one role).
 type Verifier struct {
-	audience    string
-	keys        func() map[string]Key
-	consumption Consumption
-	now         func() time.Time
-	applies     func(operation, obligation string) bool
+	audience string
+	keys     func() map[string]Key
+	now      func() time.Time
+	applies  func(operation, obligation string) bool
 }
 
 // Applying makes v accept decisions under ObligationsV1 whose every
@@ -338,35 +330,16 @@ func (v *Verifier) Applying(applies func(operation, obligation string) bool) *Ve
 
 // NewVerifier returns a verifier for audience. keys returns the current key
 // set, so rotation and revocation take effect without a restart.
-func NewVerifier(audience string, keys func() map[string]Key, consumption Consumption, now func() time.Time) *Verifier {
-	return &Verifier{audience: audience, keys: keys, consumption: consumption, now: now}
-}
-
-// Verify checks the signature, key, record, audience and validity, and
-// consumes a single-use decision. It returns the record only if all hold.
-func (v *Verifier) Verify(ctx context.Context, s Signed) (Record, error) {
-	rec, err := v.check(s, true)
-	if err != nil {
-		return Record{}, err
-	}
-	if rec.SingleUse {
-		first, err := v.consumption.Consume(ctx, rec.DecisionID, rec.ValidUntil)
-		if err != nil {
-			return Record{}, fmt.Errorf("signing: record consumption: %w", err)
-		}
-		if !first {
-			return Record{}, ErrReplayed
-		}
-	}
-	return rec, nil
+func NewVerifier(audience string, keys func() map[string]Key, now func() time.Time) *Verifier {
+	return &Verifier{audience: audience, keys: keys, now: now}
 }
 
 // Audience returns the audience the verifier accepts.
 func (v *Verifier) Audience() string { return v.audience }
 
-// Check verifies like Verify but consumes nothing. The caller must consume
-// a single-use decision itself, atomically with the protected transition
-// it authorizes (DEC-011): the authority fence does.
+// Check verifies the signature, key, record, audience and validity, and
+// consumes nothing: a single-use decision is consumed atomically with the
+// protected transition it authorizes, by the authority fence (DEC-011).
 func (v *Verifier) Check(s Signed) (Record, error) {
 	return v.check(s, true)
 }
@@ -381,6 +354,13 @@ func (v *Verifier) Inspect(s Signed) (Record, error) {
 func (v *Verifier) check(s Signed, matchAudience bool) (Record, error) {
 	obj, err := jose.ParseDetached(s.JWS, s.Payload, []jose.SignatureAlgorithm{jose.EdDSA})
 	if err != nil || len(obj.Signatures) != 1 {
+		return Record{}, ErrSignature
+	}
+	// Only a decision verifies as one: the JWS type separates it from the
+	// other things the same algorithm signs (fga-audit Q-6).
+	if h := obj.Signatures[0].Header; h.JSONWebKey != nil {
+		return Record{}, ErrSignature
+	} else if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != DecisionType {
 		return Record{}, ErrSignature
 	}
 	key, ok := v.keys()[obj.Signatures[0].Header.KeyID]

@@ -114,7 +114,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		{"t-acme", "sha256:90"}:  {Fingerprint: "sha256:90", Principal: "user-90", KeyVersion: 1, Revision: 1, Active: true},
 		{"t-acme", "sha256:old"}: {Fingerprint: "sha256:old", Principal: "user-77", KeyVersion: 0, Revision: 9, Revoked: true},
 	}
-	g, err := gate.New(gate.Deps{Recipients: recipients, Identities: ids, Delegations: dels, Resources: resolver, Epochs: ep, Now: clock,
+	g, err := gate.New(gate.Deps{Recipients: recipients, Identities: ids, Delegations: dels, Now: clock,
 		Capabilities: capabilities{{"agent-7", "document.text_unit read"}: true, {"user-42", "document.text_unit share"}: true}})
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func newFixtureWith(t *testing.T, outboxCapacity int, business string) *fixture 
 		return map[string]signing.Key{"dec-1": {Public: decPub, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)}}
 	}
 	return &fixture{issuer: issuer, svc: svc, outbox: outbox, epochs: ep,
-		verifier: signing.NewVerifier("storage", keys, signing.NewMemoryConsumption(), clock)}
+		verifier: signing.NewVerifier("storage", keys, clock)}
 }
 
 func request(alias string) Request {
@@ -200,7 +200,7 @@ func TestRecipientChecks(t *testing.T) {
 		t.Fatalf("share with user-77 = %+v", resp)
 	}
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	rec, err := f.verifier.Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+	rec, err := f.verifier.Check(signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestAllowReturnsAVerifiableSignedDecision(t *testing.T) {
 		t.Fatalf("response = %+v, want ALLOW with a signed decision", resp)
 	}
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	rec, err := f.verifier.Verify(context.Background(), signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+	rec, err := f.verifier.Check(signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestTimeConditionBoundsValidity(t *testing.T) {
 		t.Fatalf("response = %+v, want ALLOW valid until %v (the age limit is +30s)", resp, cutoff)
 	}
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	if rec, err := f.verifier.Verify(context.Background(), signing.Signed{Payload: payload, JWS: resp.Signed.JWS}); err != nil || !rec.ValidUntil.Equal(cutoff) {
+	if rec, err := f.verifier.Check(signing.Signed{Payload: payload, JWS: resp.Signed.JWS}); err != nil || !rec.ValidUntil.Equal(cutoff) {
 		t.Fatalf("signed record = %+v, %v", rec, err)
 	}
 }

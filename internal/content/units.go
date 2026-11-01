@@ -21,8 +21,6 @@ var (
 		envelopeOp: registry.OpDocGetEntryEnvelope, releaseOp: registry.OpKeyReleaseEntry}
 )
 
-// unitsOf returns the unit types of a document whose kind attribute is
-// kind.
 // kind names the listing a UnitPage is: a collection's entries or a
 // document's units.
 func (u unitTypes) kind() string {
@@ -32,6 +30,8 @@ func (u unitTypes) kind() string {
 	return "document"
 }
 
+// unitsOf returns the unit types of a document whose kind attribute is
+// kind.
 func unitsOf(kind string) unitTypes {
 	if kind == "collection" {
 		return textEntries

@@ -3,8 +3,6 @@ package catalog
 import (
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,7 +144,7 @@ func TestPutDelegation(t *testing.T) {
 func TestGateOverCatalog(t *testing.T) {
 	s, _ := testStore(t)
 	g, err := gate.New(gate.Deps{Recipients: gate.MemoryRecipients{}, Identities: s.Identities(), Delegations: s.Delegations(), Capabilities: s,
-		Resources: registry.NewResolver(s.Resources(), registry.R1Types()), Epochs: s, Now: func() time.Time { return now }})
+		Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,31 +156,6 @@ func TestGateOverCatalog(t *testing.T) {
 	adm, err := g.Admit(context.Background(), b)
 	if p := adm.Principal; err != nil || p.ID != "user-42" || p.Roles[0] != "reviewer" {
 		t.Fatalf("Admit = %+v, %v", adm, err)
-	}
-}
-
-// TestConsumeOnceAcrossConnections covers V-121 with a shared database: of
-// many concurrent consumers on separate connections, exactly one wins.
-func TestConsumeOnceAcrossConnections(t *testing.T) {
-	s, _ := testStore(t)
-	var wins atomic.Int32
-	var wg sync.WaitGroup
-	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			first, err := s.Consume(context.Background(), "d-1", now.Add(time.Minute))
-			if err != nil {
-				t.Error(err)
-			}
-			if first {
-				wins.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if wins.Load() != 1 {
-		t.Fatalf("%d consumers won, want 1", wins.Load())
 	}
 }
 

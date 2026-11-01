@@ -71,24 +71,11 @@ type Capabilities interface {
 	Allows(ctx context.Context, tenant, actor, resourceType, action string) (bool, error)
 }
 
-// Resources revalidates a bound resource (RES-004). registry.Resolver
-// implements it.
-type Resources interface {
-	Revalidate(ctx context.Context, bound registry.Resource) error
-}
-
-// Epochs reports a tenant's required policy epoch (REL-003).
-type Epochs interface {
-	RequiredEpoch(ctx context.Context, tenant string) (uint64, error)
-}
-
 // Gate implements decision.Gate.
 type Gate struct {
 	identities   identity.Store
 	delegations  delegation.Store
 	capabilities Capabilities
-	resources    Resources
-	epochs       Epochs
 	recipients   Recipients
 	now          func() time.Time
 }
@@ -100,20 +87,18 @@ type Deps struct {
 	Identities   identity.Store
 	Delegations  delegation.Store
 	Capabilities Capabilities
-	Resources    Resources
-	Epochs       Epochs
 	Recipients   Recipients
 	Now          func() time.Time
 }
 
 // New returns a Gate. Every dependency is required.
 func New(d Deps) (*Gate, error) {
-	if d.Identities == nil || d.Delegations == nil || d.Capabilities == nil || d.Resources == nil || d.Epochs == nil ||
+	if d.Identities == nil || d.Delegations == nil || d.Capabilities == nil ||
 		d.Recipients == nil || d.Now == nil {
 		return nil, errors.New("gate: every dependency is required")
 	}
 	return &Gate{identities: d.Identities, delegations: d.Delegations, capabilities: d.Capabilities,
-		resources: d.Resources, epochs: d.Epochs, recipients: d.Recipients, now: d.Now}, nil
+		recipients: d.Recipients, now: d.Now}, nil
 }
 
 func reject(r decision.Reason) error { return &decision.Rejection{Reason: r} }
@@ -354,48 +339,4 @@ func (g *Gate) Bind(ctx context.Context, env decision.Envelope, resources []regi
 		}
 	}
 	return b, nil
-}
-
-// Recheck returns nil only if nothing the decision was bound to has changed:
-// it is still valid, the identities and delegation chain are at the same
-// revisions, every bound resource is unchanged and the tenant's required
-// epoch has not passed the decision's (DEC-006). A mismatch needs a new
-// decision.
-func (g *Gate) Recheck(ctx context.Context, b Binding) error {
-	if !g.now().Before(b.ValidUntil) {
-		return reject(ReasonDecisionExpired)
-	}
-	env := b.Envelope
-	if _, err := g.current(ctx, env.Tenant, env.Actor); err != nil {
-		return err
-	}
-	if env.Delegation != "" {
-		if _, err := g.current(ctx, env.Tenant, env.Subject); err != nil {
-			return err
-		}
-		chain, err := g.chain(ctx, env)
-		if err != nil {
-			return err
-		}
-		if !slices.Equal(chain.Links(), b.DelegationChain) {
-			return reject(ReasonDelegationChanged)
-		}
-	}
-	for _, r := range b.Resources {
-		err := g.resources.Revalidate(ctx, r)
-		switch {
-		case errors.Is(err, registry.ErrStale), errors.Is(err, registry.ErrUnknownResource):
-			return reject(ReasonResourceChanged)
-		case err != nil:
-			return fmt.Errorf("gate: resource: %w", err)
-		}
-	}
-	required, err := g.epochs.RequiredEpoch(ctx, env.Tenant)
-	if err != nil {
-		return fmt.Errorf("gate: required epoch: %w", err)
-	}
-	if required > b.PolicyEpoch {
-		return reject(ReasonPolicyEpochSuperseded)
-	}
-	return nil
 }

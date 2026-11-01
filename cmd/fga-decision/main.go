@@ -123,7 +123,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 
 	resolver := registry.NewResolver(store.Resources(), types)
 	g, err := gate.New(gate.Deps{Identities: store.Identities(), Delegations: store.Delegations(), Capabilities: store,
-		Resources: resolver, Epochs: store, Recipients: store, Now: time.Now})
+		Recipients: store, Now: time.Now})
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	// back as a user's evidence (TB3).
 	self := signing.NewVerifier("", func() map[string]signing.Key {
 		return map[string]signing.Key{cfg.SigningKeyID: {Public: signer.Public(), NotAfter: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}}
-	}, nil, time.Now)
+	}, time.Now)
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience, Gateways: cfg.Gateways, SelfVerifier: self,
 		Operations: registry.CoreOperations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),

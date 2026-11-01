@@ -45,9 +45,6 @@ func (f *fixture) reserve(t *testing.T, minor int64) {
 	if _, err := reservation.New(f.pool).Reserve(context.Background(), "t-acme", "team-travel", f.inv.ID, tools.Money{Currency: "EUR", Minor: minor}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.MarkReserved(context.Background(), "t-acme", f.inv.ID); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func (f *fixture) budget(t *testing.T) (reserved, spent int64) {

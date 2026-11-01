@@ -86,8 +86,9 @@ func TestFromRecord(t *testing.T) {
 	}
 }
 
-// TestRunCommitsOnceAndConsumes covers DEC-011: the transition and the
-// consumption commit together, and a replay neither consumes nor acts.
+// TestRunCommitsOnceAndConsumes covers DEC-011, V-026 and V-121: the
+// transition and the consumption commit together in the catalog every
+// replica shares, and a replay neither consumes nor acts.
 func TestRunCommitsOnceAndConsumes(t *testing.T) {
 	f, _, pool := setup(t)
 	ctx := context.Background()

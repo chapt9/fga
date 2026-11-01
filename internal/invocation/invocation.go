@@ -149,23 +149,6 @@ func (s *Store) Get(ctx context.Context, tenant, id string) (Invocation, error) 
 	return scan(s.pool.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND id = $2`, tenant, id))
 }
 
-// MarkReserved records that the invocation's reservation is held.
-func (s *Store) MarkReserved(ctx context.Context, tenant, id string) error {
-	return s.transition(ctx, tenant, id, []State{StatePrepared, StateReserved}, StateReserved)
-}
-
-func (s *Store) transition(ctx context.Context, tenant, id string, from []State, to State) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE invocations SET state = $3, updated_at = $5
-		WHERE tenant = $1 AND id = $2 AND state = ANY($4)`, tenant, id, string(to), statesOf(from), s.now())
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrState
-	}
-	return nil
-}
-
 // Acquire gives owner the dispatch lease and a new fencing token. It fails
 // while another worker's lease is live. An invocation found in DISPATCHING
 // was abandoned by a worker: the new owner must reconcile it, never
@@ -389,14 +372,6 @@ func (s *Store) list(ctx context.Context, where, order string, limit int, args .
 		out = append(out, inv)
 	}
 	return out, rows.Err()
-}
-
-func statesOf(states []State) []string {
-	out := make([]string, len(states))
-	for i, s := range states {
-		out[i] = string(s)
-	}
-	return out
 }
 
 func newID() string {

@@ -54,7 +54,7 @@ func newFixture(t *testing.T) *fixture {
 	f.catalog.Put(registry.Resource{ID: "u-1", Tenant: "t-acme", Type: "document.text_unit", Generation: 17, MetadataRevision: 2})
 	caps := capabilityTable{{"agent-7", "document.text_unit", "read"}: true, {"user-42", "document.text_unit", "read"}: true}
 	g, err := New(Deps{Recipients: MemoryRecipients{}, Identities: f.identities, Delegations: f.delegations, Capabilities: caps,
-		Resources: registry.NewResolver(f.catalog, registry.R1Types()), Epochs: f.epochs, Now: func() time.Time { return *f.clock }})
+		Now: func() time.Time { return *f.clock }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,45 +152,6 @@ func TestAdmitStoreFailureIsNotARejection(t *testing.T) {
 	_, err := f.gate.Admit(context.Background(), delegatedBatch("read"))
 	if err == nil || reason(err) != "" {
 		t.Fatalf("Admit = %v, want a non-rejection error", err)
-	}
-}
-
-// TestRecheck covers DEC-005 and DEC-006: a bound decision is rechecked
-// against current state, and any change needs a new decision.
-func TestRecheck(t *testing.T) {
-	bound := registry.Resource{ID: "u-1", Tenant: "t-acme", Type: "document.text_unit", Generation: 17, MetadataRevision: 2}
-	tests := []struct {
-		name   string
-		change func(*fixture)
-		want   decision.Reason
-	}{
-		{"nothing changed", func(*fixture) {}, ""},
-		{"past valid_until (V-086)", func(f *fixture) { *f.clock = start.Add(31 * time.Second) }, ReasonDecisionExpired},
-		{"resource generation advanced (V-087)", func(f *fixture) {
-			f.catalog.Put(registry.Resource{ID: "u-1", Tenant: "t-acme", Type: "document.text_unit", Generation: 18, MetadataRevision: 2})
-		}, ReasonResourceChanged},
-		{"delegation revision advanced (V-122)", func(f *fixture) {
-			d, _ := f.delegations.Get(context.Background(), "t-acme", "dlg-5")
-			d.Revision++
-			_ = f.delegations.Put(d)
-		}, ReasonDelegationChanged},
-		{"subject identity changed", func(f *fixture) {
-			f.identities.Put(identity.Identity{ID: "user-42", Tenant: "t-acme", Revision: 89})
-		}, ReasonIdentityStale},
-		{"required epoch passed the decision's", func(f *fixture) { f.epochs["t-acme"] = 6 }, ReasonPolicyEpochSuperseded},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t)
-			b, err := f.gate.Bind(context.Background(), delegatedBatch("read").Envelope, []registry.Resource{bound}, nil, 5, 30*time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
-			tt.change(f)
-			if got := reason(f.gate.Recheck(context.Background(), b)); got != tt.want {
-				t.Fatalf("Recheck reason = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 

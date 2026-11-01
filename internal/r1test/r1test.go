@@ -323,7 +323,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 
 	resolver := registry.NewResolver(st.Catalog.Resources(), types)
 	g, err := gate.New(gate.Deps{Identities: st.Catalog.Identities(), Delegations: st.Catalog.Delegations(), Capabilities: st.Catalog,
-		Resources: resolver, Epochs: st.Catalog, Recipients: st.Catalog, Now: now})
+		Recipients: st.Catalog, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func (st *Stack) Verifier(audience string) *signing.Verifier {
 	keys := func() map[string]signing.Key {
 		return map[string]signing.Key{"dec-1": {Public: st.DecisionPK, NotAfter: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	}
-	return signing.NewVerifier(audience, keys, signing.NewMemoryConsumption(), func() time.Time { return *st.Clock })
+	return signing.NewVerifier(audience, keys, func() time.Time { return *st.Clock })
 }
 
 // User creates an identity with the fixture capabilities and returns its

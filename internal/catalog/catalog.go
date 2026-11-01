@@ -26,7 +26,6 @@ import (
 	"fga/internal/gate"
 	"fga/internal/identity"
 	"fga/internal/registry"
-	"fga/internal/signing"
 )
 
 //go:embed migrations/*.sql
@@ -40,12 +39,11 @@ type Store struct {
 }
 
 var (
-	_ identity.Store      = identityView{}
-	_ delegation.Store    = delegationView{}
-	_ registry.Catalog    = resourceView{}
-	_ signing.Consumption = (*Store)(nil)
-	_ audit.Outbox        = (*Store)(nil)
-	_ gate.Recipients     = (*Store)(nil)
+	_ identity.Store   = identityView{}
+	_ delegation.Store = delegationView{}
+	_ registry.Catalog = resourceView{}
+	_ audit.Outbox     = (*Store)(nil)
+	_ gate.Recipients  = (*Store)(nil)
 )
 
 // The identity, delegation and registry stores each have a Get method with
@@ -262,7 +260,7 @@ func (s *Store) Allows(ctx context.Context, tenant, actor, resourceType, action 
 	return ok, err
 }
 
-// RequiredEpoch implements release.EpochSource and gate.Epochs. A tenant
+// RequiredEpoch implements release.EpochSource. A tenant
 // without a row has no required epoch.
 func (s *Store) RequiredEpoch(ctx context.Context, tenant string) (uint64, error) {
 	var epoch uint64
@@ -271,18 +269,6 @@ func (s *Store) RequiredEpoch(ctx context.Context, tenant string) (uint64, error
 		return 0, nil
 	}
 	return epoch, err
-}
-
-// Consume implements signing.Consumption: the insert either creates the row
-// or finds it, atomically, for every replica sharing the catalog.
-func (s *Store) Consume(ctx context.Context, decisionID string, until time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO consumed_decisions (decision_id, valid_until) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		decisionID, until)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
 }
 
 // Append implements audit.Outbox.

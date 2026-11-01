@@ -155,12 +155,6 @@ type (
 		MaxCiphertextLength int64  `json:"max_ciphertext_length"`
 		ExpiresAt           string `json:"expires_at"`
 	}
-	// httpapi.EnvelopeBody is an envelope on the wire.
-	EnvelopeBody struct {
-		Context    []byte `json:"context"`
-		Ciphertext []byte `json:"ciphertext"`
-		Signature  string `json:"signature"`
-	}
 	finalizeBody struct {
 		Descriptor          []byte                 `json:"descriptor"`
 		DescriptorSignature string                 `json:"descriptor_signature"`

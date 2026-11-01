@@ -2,15 +2,15 @@ package signing
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
 )
 
 var issued = time.Unix(1_800_000_000, 0)
@@ -53,8 +53,8 @@ func newFixture(t *testing.T) *fixture {
 		keys: &keyring{keys: map[string]Key{"dec-1": {Public: pub, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour)}}}}
 }
 
-func (f *fixture) verifier(audience string, c Consumption) *Verifier {
-	return NewVerifier(audience, f.keys.get, c, func() time.Time { return f.clock })
+func (f *fixture) verifier(audience string) *Verifier {
+	return NewVerifier(audience, f.keys.get, func() time.Time { return f.clock })
 }
 
 func record(singleUse bool) Record {
@@ -77,7 +77,7 @@ func TestVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := f.verifier("storage", NewMemoryConsumption()).Verify(context.Background(), signed)
+	got, err := f.verifier("storage").Check(signed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,16 @@ func TestVerifyRejects(t *testing.T) {
 		{"tampered payload", func(t *testing.T, f *fixture) (Signed, string) {
 			s := mustSign(t, f, record(false))
 			s.Payload = bytes.Replace(s.Payload, []byte(`"generation":17`), []byte(`"generation":18`), 1)
+			return s, "storage"
+		}, ErrSignature},
+		{"a decision's bytes signed as another type (fga-audit Q-6)", func(t *testing.T, f *fixture) (Signed, string) {
+			pub, priv, _ := ed25519.GenerateKey(nil)
+			f.keys.set("dec-1", Key{Public: pub, NotBefore: issued.Add(-time.Hour), NotAfter: issued.Add(time.Hour)})
+			other, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.EdDSA, Key: jose.JSONWebKey{Key: priv, KeyID: "dec-1"}},
+				(&jose.SignerOptions{}).WithType("fga-receipt+jws"))
+			s := mustSign(t, f, record(false))
+			obj, _ := other.Sign(s.Payload)
+			s.JWS, _ = obj.DetachedCompactSerialize()
 			return s, "storage"
 		}, ErrSignature},
 		{"unknown key", func(t *testing.T, f *fixture) (Signed, string) {
@@ -140,7 +150,7 @@ func TestVerifyRejects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t)
 			s, audience := tt.edit(t, f)
-			if _, err := f.verifier(audience, NewMemoryConsumption()).Verify(context.Background(), s); !errors.Is(err, tt.want) {
+			if _, err := f.verifier(audience).Check(s); !errors.Is(err, tt.want) {
 				t.Fatalf("Verify error = %v, want %v", err, tt.want)
 			}
 		})
@@ -156,51 +166,6 @@ func mustSign(t *testing.T, f *fixture, r Record) Signed {
 	return s
 }
 
-// TestSingleUseConsumedOnce covers V-026 and V-121: a single-use decision is
-// accepted once, also when replicas present it at the same moment.
-func TestSingleUseConsumedOnce(t *testing.T) {
-	f := newFixture(t)
-	s := mustSign(t, f, record(true))
-	shared := NewMemoryConsumption()
-
-	var accepted, replayed atomic.Int32
-	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := f.verifier("storage", shared).Verify(context.Background(), s)
-			switch {
-			case err == nil:
-				accepted.Add(1)
-			case errors.Is(err, ErrReplayed):
-				replayed.Add(1)
-			default:
-				t.Errorf("unexpected error: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-	if accepted.Load() != 1 || replayed.Load() != 15 {
-		t.Fatalf("accepted %d, replayed %d; want 1 and 15", accepted.Load(), replayed.Load())
-	}
-}
-
-type failingConsumption struct{}
-
-func (failingConsumption) Consume(context.Context, string, time.Time) (bool, error) {
-	return false, errors.New("catalog unreachable")
-}
-
-// TestSingleUseNeedsTheConsumptionStore: a replica that cannot record the
-// consumption refuses the decision (DEC-011).
-func TestSingleUseNeedsTheConsumptionStore(t *testing.T) {
-	f := newFixture(t)
-	if _, err := f.verifier("storage", failingConsumption{}).Verify(context.Background(), mustSign(t, f, record(true))); err == nil {
-		t.Fatal("Verify succeeded without recording consumption")
-	}
-}
-
 // TestRotationOverlap covers DEC-012: during rotation both keys verify; once
 // the old key is retired, decisions it signed after retirement do not.
 func TestRotationOverlap(t *testing.T) {
@@ -209,11 +174,11 @@ func TestRotationOverlap(t *testing.T) {
 	f.keys.set("dec-2", Key{Public: pub2, NotBefore: issued.Add(-time.Minute), NotAfter: issued.Add(24 * time.Hour)})
 	next, _ := NewSigner("dec-2", priv2)
 
-	v := f.verifier("storage", NewMemoryConsumption())
+	v := f.verifier("storage")
 	oldSigned := mustSign(t, f, record(false))
 	newSigned, _ := next.Sign(record(false))
 	for name, s := range map[string]Signed{"old key": oldSigned, "new key": newSigned} {
-		if _, err := v.Verify(context.Background(), s); err != nil {
+		if _, err := v.Check(s); err != nil {
 			t.Errorf("%s during overlap: %v", name, err)
 		}
 	}
@@ -228,8 +193,8 @@ func TestTransmittedGrantIsBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := f.verifier("storage", NewMemoryConsumption())
-	rec, err := v.Verify(context.Background(), signed)
+	v := f.verifier("storage")
+	rec, err := v.Check(signed)
 	if err != nil || rec.ObligationMappingVersion != NoObligations || rec.ResourceBindingsDigest != ResourceBindingsDigest(rec.Checks) {
 		t.Fatalf("original grant: %+v, %v", rec, err)
 	}
@@ -247,7 +212,7 @@ func TestTransmittedGrantIsBound(t *testing.T) {
 		"add an obligation": func(r *Record) { r.Obligations = []Obligation{{Type: "redact", Version: 1}} },
 		"older incarnation": func(r *Record) { r.RecoveryIncarnation = 0 },
 	} {
-		if _, err := v.Verify(context.Background(), alter(edit)); !errors.Is(err, ErrSignature) {
+		if _, err := v.Check(alter(edit)); !errors.Is(err, ErrSignature) {
 			t.Errorf("%s: %v, want %v", name, err, ErrSignature)
 		}
 	}
@@ -258,7 +223,7 @@ func TestTransmittedGrantIsBound(t *testing.T) {
 // is not an unconditional allow and an inconsistent check kind reject.
 func TestRecordContentRules(t *testing.T) {
 	f := newFixture(t)
-	v := f.verifier("storage", NewMemoryConsumption())
+	v := f.verifier("storage")
 	for name, tc := range map[string]struct {
 		edit func(*Record)
 		want error
@@ -283,7 +248,7 @@ func TestRecordContentRules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := v.Verify(context.Background(), signed); !errors.Is(err, tc.want) {
+		if _, err := v.Check(signed); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
@@ -326,11 +291,11 @@ func TestObligations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		v := f.verifier("storage", NewMemoryConsumption())
+		v := f.verifier("storage")
 		if tc.applies != nil {
 			v.Applying(tc.applies)
 		}
-		got, err := v.Verify(context.Background(), signed)
+		got, err := v.Check(signed)
 		if !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}

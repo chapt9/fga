@@ -132,7 +132,7 @@ func TestV141(t *testing.T) {
 	}
 	// The issued grant carries the mapped projection, and nothing wider.
 	payload, _ := base64.StdEncoding.DecodeString(resp.Signed.Payload)
-	issued, err := st.Verifier(content.Audience).Applying(content.Applies).Verify(ctx, signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
+	issued, err := st.Verifier(content.Audience).Applying(content.Applies).Check(signing.Signed{Payload: payload, JWS: resp.Signed.JWS})
 	if err != nil {
 		t.Fatal(err)
 	}

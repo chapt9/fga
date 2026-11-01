@@ -224,33 +224,6 @@ func DecideTx(ctx context.Context, tx pgx.Tx, tenant, id, approver string, appro
 	}
 }
 
-// Usable reports whether an approval is approved, unexpired and bound to
-// operationDigest. A changed operation needs a new approval (V-030).
-func (s *Store) Usable(ctx context.Context, tenant, id, operationDigest string) (bool, error) {
-	var ok bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM approvals WHERE tenant = $1 AND id = $2 AND state = 'APPROVED'
-		                AND operation_digest = $3 AND expires_at > $4)`, tenant, id, operationDigest, s.now()).Scan(&ok)
-	return ok, err
-}
-
-// ConsumeTx consumes an approval inside the caller's transaction, so
-// consumption and the protected operation's transition commit together
-// (APR-002, APR-003). Only one transaction can consume it.
-func ConsumeTx(ctx context.Context, tx pgx.Tx, tenant, id, operationDigest string, now time.Time) error {
-	tag, err := tx.Exec(ctx, `
-		UPDATE approvals SET state = 'CONSUMED', consumed_at = $4, revision = revision + 1
-		 WHERE tenant = $1 AND id = $2 AND state = 'APPROVED' AND operation_digest = $3 AND expires_at > $4`,
-		tenant, id, operationDigest, now)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrNotUsable
-	}
-	return nil
-}
-
 func newID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b) // crypto/rand does not fail on supported platforms
