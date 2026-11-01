@@ -1,0 +1,240 @@
+{
+ "format": "fga.browser-vectors/v1",
+ "about": "Wire profile 1 vectors for the browser client (docs/design/browser-client.md), written by sdk/go/crypto TestBrowserVectors -update. Binary values are standard base64. Test keys only.",
+ "plaintext_pattern": "byte i is i mod 251",
+ "created_at_unix_ms": 1800000000000,
+ "recipient": {
+  "private": "UPQjfuruV2SXr7RXG186LbnceSBSW2avKKbzxVlqIcI=",
+  "public": "y1gl8kelTlO8BWA+DVc9l2158htp00k+IWXFq7++7BI=",
+  "fingerprint": "sha256:abe99d8acb0e1313a42aab63fe4f52cb8a8e5c10da1149e9848011292ec93596",
+  "keyset": "CJyWqZ0MEpYBCokBCjV0eXBlLmdvb2dsZWFwaXMuY29tL2dvb2dsZS5jcnlwdG8udGluay5IcGtlUHJpdmF0ZUtleRJOEioSBggBEAEYAhogy1gl8kelTlO8BWA+DVc9l2158htp00k+IWXFq7++7BIaIFD0I37q7ldkl6+0VxtfOi253HkgUltmryim88VZaiHCGAIQARiclqmdDCAD"
+ },
+ "other_recipient": {
+  "private": "VhJbZw6NYXTq+F+/fOORKXZXJu5JyVWprKLlfKT8y8I=",
+  "public": "vBshQt1jm6IbaeQZ1fnsNlrYvYmxtUXp+agk0BEXZEE=",
+  "fingerprint": "sha256:2c368e1a3829d542d69189770b2fcdcc87dabae9e6f3f38360c709cb8a000a59",
+  "keyset": "CPGa578LEpYBCokBCjV0eXBlLmdvb2dsZWFwaXMuY29tL2dvb2dsZS5jcnlwdG8udGluay5IcGtlUHJpdmF0ZUtleRJOEioSBggBEAEYAhogvBshQt1jm6IbaeQZ1fnsNlrYvYmxtUXp+agk0BEXZEEaIFYSW2cOjWF06vhfv3zjkSl2VybuSclVqayi5Xyk/MvCGAIQARjxmue/CyAD"
+ },
+ "signer": {
+  "seed": "84OWIG3NlytnL0GzfeTbtdx/arRoKwWIfl35wVgEmCI=",
+  "public": "Dtsl8z5jDtC46RVaG/OMkbls0z/QsnEyimgbUh1idF8=",
+  "fingerprint": "sha256:3fbe2c7d34a2d4328a4a61475b22b45642ad568efa41260eee6ddb9e741e3bdd"
+ },
+ "exact": {
+  "payload_aad": {
+   "tenant_id": "b00eda52-152b-4985-a2d3-40178b9bcccd",
+   "object_id": "305f58ce-c7c0-45fa-963d-917ad6c26c9f",
+   "crypto_version_id": "5d336d77-e4ee-4f86-84c9-8477fd29c8bb",
+   "bytes": "RkdBQUQwMDGwDtpSFStJhaLTQBeLm8zNMF9YzsfARfqWPZF61sJsn10zbXfk7k+GhMmEd/0pyLsAAQAB"
+  },
+  "context": {
+   "profile_version": 1,
+   "tenant_id": "b00eda52-152b-4985-a2d3-40178b9bcccd",
+   "object_id": "305f58ce-c7c0-45fa-963d-917ad6c26c9f",
+   "logical_version_id": "ab34bd26-dc81-4652-8c02-3da001c4446b",
+   "crypto_version_id": "5d336d77-e4ee-4f86-84c9-8477fd29c8bb",
+   "suite": 1,
+   "format": 1,
+   "ciphertext_sha256": "sha256:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "ciphertext_length": 1049592,
+   "recipient_fingerprint": "sha256:abe99d8acb0e1313a42aab63fe4f52cb8a8e5c10da1149e9848011292ec93596",
+   "recipient_key_version": 3,
+   "envelope_generation": 2,
+   "sharer_signing_key": "sha256:3fbe2c7d34a2d4328a4a61475b22b45642ad568efa41260eee6ddb9e741e3bdd",
+   "created_at_unix_ms": 1800000000000,
+   "bytes": "CAESELAO2lIVK0mFotNAF4ubzM0aEDBfWM7HwEX6lj2RetbCbJ8iEKs0vSbcgUZSjAI9oAHERGsqEF0zbXfk7k+GhMmEd/0pyLswATgBQiAAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eH0j4h0BSIKvpnYrLDhMTpCqrY/5PUsuKjlwQ2hFJ6YSAESkuyTWWWANgAmogP74sfTSi1DKKSmFHWyK0VkKtVo76QSYO7m3bnnQeO91wgKDxwrE0"
+  },
+  "hpke_info": "nxdc2nIAGqJmz9qCdRm/qZ49nhEubXOsdRLucj5ni8g=",
+  "hpke_ciphertext": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk8=",
+  "envelope_signing_input": "ZmdhLmVudmVsb3BlLXNpZ25hdHVyZS92MQAAAADDCAESELAO2lIVK0mFotNAF4ubzM0aEDBfWM7HwEX6lj2RetbCbJ8iEKs0vSbcgUZSjAI9oAHERGsqEF0zbXfk7k+GhMmEd/0pyLswATgBQiAAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eH0j4h0BSIKvpnYrLDhMTpCqrY/5PUsuKjlwQ2hFJ6YSAESkuyTWWWANgAmogP74sfTSi1DKKSmFHWyK0VkKtVo76QSYO7m3bnnQeO91wgKDxwrE0xWcF/qWxELjcY2iFM87SEWfmKAFzh8iFQjuDWlXt1e8=",
+  "envelope_digest": "sha256:d83e94fa4ab833414bfda25296d9986e22f2599783b9f8ca6595fc6de0cc4d01",
+  "envelope_jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9.._PFE05Tw-7zXnWA5pt4fnGDfUBLiKBBQ0bPlLKPKjBWh2q_YH4wNJh9Hv4xarsYU43bjUUH0Yy3iA0Ku0jqpCQ",
+  "signing_proof": {
+   "challenge_id": "challenge-signing-1",
+   "tenant": "t-acme",
+   "principal": "dana",
+   "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "input": "ZmdhLnNpZ25pbmcta2V5LXByb29mL3YxAGNoYWxsZW5nZS1zaWduaW5nLTEAdC1hY21lAGRhbmEAc2hhMjU2OjNmYmUyYzdkMzRhMmQ0MzI4YTRhNjE0NzViMjJiNDU2NDJhZDU2OGVmYTQxMjYwZWVlNmRkYjllNzQxZTNiZGQAAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLXNpZ25pbmctcHJvb2YrandzIn0..IwMYd5xsHGHrdYibK_ArUKqQMjsxs3Sq-vCWn2UdzD2wLr4Tn4syj-zGnviB2VYVNDBzhAIdKPizY2BwavhBAQ"
+  },
+  "recipient_proof": {
+   "challenge_id": "challenge-recipient-1",
+   "tenant": "t-acme",
+   "principal": "dana",
+   "nonce": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eH/8=",
+   "ephemeral_private": "ZtKnSzNezNU6kdtEo4eHI0mAmd+RTvseDZgD6yTMOIo=",
+   "ephemeral_public": "yenRG34lmDsoWua5P61/RwAmXpyRdBR/pZnkOxRMtwc=",
+   "proof": "865+9o/Ec7ZXa0JUk/5PHF2OKXucrt2mmZdBKUMBEdE="
+  },
+  "key_package": {
+   "binding": "RkdBQUQwMDGwDtpSFStJhaLTQBeLm8zNMF9YzsfARfqWPZF61sJsn10zbXfk7k+GhMmEd/0pyLsAAQAB",
+   "keyset": "CNvjstsJEnsKbwo9dHlwZS5nb29nbGVhcGlzLmNvbS9nb29nbGUuY3J5cHRvLnRpbmsuQWVzR2NtSGtkZlN0cmVhbWluZ0tleRIsEggIgIBAECAYAxogTfoBg7//RX0mxAeZFRPrqIpW20QcbeOl7dtJIglIyfAYARABGNvjstsJIAM=",
+   "key_value": "TfoBg7//RX0mxAeZFRPrqIpW20QcbeOl7dtJIglIyfA=",
+   "bytes": "AAEAPEZHQUFEMDAxsA7aUhUrSYWi00AXi5vMzTBfWM7HwEX6lj2RetbCbJ9dM2135O5PhoTJhHf9Kci7AAEAAQAAAIMI2+Oy2wkSewpvCj10eXBlLmdvb2dsZWFwaXMuY29tL2dvb2dsZS5jcnlwdG8udGluay5BZXNHY21Ia2RmU3RyZWFtaW5nS2V5EiwSCAiAgEAQIBgDGiBN+gGDv/9FfSbEB5kVE+uoilbbRBxt46Xt20kiCUjJ8BgBEAEY2+Oy2wkgAw=="
+  }
+ },
+ "samples": [
+  {
+   "name": "empty",
+   "plaintext_length": 0,
+   "plaintext_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "ciphertext": "KJWOTPVQiavfEEQkasIq3VQQW7BlVauWzx0a/YerYs40YDdhBwKm+SWnY574L+yV9/ldhyjJFPA=",
+   "ciphertext_sha256": "sha256:b071d36400f31287f848894689b225726bf5392e576b498dd9ab2e2e5471ceaf",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiJlMTViYTk2MS1lZWUwLTQyZTctOGNiYS0xMGE5MjdlZGI2N2QiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiIyODZiMjYwNy0yNjFlLTRhNmItYTZjMy0xYWQ5NmEwN2UyNTYiLCJjcnlwdG9fdmVyc2lvbl9pZCI6ImVlOWIzNjBlLWYzMzgtNDg2NS1hYzNmLTBiYWZjZDNjODZlMiIsImJsb2JfaWQiOiIyYWFmMmQ5My0xYmI4LTRmNzgtYmE5NC1hODBkMDhkMTc5OTkiLCJhdHRlbXB0X2lkIjoiYjYzNTczZGItYmNiZS00NjZhLWJjM2QtN2FiMDYwYWZiN2Y4Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6YjA3MWQzNjQwMGYzMTI4N2Y4NDg4OTQ2ODliMjI1NzI2YmY1MzkyZTU3NmI0OThkZDlhYjJlMmU1NDcxY2VhZiIsImNpcGhlcnRleHRfbGVuZ3RoIjo1Niwic2lnbmVyIjoic2hhMjU2OjNmYmUyYzdkMzRhMmQ0MzI4YTRhNjE0NzViMjJiNDU2NDJhZDU2OGVmYTQxMjYwZWVlNmRkYjllNzQxZTNiZGQiLCJjcmVhdGVkX2F0IjoiMjAyNy0wMS0xNVQwODowMDowMFoifQ==",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..BmGCF1NX-ACgLm99aEoCYFOjJ855v3diptQfM3CVFPVfXghlAAM8cTa22In3H1BrsDY9xErRG7_FbbGLDChfCA",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEOFbqWHu4ELnjLoQqSfttn0iEChrJgcmHkprpsMa2WoH4lYqEO6bNg7zOEhlrD8Lr808huIwATgBQiCwcdNkAPMSh/hIiUaJsiVya/U5LldrSY3Zqy4uVHHOr0g4UiCr6Z2Kyw4TE6Qqq2P+T1LLio5cENoRSemEgBEpLsk1llgBYAFqID++LH00otQyikphR1sitFZCrVaO+kEmDu5t2550HjvdcICg8cKxNA==",
+    "ciphertext": "ODSEeWZqJJNneF/AJJT0ujmng9zqF1UkXy4qztFY4UPGQNuUNPDMpd6BaVG6eQXcvN9EFFlGGjKxRCINUjOEIaFxxJvaSncAq7Yn/8x+LRUfPOXRQYBEGEffL6zzlG0QG4jeZdTCASG97KahX4BkhfNFpntoQnIfq94Ycg7/lYQmXAKCNUm/Njr5CqeNHwkaaNJNk0UIZl/86GEATOUOnqqp78COwKYUCH7OE1CfoNusMVp7I3+EoS1ERd3hhPfK8+vYpIs5shu2kLOr+gweFffBbpl3a5AOFYMrmaGI+CZ76t3zkEgrDEn+V1yJm4UPqUI+dVGfSA==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..y28H4xRJ_HLr5BaMUuPbuKo7X3R7DfnreeWntlHxZDXEuA5zKM692qw8ROsmvhPsNsWgjQyvfqLhoeIiiAi_CQ"
+   }
+  },
+  {
+   "name": "one byte",
+   "plaintext_length": 1,
+   "plaintext_sha256": "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+   "ciphertext": "KH7FvdOmb3Rhgp8bVMC2GiwaUwpr2x1GrT/h7UtkpJlSlnlpLkVqbUHcNerxuaaP7WwQHzq62r2B",
+   "ciphertext_sha256": "sha256:fbdc0e1c3a9cda0d95a8a74028055fc516d4690ccc9ace32722e7bd493298054",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiJkYTFhNDFkMC1kODNkLTRhMjAtOTA0Mi00ZDE0ZGMwYzBhMWIiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiIxY2FkY2Q3Ni0yZTNkLTRmYTItYjgzYi1mODE0ZWI3ZjBiZDMiLCJjcnlwdG9fdmVyc2lvbl9pZCI6IjU4YzZiNzMxLTQxYjYtNDVkNy1hYzA2LWUwNDJlYmViZThkYyIsImJsb2JfaWQiOiI2N2ZlZTRlMy04NjU5LTQyNGYtOTBlZC1jODFiYmRjNjBjYzkiLCJhdHRlbXB0X2lkIjoiYWVhNzhmMTgtMjVkNi00ZTc5LThjNjYtNzBhYjhiZTI0NWQ2Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6ZmJkYzBlMWMzYTljZGEwZDk1YThhNzQwMjgwNTVmYzUxNmQ0NjkwY2NjOWFjZTMyNzIyZTdiZDQ5MzI5ODA1NCIsImNpcGhlcnRleHRfbGVuZ3RoIjo1Nywic2lnbmVyIjoic2hhMjU2OjNmYmUyYzdkMzRhMmQ0MzI4YTRhNjE0NzViMjJiNDU2NDJhZDU2OGVmYTQxMjYwZWVlNmRkYjllNzQxZTNiZGQiLCJjcmVhdGVkX2F0IjoiMjAyNy0wMS0xNVQwODowMDowMFoifQ==",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..gxyjeTJoH6STRuXAtIFrtuAhNWlUd8Nq5blbw4_mfWRnZ6uBoBFJmC7FcgxxRtzZw77gAvBkhD6-u2xEHm57Dg",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aENoaQdDYPUogkEJNFNwMChsiEBytzXYuPU+iuDv4FOt/C9MqEFjGtzFBtkXXrAbgQuvr6NwwATgBQiD73A4cOpzaDZWop0AoBV/FFtRpDMyazjJyLnvUkymAVEg5UiCr6Z2Kyw4TE6Qqq2P+T1LLio5cENoRSemEgBEpLsk1llgBYAFqID++LH00otQyikphR1sitFZCrVaO+kEmDu5t2550HjvdcICg8cKxNA==",
+    "ciphertext": "/t4lc/ew96/8cCD/dMLMps5irEeOBQjScoPXDkvDERpRs7jU5+XVOCbsHoQ6fiRMf0DOnpiv+eLfFJY4Ko3QIhv+baFkp52FM+YwNqa0eqyRXZU+lUfnDjDT7H56XJ26H0r38zuMUQoN6zgp/Uwt6iNKi6CpvyZsWy8WpLk6SATuXMq9fRyOSckhYjKpET1+7bsXgom4yfgdhQBKdOJ1hgFddItAdlaeHJEHqeFAKxcbzk/rZFyx/NGlrLpawHohPeu45HmgNyQ8/JvN1p3XDMaBC5BYPnYjwtX0YdjCPPBKxFe9xYRCJB5jI+8vhMVJBWOtBjoA0Q==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..DhV3lIkZF9HyTkX-DwEZV26g0vYzj9-CV8rUJ0EOxnmC1_eXC9CjXkSBCVoxstOkJG-DCHWeh7btwNcJkbRyAQ"
+   }
+  },
+  {
+   "name": "text",
+   "plaintext_length": 1000,
+   "plaintext_sha256": "sha256:4e4c294b331f7a2099a379bec34b9f9fc03dc46ab465d998f4d683da53487e6d",
+   "ciphertext": "KMNbIQ3zFZlbwiLn5VC1MTj07c9YGAPSGnWixKI46kK02EVfRRbC2LamOqF9yzarUxnnGzRI0/pmak7lTING2tgOglcjbszR+KqV0/xNhYpdkVmyYC9sRthyhY6EN5WOMZrH0H05TsaiMq5Nx3hfqttEqUmsNSpk6Mg1tJIjvHBoOco9tds+5a2lKlwCG0S0k2e8Z58h/w0DMGO6JAAJsA4myUxH8JS5Cii+f9GTZ1P0rrVdPbLwwEt+kLIp44uPU7EoggW5xijnQQyOO6LsIbcxYDWIiDdalJa6LJDmHi/zkmsTP6z9MKJmis06NXbMSbELjOIqMGgh7RgsfUvEr+auHtCYDK4d11rhxjtkYd7ERS1sB7s5davUx5vrs5V7Hzaur0BptH3jJbcKM2ZV2HOP/Ao0F5rYCrsmLyD/6Py4UwnaIYPK30aLQDGiBh87GCou4FhZZgQR5ExxYWKAzco2hs+9v3Og5VzCH8CkfXezWE6AGeWqRg1aw6AKFaOaSXGd4IGFvvqFnnQyJWzdAgpO9yIpWROXeElwz1z0C4gUin/P71sCJ7r4AWEo6hNaOH8Klr+Nq5sYjutc3rVLhQMyMsTj7JgMAtbZHM9IcxqPDwxF0IM/Qucir7yqQljOl6gVPXso8XxNnTcuLENGusy/TDgqv9mQBjyBOHZOmNlR+JNpj+q8HkcE3ok/YQtCFEIt6E5Cyym8ZpSDWxglt18XXhHZezPd9kAXJygZU4LD7rPkZpFwuasq+z+3COrRN3CjS1aDz3bA5fz9JtmPIiq2g2yhTMfIZt+kyEp9ANyBOXri0YbU3c336p/ZEG8latIGMGoVrPBU+Nr9h0JWtTNh8tURKoDp7NV/nXq80i7IVd99NqGLH8zHtp2qvgEl76z8OBXebrpgo3izPSsuYzRcnEyu1t04zAPhsrfBIPF5p8IYLjlxMHaLTHcY6qN/N0nWOmbUZSySxQx66zRxEG33USeaiozSqwFfnys6N8Oj0lC26WLteN1W5mGqPN52NuPd9LSPU63Dbzfa/vlCDhoQIyUtvV2dVi9cOYcpXRoZHxuMFvRbvu1juEaLnSJuI7HXXuV6V9o5K3ze4tPuGXPsVNOgMu/4+8OqTxqjfRxIIuqjh1+E+7k573PwuH5m5N9i02zoMNv130fNpq3sCy4EHEbRioQWn3CZzQ3rAmevfHKqOYnBv7mhSltIA0t1aoJoQCT3bWA598RLxIrawSUpq/5BleYcqyKQik4yrhq5fwE3/G32CkaFTtMM1bbVIV4mxfw0mB/elMH+JbSXwvH2g2W1yqzy527e5CTiwjPlLM+oGoKwBrK4Ux77e786v6RMB+ySdavmjBzKT8GTo5HA3PNrKJCQqb7bDdYKj34+V12i0VPRAzJKEMiH8yPX",
+   "ciphertext_sha256": "sha256:f45e6195133b85a8d9bb205c5426c40732118d6cfb14e4561294ae51bd114ced",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiIwOWQ1ZTg0Ni03OWVkLTQ3ODgtOTU1NC1jYzkwZDdjNzFjOTMiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiI5YTg5ZmEyMC1mOTg2LTRkOGEtODI3Zi0zMDA4OTU2OGQ1ZDMiLCJjcnlwdG9fdmVyc2lvbl9pZCI6IjI2M2UzZDRkLTE5NTktNGY0MS1iYjc2LWQxODZjYzM2YzdkMiIsImJsb2JfaWQiOiJjNTY3MzRmNy1hODY0LTQzYWQtODdkZS0zNmExZTZjN2EwNDciLCJhdHRlbXB0X2lkIjoiNzJjNTJiNmYtMWQ5Yy00ZGVkLTkxNWYtMjFhNmVhZjhkN2U2Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6ZjQ1ZTYxOTUxMzNiODVhOGQ5YmIyMDVjNTQyNmM0MDczMjExOGQ2Y2ZiMTRlNDU2MTI5NGFlNTFiZDExNGNlZCIsImNpcGhlcnRleHRfbGVuZ3RoIjoxMDU2LCJzaWduZXIiOiJzaGEyNTY6M2ZiZTJjN2QzNGEyZDQzMjhhNGE2MTQ3NWIyMmI0NTY0MmFkNTY4ZWZhNDEyNjBlZWU2ZGRiOWU3NDFlM2JkZCIsImNyZWF0ZWRfYXQiOiIyMDI3LTAxLTE1VDA4OjAwOjAwWiJ9",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..Tj3hrOmHOsBbWzzN7jYcshoo_FHhyHuBX0g7h34xjeeIbBB9NRQ38hsJabQXEoKJ7iCivgxB1ZJoU-CaE6nsAA",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEAnV6EZ57UeIlVTMkNfHHJMiEJqJ+iD5hk2Kgn8wCJVo1dMqECY+PU0ZWU9Bu3bRhsw2x9IwATgBQiD0XmGVEzuFqNm7IFxUJsQHMhGNbPsU5FYSlK5RvRFM7UigCFIgq+mdissOExOkKqtj/k9Sy4qOXBDaEUnphIARKS7JNZZYAWABaiA/vix9NKLUMopKYUdbIrRWQq1WjvpBJg7ubduedB473XCAoPHCsTQ=",
+    "ciphertext": "zsGQOFQcPEr1RBi0/LjemShURvfqueRFAXDgX8K2FjR8asEYI0cSia/56AdC0szTSHKKsSKrAgZbXGS0Co37av2lsgZXZJWhwFhzBQkf6WlMglef6SgKASr9bSe1Km+MJzhMOn3H7p2Bhl07O78QI+nbav8P1m1Bc3dLx4ulPr8apNkF+vbQOWB5CH31IlFrKNASBJHUiZVoDFNICXgodD5Kr8df/hA25j95PzZyyhJPgwNm6Kw2/Wk9BhKnSshgsnHiHQGcytdqm+gadRS3nkGiDrRuR1KpknySFjZsxoemTCxKJ/3/X725mb6m4wx9tCbls2OQeA==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9.._clKqsG-VZUzqstJ8_xOSeiOR8BwpCwHvmWmr5cK_Mqi1TECBJcyXz_a3LGvLnLzX5B9HNpb1axZDnc8arM6Bg"
+   }
+  },
+  {
+   "name": "two segments",
+   "plaintext_length": 1049520,
+   "plaintext_sha256": "sha256:fb3cf1d730b3c6c092b14b61634cd8d334c44a7c4a75e95c7eb43cfadac3ed3c",
+   "ciphertext_file": "browser-v1-two-segments.bin",
+   "ciphertext_sha256": "sha256:5f22239d2b16b1032826fe165654c742652f86bcf6e419a071fc2dfabda927e8",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiI3MmRlYzM4MC1jOGM2LTQzNjAtODU5Ny1lMmQ4ZmI2MjVjM2UiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiJiNmFmMTQwNi05N2I3LTQ0NzItOTM0MC0xNGM1MjdjZmMyOGUiLCJjcnlwdG9fdmVyc2lvbl9pZCI6IjZiYjYyMjgyLTNmNGItNDJkMi04MzAxLTBjZWYyODc2M2VlNyIsImJsb2JfaWQiOiIwOTM4MTU2YS1jNGNlLTRkOTgtYmVlYy03ZjMwZjJmM2U5YjgiLCJhdHRlbXB0X2lkIjoiZDFjN2RjZDEtMThlYS00Y2ZiLTliYjQtMWQ3NDE2Y2UyYmY1Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6NWYyMjIzOWQyYjE2YjEwMzI4MjZmZTE2NTY1NGM3NDI2NTJmODZiY2Y2ZTQxOWEwNzFmYzJkZmFiZGE5MjdlOCIsImNpcGhlcnRleHRfbGVuZ3RoIjoxMDQ5NTkyLCJzaWduZXIiOiJzaGEyNTY6M2ZiZTJjN2QzNGEyZDQzMjhhNGE2MTQ3NWIyMmI0NTY0MmFkNTY4ZWZhNDEyNjBlZWU2ZGRiOWU3NDFlM2JkZCIsImNyZWF0ZWRfYXQiOiIyMDI3LTAxLTE1VDA4OjAwOjAwWiJ9",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..S1rkV3pM1rk9Ke_PAchfGiP-xovApHfO2VlrQvoK1bdU2JHisDtFJaZSm8v32WSs-BAt0zTNriLkF_z5ugHKCw",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEHLew4DIxkNghZfi2PtiXD4iELavFAaXt0Ryk0AUxSfPwo4qEGu2IoI/S0LSgwEM7yh2PucwATgBQiBfIiOdKxaxAygm/hZWVMdCZS+GvPbkGaBx/C36vakn6Ej4h0BSIKvpnYrLDhMTpCqrY/5PUsuKjlwQ2hFJ6YSAESkuyTWWWAFgAWogP74sfTSi1DKKSmFHWyK0VkKtVo76QSYO7m3bnnQeO91wgKDxwrE0",
+    "ciphertext": "5BODh3RH9t9ujhSGgp2mxbYH/vSXE/Wn1wypnX90dyB+WbcHFMYbPRf+S1rYa0YQPIp3xeEa8DgGyEqxZ5SyTndiou2o96Y94hyUPW4JfzsfpUhXK+YdqIpt8Z3htsNfO+t0ciQIuaz7ysHFmdGhBjWuXNKtnS5/4QaIHi0KKJx2ZnvqAxcmBLH6kpSXqXYEasjdA9VZc6o+6Hs9wcdVH+vb6ecTCO4TbntDDw4cKVGaH3COhb1n1XUENriLS1whJbl+QdINybOAqa2D23xEec2wi6xiaUZhbpcPIrhRY6uQZV0VuLJS4YSWTKGVE76ts9sf3KzHEg==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..I3bPGgs-y8sEjjxeMkHMxPYn9a-1PTBOorNkFWEKGOJyF2lNySTedSSKU4YA6pcwvBdwPqfDJ2fEHSPGTfsRCA"
+   }
+  }
+ ],
+ "negative": [
+  {
+   "name": "other recipient's key",
+   "sample": "one byte",
+   "key": "other",
+   "trust_signer": true,
+   "want": "binding"
+  },
+  {
+   "name": "signer not trusted",
+   "sample": "one byte",
+   "key": "recipient",
+   "trust_signer": false,
+   "want": "untrusted"
+  },
+  {
+   "name": "truncated ciphertext",
+   "sample": "text",
+   "key": "recipient",
+   "trust_signer": true,
+   "mutation": "truncate",
+   "want": "integrity"
+  },
+  {
+   "name": "trailing byte",
+   "sample": "text",
+   "key": "recipient",
+   "trust_signer": true,
+   "mutation": "append-zero",
+   "want": "integrity"
+  },
+  {
+   "name": "corrupted ciphertext",
+   "sample": "text",
+   "key": "recipient",
+   "trust_signer": true,
+   "mutation": "flip-middle",
+   "want": "integrity"
+  },
+  {
+   "name": "corrupted ciphertext, descriptor and envelope signed again",
+   "sample": "text",
+   "key": "recipient",
+   "trust_signer": true,
+   "mutation": "flip-middle",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiIwOWQ1ZTg0Ni03OWVkLTQ3ODgtOTU1NC1jYzkwZDdjNzFjOTMiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiI5YTg5ZmEyMC1mOTg2LTRkOGEtODI3Zi0zMDA4OTU2OGQ1ZDMiLCJjcnlwdG9fdmVyc2lvbl9pZCI6IjI2M2UzZDRkLTE5NTktNGY0MS1iYjc2LWQxODZjYzM2YzdkMiIsImJsb2JfaWQiOiJjNTY3MzRmNy1hODY0LTQzYWQtODdkZS0zNmExZTZjN2EwNDciLCJhdHRlbXB0X2lkIjoiNzJjNTJiNmYtMWQ5Yy00ZGVkLTkxNWYtMjFhNmVhZjhkN2U2Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6NjYwZmI5YjM5ZjNkOTAxM2QwNzJiMjAzNTQ3OTUyNjE1NDgxN2JjOWI2OTkwMGVmOGMyNjI3YWRjMWJmNWIyOSIsImNpcGhlcnRleHRfbGVuZ3RoIjoxMDU2LCJzaWduZXIiOiJzaGEyNTY6M2ZiZTJjN2QzNGEyZDQzMjhhNGE2MTQ3NWIyMmI0NTY0MmFkNTY4ZWZhNDEyNjBlZWU2ZGRiOWU3NDFlM2JkZCIsImNyZWF0ZWRfYXQiOiIyMDI3LTAxLTE1VDA4OjAwOjAwWiJ9",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..syy_Gwpabw5svsQ191VPYQXGwWRfzciSauyCek489-ybMyfwsciaDL2-xzHbTY3beFpDBiOT_LBg-PfXCElVAw",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEAnV6EZ57UeIlVTMkNfHHJMiEJqJ+iD5hk2Kgn8wCJVo1dMqECY+PU0ZWU9Bu3bRhsw2x9IwATgBQiBmD7mznz2QE9BysgNUeVJhVIF7ybaZAO+MJietwb9bKUigCFIgq+mdissOExOkKqtj/k9Sy4qOXBDaEUnphIARKS7JNZZYAWABaiA/vix9NKLUMopKYUdbIrRWQq1WjvpBJg7ubduedB473XCAoPHCsTQ=",
+    "ciphertext": "Q9omLmtzMmzD0pisL/pwpUnwvrhnq8oQn0N3i9qabTWcMXKLsP/7p+TKK48N5/x5e29jU0GR7WF8YOsfxG4usVYuMOXzmVK93OkUuStY/x5l2nQPLfrjai5FwTp0P8pzgadfxxbyumdp4Z+9hdcX4mJgL2jYfOfBkKl/SPuN1xykhPttafMzxdPNjLawNnmQ/bJoxGk0VKQnSbRAgNLqRZ2dJ8I4ayWdbiu2S4kSEdCM76lYKgm/k1wy+pqtlSdTfq1kAtW0ApmDawXpI1GiPXuluSQvEL84k5QNmM7Sg+UN9PhLdcUOHTLXg7QnThM+B5myB65A7w==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..i2oo4eb4lZfvvq6MTLKO9g1Mzpj_crGDVYsUTAbRNOV4k01jFZl-RmAndjjE58Oeflo3-fOMzjyZ4nmW6s1rAw"
+   },
+   "want": "aead"
+  },
+  {
+   "name": "last segment dropped, descriptor and envelope signed again",
+   "sample": "two segments",
+   "key": "recipient",
+   "trust_signer": true,
+   "mutation": "drop-last-segment",
+   "descriptor": "eyJ2ZXJzaW9uIjoiZmdhLmRlc2NyaXB0b3IvdjEiLCJ0ZW5hbnRfaWQiOiJiMDBlZGE1Mi0xNTJiLTQ5ODUtYTJkMy00MDE3OGI5YmNjY2QiLCJvYmplY3RfaWQiOiI3MmRlYzM4MC1jOGM2LTQzNjAtODU5Ny1lMmQ4ZmI2MjVjM2UiLCJsb2dpY2FsX3ZlcnNpb25faWQiOiJiNmFmMTQwNi05N2I3LTQ0NzItOTM0MC0xNGM1MjdjZmMyOGUiLCJjcnlwdG9fdmVyc2lvbl9pZCI6IjZiYjYyMjgyLTNmNGItNDJkMi04MzAxLTBjZWYyODc2M2VlNyIsImJsb2JfaWQiOiIwOTM4MTU2YS1jNGNlLTRkOTgtYmVlYy03ZjMwZjJmM2U5YjgiLCJhdHRlbXB0X2lkIjoiZDFjN2RjZDEtMThlYS00Y2ZiLTliYjQtMWQ3NDE2Y2UyYmY1Iiwic3VpdGUiOjEsImZvcm1hdCI6MSwiY2lwaGVydGV4dF9zaGEyNTYiOiJzaGEyNTY6YzM1NDVhZGFmOGY0YjFhYmRhYzI3NjZjN2Q4NTA2YTVhM2VhZjVmZDAyM2YwMmU3YjBkYjJiMGNhNzQ1MTQ4MSIsImNpcGhlcnRleHRfbGVuZ3RoIjoxMDQ4NTc2LCJzaWduZXIiOiJzaGEyNTY6M2ZiZTJjN2QzNGEyZDQzMjhhNGE2MTQ3NWIyMmI0NTY0MmFkNTY4ZWZhNDEyNjBlZWU2ZGRiOWU3NDFlM2JkZCIsImNyZWF0ZWRfYXQiOiIyMDI3LTAxLTE1VDA4OjAwOjAwWiJ9",
+   "descriptor_signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWRlc2NyaXB0b3IrandzIn0..0DC5vO5gt3xUUsbMx8QbaNRx6mrueAAXtcGfVe_FA5RLwfYJ1VNtv1a2eOgpQwMo405-YpQ8eytmL8_L-WLvDw",
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEHLew4DIxkNghZfi2PtiXD4iELavFAaXt0Ryk0AUxSfPwo4qEGu2IoI/S0LSgwEM7yh2PucwATgBQiDDVFra+PSxq9rCdmx9hQalo+r1/QI/Auew2ysMp0UUgUiAgEBSIKvpnYrLDhMTpCqrY/5PUsuKjlwQ2hFJ6YSAESkuyTWWWAFgAWogP74sfTSi1DKKSmFHWyK0VkKtVo76QSYO7m3bnnQeO91wgKDxwrE0",
+    "ciphertext": "1x9d7426zcyJjz/ltzVjeP0lSVp1Rm+1E4RRdxDRYmppz9KE3gtBXtRDDmxQkVUHQDLuphKCFgY8hh1qWPv5szpbAHrrBSEG/7gusyLkKhCdZ5zsBQkEXkuy1zPBcDsNh6daxYRhhvuR4kxm3tBWXpNK9ESKW6ayZqyIW8bVw079fNH7WuDOxoDh4g5JjAM7/3n/n3ot84tlxPuxT7bRcVh97krfuvSBVoLmDrGdtmdm3qQ0kOp128cYGiimQWUjE/rM1MPNY1sxkcNe/hFgI6PmyiDgtZAS+DYmAaZwqcv9QCd/6Y2KfegZzoAk/gMjitZxzIJX8g==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..TF1UFateRZrIYF1mXnafsg_gDzqizWdwWacKy-4EfQu05Hzc79LUqj7K8kesvlbMXRaUKF6zr6JB6BwCPRgpCg"
+   },
+   "want": "aead"
+  },
+  {
+   "name": "envelope of another object",
+   "sample": "one byte",
+   "key": "recipient",
+   "trust_signer": true,
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aEAnV6EZ57UeIlVTMkNfHHJMiEJqJ+iD5hk2Kgn8wCJVo1dMqECY+PU0ZWU9Bu3bRhsw2x9IwATgBQiD0XmGVEzuFqNm7IFxUJsQHMhGNbPsU5FYSlK5RvRFM7UigCFIgq+mdissOExOkKqtj/k9Sy4qOXBDaEUnphIARKS7JNZZYAWABaiA/vix9NKLUMopKYUdbIrRWQq1WjvpBJg7ubduedB473XCAoPHCsTQ=",
+    "ciphertext": "zsGQOFQcPEr1RBi0/LjemShURvfqueRFAXDgX8K2FjR8asEYI0cSia/56AdC0szTSHKKsSKrAgZbXGS0Co37av2lsgZXZJWhwFhzBQkf6WlMglef6SgKASr9bSe1Km+MJzhMOn3H7p2Bhl07O78QI+nbav8P1m1Bc3dLx4ulPr8apNkF+vbQOWB5CH31IlFrKNASBJHUiZVoDFNICXgodD5Kr8df/hA25j95PzZyyhJPgwNm6Kw2/Wk9BhKnSshgsnHiHQGcytdqm+gadRS3nkGiDrRuR1KpknySFjZsxoemTCxKJ/3/X725mb6m4wx9tCbls2OQeA==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9.._clKqsG-VZUzqstJ8_xOSeiOR8BwpCwHvmWmr5cK_Mqi1TECBJcyXz_a3LGvLnLzX5B9HNpb1axZDnc8arM6Bg"
+   },
+   "want": "binding"
+  },
+  {
+   "name": "tampered envelope",
+   "sample": "one byte",
+   "key": "recipient",
+   "trust_signer": true,
+   "envelope": {
+    "context": "CAESELAO2lIVK0mFotNAF4ubzM0aENoaQdDYPUogkEJNFNwMChsiEBytzXYuPU+iuDv4FOt/C9MqEFjGtzFBtkXXrAbgQuvr6NwwATgBQiD73A4cOpzaDZWop0AoBV/FFtRpDMyazjJyLnvUkymAVEg5UiCr6Z2Kyw4TE6Qqq2P+T1LLio5cENoRSemEgBEpLsk1llgBYAFqID++LH00otQyikphR1sitFZCrVaO+kEmDu5t2550HjvdcICg8cKxNA==",
+    "ciphertext": "/t4lc/ew96/8cAA=",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..DhV3lIkZF9HyTkX-DwEZV26g0vYzj9-CV8rUJ0EOxnmC1_eXC9CjXkSBCVoxstOkJG-DCHWeh7btwNcJkbRyAQ"
+   },
+   "want": "signature"
+  },
+  {
+   "name": "non-canonical context, signed",
+   "sample": "one byte",
+   "key": "recipient",
+   "trust_signer": true,
+   "envelope": {
+    "context": "CIEAEhCwDtpSFStJhaLTQBeLm8zNGhDaGkHQ2D1KIJBCTRTcDAobIhAcrc12Lj1Porg7+BTrfwvTKhBYxrcxQbZF16wG4ELr6+jcMAE4AUIg+9wOHDqc2g2VqKdAKAVfxRbUaQzMms4yci571JMpgFRIOVIgq+mdissOExOkKqtj/k9Sy4qOXBDaEUnphIARKS7JNZZYAWABaiA/vix9NKLUMopKYUdbIrRWQq1WjvpBJg7ubduedB473XCAoPHCsTQ=",
+    "ciphertext": "/t4lc/ew96/8cCD/dMLMps5irEeOBQjScoPXDkvDERpRs7jU5+XVOCbsHoQ6fiRMf0DOnpiv+eLfFJY4Ko3QIhv+baFkp52FM+YwNqa0eqyRXZU+lUfnDjDT7H56XJ26H0r38zuMUQoN6zgp/Uwt6iNKi6CpvyZsWy8WpLk6SATuXMq9fRyOSckhYjKpET1+7bsXgom4yfgdhQBKdOJ1hgFddItAdlaeHJEHqeFAKxcbzk/rZFyx/NGlrLpawHohPeu45HmgNyQ8/JvN1p3XDMaBC5BYPnYjwtX0YdjCPPBKxFe9xYRCJB5jI+8vhMVJBWOtBjoA0Q==",
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYTI1NjozZmJlMmM3ZDM0YTJkNDMyOGE0YTYxNDc1YjIyYjQ1NjQyYWQ1NjhlZmE0MTI2MGVlZTZkZGI5ZTc0MWUzYmRkIiwidHlwIjoiZmdhLWVudmVsb3BlK2p3cyJ9..PVCTQu8H4VUAUZje1MgIjoIQNPQjI07a2KsP79DcCoziMasG0A5tyef6tJYPRB0GZRtaFRq3ZBT5AqzTD5q-DQ"
+   },
+   "want": "format"
+  }
+ ]
+}
