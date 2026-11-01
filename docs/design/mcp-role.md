@@ -78,7 +78,7 @@ A session is bound to the tenant and user of the token that opened it, and to th
 
 | Bound | Default | Over it |
 |---|---|---|
-| Concurrent calls per user, and in total | 8, 256 | `429` at once |
+| Concurrent calls per user, and in total | 8, 256 | `429` at once. A call keeps its place until its method returns: in a session the SDK runs a method on after the client disconnects without cancelling it, so the `hold` middleware keeps a second place, within the same bounds, for the method's whole run. A call over that bound gets the error "too many calls in progress" (review v5 F10) |
 | Open sessions per user, and in total | 8, 1024 | `429` for the opening request. A session counts from the request that opens it, so concurrent opens cannot overshoot. Closed sessions are forgotten |
 | Content returned per request; units per document read | 4 MiB, 1,000 | "read selected units" |
 | Request body | 1 MiB | `413` |
@@ -114,6 +114,7 @@ The tests deploy through `internal/mcptest`: a decision role and a storage role 
 | `TestMCPSessions` | V-115: another user's token in a session `403`; a token for another audience or none `401` |
 | `TestMCPPanicContained` | A panic in one request fails only that request; other sessions go on. Without `contain` it ends the test process |
 | `TestMCPLimits` | Session and call bounds per user and in total; a closed session frees its place |
+| `TestMCPWorkOutlivesDisconnect` | A call cut off without cancelling keeps its place while its work runs: a call meanwhile is refused, one after it ends is served (review v5 F10) |
 | `TestMCPClientMode` | V-170: a generic client gets a capability error and no plaintext; a capable client gets packages that the recipient's key opens to the original object and units, at protocol 2026-07-28 with the capability on each request, and an older client with the `experimental` form in a session; no plaintext in the response; a restricted unit is left out, ID and all; another project's member gets nothing |
 | `TestMCPExport` | Server-mode export of an object and a document; export needs its own permission (a reader who may not export gets "not found"); client-mode export for another recipient, which only that recipient opens; none without a recipient, or for a recipient without an envelope |
 | `TestMCPRegisteredTools` | AGT-002, AGT-003 through MCP: a member lists the registered tool with its schema and calls it; the tools role carries it out once with the member as actor; a required approval is asked for, then used; a user who may use MCP but not the tool sees and calls nothing; arguments outside the schema, another version and an unknown field are refused |

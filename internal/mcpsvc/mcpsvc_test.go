@@ -507,6 +507,90 @@ func TestMCPLimits(t *testing.T) {
 	}
 }
 
+// TestMCPWorkOutlivesDisconnect covers review v5 F10: in a session, a call
+// whose client disconnects without cancelling it keeps running, and keeps
+// its place among the user's concurrent calls until it ends; a call made
+// meanwhile is refused, and one made after it ends is served.
+func TestMCPWorkOutlivesDisconnect(t *testing.T) {
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var hold atomic.Bool
+	hold.Store(true)
+	d := mcptest.Deploy(t, mcpsvc.Limits{MaxBytes: 1 << 20, MaxUnits: 100, UserRequests: 1, TotalRequests: 2, UserSessions: 2, TotalSessions: 3},
+		func(body string) {
+			if hold.Load() && strings.Contains(body, `"actor":{"id":"alice"`) && strings.Contains(body, `"name":"documents.read"`) {
+				entered <- struct{}{}
+				<-proceed
+			}
+		})
+	serverDocument(t, d)
+	a := stateful(t, d, "alice")
+	post := func(c context.Context, body string) (int, error) {
+		req, err := http.NewRequestWithContext(c, http.MethodPost, d.MCP.URL+"/mcp", strings.NewReader(body))
+		if err != nil {
+			return 0, err
+		}
+		for k, v := range map[string]string{"Authorization": "Bearer " + d.Token(t, "alice"), "Mcp-Session-Id": a.ID(),
+			"Mcp-Protocol-Version": mcptest.Stateful, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"} {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	// A call in alice's session, cut off once its work has started.
+	cctx, cut := context.WithCancel(ctx)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := post(cctx, `{"jsonrpc":"2.0","id":"cut-1","method":"tools/call","params":{"name":"documents.read",`+
+			`"arguments":{"bucket":"vault","key":"q3/notes.md"}}}`)
+		sent <- err
+	}()
+	<-entered
+	cut()
+	<-sent
+	// Its HTTP request is over once a notification is no longer refused.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		code, err := post(ctx, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"none"}}`)
+		if err == nil && code != http.StatusTooManyRequests {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the cut call's request still holds its place: %d %v", code, err)
+		}
+	}
+	read := map[string]any{"bucket": "vault", "key": "q3/notes.md"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := call(a, mcpsvc.ToolReadDocument, read, nil)
+		done <- err
+	}()
+	select {
+	case <-entered:
+		hold.Store(false)
+		close(proceed)
+		<-done
+		t.Fatal("a call was admitted while a disconnected call's work still ran")
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "too many calls in progress") {
+			t.Fatalf("a call while a disconnected call's work still ran: %v", err)
+		}
+	}
+	hold.Store(false)
+	close(proceed)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		_, err := call(a, mcpsvc.ToolReadDocument, read, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a call after the work ended: %v", err)
+		}
+	}
+}
+
 // TestGatewayRevision covers the decision role's side of the MCP role
 // having no identity store: for a configured gateway's own MCP
 // operations on the user's token, a request naming revision 0 is decided
