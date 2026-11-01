@@ -24,14 +24,18 @@ var BucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,62}$`)
 // EnsureTenant registers a tenant and returns its UUID, creating it on
 // first use.
 func (s *Store) EnsureTenant(ctx context.Context, tenant string) (cryptowire.UUID, error) {
+	return ensureTenant(ctx, s.pool, tenant)
+}
+
+func ensureTenant(ctx context.Context, q Querier, tenant string) (cryptowire.UUID, error) {
 	id := cryptowire.NewUUID()
-	if _, err := s.pool.Exec(ctx, `INSERT INTO tenants (name, id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`, tenant, id); err != nil {
+	if _, err := q.Exec(ctx, `INSERT INTO tenants (name, id) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`, tenant, id); err != nil {
 		return id, err
 	}
-	if err := ensureEpochRow(ctx, s.pool, tenant); err != nil {
+	if err := ensureEpochRow(ctx, q, tenant); err != nil {
 		return id, err
 	}
-	err := s.pool.QueryRow(ctx, `SELECT id FROM tenants WHERE name = $1`, tenant).Scan(&id)
+	err := q.QueryRow(ctx, `SELECT id FROM tenants WHERE name = $1`, tenant).Scan(&id)
 	return id, err
 }
 
@@ -53,18 +57,22 @@ func EncryptionMode(mode string) bool { return mode == "server" || mode == "clie
 // storage.bucket resource and its native alias. Clients cannot set these
 // (Table "Native storage operations", bucket administration).
 func (s *Store) CreateBucket(ctx context.Context, tenant string, b Bucket) (cryptowire.UUID, error) {
+	return createBucket(ctx, s.pool, tenant, b)
+}
+
+func createBucket(ctx context.Context, q db, tenant string, b Bucket) (cryptowire.UUID, error) {
 	if !BucketName.MatchString(b.Name) {
 		return cryptowire.UUID{}, fmt.Errorf("catalog: invalid bucket name %q", b.Name)
 	}
 	if !EncryptionMode(b.Encryption) {
 		return cryptowire.UUID{}, fmt.Errorf("catalog: invalid encryption mode %q", b.Encryption)
 	}
-	if _, err := s.EnsureTenant(ctx, tenant); err != nil {
+	if _, err := ensureTenant(ctx, q, tenant); err != nil {
 		return cryptowire.UUID{}, err
 	}
 	id := cryptowire.NewUUID()
 	attrs, _ := json.Marshal(map[string]any{"name": b.Name, "project": b.Project, "label": b.Label, "encryption": b.Encryption})
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, q, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO buckets (tenant, id, name, scope, default_project, default_label, encryption)
 		                           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			tenant, id, b.Name, b.Scope, b.Project, b.Label, b.Encryption); err != nil {
@@ -113,7 +121,11 @@ func ensureEpochRow(ctx context.Context, q Querier, tenant string) error {
 // GrantCapabilities lets an actor execute the given actions per resource
 // type (DLG-004) and advances its identity revision.
 func (s *Store) GrantCapabilities(ctx context.Context, tenant, actor string, actions map[string][]string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return grantCapabilities(ctx, s.pool, tenant, actor, actions)
+}
+
+func grantCapabilities(ctx context.Context, q db, tenant, actor string, actions map[string][]string) error {
+	return pgx.BeginFunc(ctx, q, func(tx pgx.Tx) error {
 		for typ, list := range actions {
 			for _, a := range list {
 				if _, err := tx.Exec(ctx, `INSERT INTO capabilities VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, tenant, actor, typ, a); err != nil {

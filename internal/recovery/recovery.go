@@ -663,6 +663,20 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 		}
 	}
 	for _, e := range entries {
+		if e.Kind == journal.AccessRemoved {
+			// Roles, attribute values or capabilities an administrator
+			// took away after the backup are taken away again; nothing is
+			// added back (review AMB-1).
+			var r catalog.Removal
+			if err := json.Unmarshal([]byte(e.Subject), &r); err != nil || r.Identity == "" {
+				return rep, fmt.Errorf("recovery: replay %s: malformed removal: %v", e.Kind, err)
+			}
+			if err := store.ApplyRemoval(ctx, e.Tenant, r); err != nil {
+				return rep, fmt.Errorf("recovery: replay %s: %w", e.Kind, err)
+			}
+			rep.Replayed++
+			continue
+		}
 		var sql string
 		args := []any{e.Tenant, e.Subject}
 		switch e.Kind {

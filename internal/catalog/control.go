@@ -22,7 +22,11 @@ var ErrNoRow = errors.New("catalog: no such row")
 
 // DisableIdentity disables an identity.
 func (s *Store) DisableIdentity(ctx context.Context, tenant, id string) error {
-	return s.exec1(ctx, `UPDATE identities SET disabled = true, revision = revision + 1 WHERE tenant = $1 AND id = $2`, tenant, id)
+	return disableIdentity(ctx, s.pool, tenant, id)
+}
+
+func disableIdentity(ctx context.Context, q Querier, tenant, id string) error {
+	return execOne(ctx, q, `UPDATE identities SET disabled = true, revision = revision + 1 WHERE tenant = $1 AND id = $2`, tenant, id)
 }
 
 // TouchIdentity advances an identity's revision, for changes to its roles,
@@ -33,7 +37,11 @@ func (s *Store) TouchIdentity(ctx context.Context, tenant, id string) error {
 
 // RevokeDelegation revokes a delegation.
 func (s *Store) RevokeDelegation(ctx context.Context, tenant, id string) error {
-	return s.exec1(ctx, `UPDATE delegations SET revoked = true, revision = revision + 1 WHERE tenant = $1 AND id = $2`, tenant, id)
+	return revokeDelegation(ctx, s.pool, tenant, id)
+}
+
+func revokeDelegation(ctx context.Context, q Querier, tenant, id string) error {
+	return execOne(ctx, q, `UPDATE delegations SET revoked = true, revision = revision + 1 WHERE tenant = $1 AND id = $2`, tenant, id)
 }
 
 // RevokeRecipientKey revokes a recipient key and its resource record.
@@ -87,7 +95,12 @@ func (s *Store) SetAdmission(ctx context.Context, open bool, incarnation uint64)
 }
 
 func (s *Store) exec1(ctx context.Context, sql string, args ...any) error {
-	tag, err := s.pool.Exec(ctx, sql, args...)
+	return execOne(ctx, s.pool, sql, args...)
+}
+
+// execOne runs a statement that must change exactly one row.
+func execOne(ctx context.Context, q Querier, sql string, args ...any) error {
+	tag, err := q.Exec(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
@@ -106,6 +119,10 @@ var ErrDelegationExists = errors.New("catalog: delegation exists")
 // expiry; a child must narrow its usable parent (DLG-002). Actor and
 // subject must be known identities.
 func (s *Store) PutDelegation(ctx context.Context, d delegation.Delegation, now time.Time) error {
+	return s.putDelegation(ctx, s.pool, d, now)
+}
+
+func (s *Store) putDelegation(ctx context.Context, q Querier, d delegation.Delegation, now time.Time) error {
 	switch {
 	case d.ID == "" || len(d.ID) > 128 || d.Tenant == "" || d.Actor == "" || d.Subject == "" || d.Audience == "":
 		return errors.New("catalog: a delegation needs an ID, tenant, actor, subject and audience")
@@ -142,7 +159,7 @@ func (s *Store) PutDelegation(ctx context.Context, d delegation.Delegation, now 
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO delegations (tenant, id, actor, subject, audience, grants, expires_at, parent, revision)
+	tag, err := q.Exec(ctx, `INSERT INTO delegations (tenant, id, actor, subject, audience, grants, expires_at, parent, revision)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1) ON CONFLICT (tenant, id) DO NOTHING`,
 		d.Tenant, string(d.ID), d.Actor, d.Subject, d.Audience, raw, d.ExpiresAt, parent)
 	if err == nil && tag.RowsAffected() == 0 {

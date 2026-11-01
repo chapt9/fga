@@ -29,6 +29,10 @@ const (
 	// envelope (KEY-009). KindKeyRelease is an envelope delivery.
 	KindReadAdmission       Kind = "read_admission"
 	KindEnvelopePublication Kind = "envelope_publication"
+	// KindAdministration is an administrative change to a tenant's
+	// directory: an identity, its capabilities, a delegation, a bucket
+	// (ADM-001, ADM-002). It names the change and its target only.
+	KindAdministration Kind = "administration"
 )
 
 // Target names the exact object, version and envelope an outcome event is

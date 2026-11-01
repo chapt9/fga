@@ -42,9 +42,13 @@ const (
 	// GrantRemoved names a share grant that was removed or replaced
 	// (SHR-002); its subject is the grant ID.
 	GrantRemoved = "grant-removed"
+	// AccessRemoved records roles, attribute values or capabilities an
+	// administrative change took from an identity; its subject is the
+	// catalog.Removal as JSON. Reconcile re-applies the removal only.
+	AccessRemoved = "access-removed"
 )
 
-var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved}
+var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved, AccessRemoved}
 
 // Entry is one journaled change. Subject names what changed: an identity,
 // delegation or key, an epoch or an incarnation number. Seq is its

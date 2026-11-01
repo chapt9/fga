@@ -15,7 +15,11 @@ import (
 // no MCP access, whatever its content permissions (default deny). It is
 // idempotent.
 func (s *Store) EnableMCP(ctx context.Context, tenant string) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return enableMCP(ctx, s.pool, tenant)
+}
+
+func enableMCP(ctx context.Context, q db, tenant string) error {
+	return pgx.BeginFunc(ctx, q, func(tx pgx.Tx) error {
 		for _, name := range registry.MCPTools {
 			id := registry.MCPToolNamespace + ":" + name
 			attrs, _ := json.Marshal(map[string]any{"name": name, "kind": "mcp"})
