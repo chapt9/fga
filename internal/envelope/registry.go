@@ -440,8 +440,7 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 		if ctxv.Generation != last+1 {
 			return fmt.Errorf("%w: expected envelope generation %d", ErrConflict, last+1)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND version::text = $2 AND recipient = $3 AND status = 'ACTIVE'`,
-			c.Tenant, versionID, fp); err != nil {
+		if err := RetireTx(ctx, tx, c.Tenant, `version::text = $2 AND recipient = $3`, versionID, fp); err != nil {
 			return err
 		}
 		if err := InsertEnvelope(ctx, tx, c.Tenant, scope, attrs, id, objectID, ctxv.LogicalVersion, ctxv, keyVersion, e, digest, s.d.Now()); err != nil {

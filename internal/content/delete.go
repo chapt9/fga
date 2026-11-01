@@ -8,6 +8,7 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/cryptowire"
+	"fga/internal/envelope"
 	"fga/internal/opplan"
 	"fga/internal/registry"
 )
@@ -125,7 +126,7 @@ func (s *Service) DeleteVersion(ctx context.Context, c Caller, bucketName, key, 
 		if _, err := tx.Exec(ctx, `UPDATE object_versions SET state = 'WITHDRAWN' WHERE tenant = $1 AND id = $2`, c.Tenant, v.ID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND version = $2 AND status = 'ACTIVE'`, c.Tenant, v.ID); err != nil {
+		if err := envelope.RetireTx(ctx, tx, c.Tenant, `version = $2`, v.ID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO retirements (tenant, version, blob, requested_at) VALUES ($1, $2, $3, $4)`,

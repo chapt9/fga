@@ -8,6 +8,7 @@ import (
 
 	"fga/internal/audit"
 	"fga/internal/cryptowire"
+	"fga/internal/envelope"
 	"fga/internal/opplan"
 	"fga/internal/registry"
 )
@@ -129,7 +130,7 @@ func (s *Service) WithdrawDocumentVersion(ctx context.Context, c Caller, bucketN
 			c.Tenant, dv.String()); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND document_version = $2 AND status = 'ACTIVE'`, c.Tenant, dv); err != nil {
+		if err := envelope.RetireTx(ctx, tx, c.Tenant, `document_version = $2`, dv); err != nil {
 			return err
 		}
 		// Lock the units' resources, then their versions, in that order
@@ -190,7 +191,7 @@ func (s *Service) WithdrawDocumentVersion(ctx context.Context, c Caller, bucketN
 			if _, err := tx.Exec(ctx, `UPDATE object_versions SET state = 'WITHDRAWN' WHERE tenant = $1 AND id = $2`, c.Tenant, u.id); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND version = $2 AND status = 'ACTIVE'`, c.Tenant, u.id); err != nil {
+			if err := envelope.RetireTx(ctx, tx, c.Tenant, `version = $2`, u.id); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `UPDATE resources SET generation = generation + 1 WHERE tenant = $1 AND id = $2`, c.Tenant, u.object.String()); err != nil {

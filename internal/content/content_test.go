@@ -171,6 +171,12 @@ func TestVersionsAndHistory(t *testing.T) {
 	if _, err := alice.Get("reports", "doc", v1.Version); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("read of a withdrawn version: %v", err)
 	}
+	// Its envelopes' resources show them retired (fga-audit Q-7).
+	var active int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM resources WHERE type = 'crypto.envelope' AND attributes->>'version' = $1
+	                                  AND attributes->>'status' <> 'RETIRED'`, v1.Version).Scan(&active); err != nil || active != 0 {
+		t.Fatalf("%d envelope resources of the withdrawn version are not retired (%v)", active, err)
+	}
 	var retirements int
 	_ = st.Pool.QueryRow(ctx, `SELECT count(*) FROM retirements WHERE done_at IS NULL`).Scan(&retirements)
 	if retirements != 1 {

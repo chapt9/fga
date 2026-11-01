@@ -740,8 +740,7 @@ func (s *Service) ShareDerived(ctx context.Context, c Caller, bucketName, key, v
 		if ctxv.Generation != next {
 			return fmt.Errorf("%w: envelope generation %d, want %d", ErrConflict, ctxv.Generation, next)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND version = $2 AND recipient = $3
-		                            AND document_version IS NULL AND status = 'ACTIVE'`, c.Tenant, v.ID, fp); err != nil {
+		if err := envelope.RetireTx(ctx, tx, c.Tenant, `version = $2 AND recipient = $3 AND document_version IS NULL`, v.ID, fp); err != nil {
 			return err
 		}
 		if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, "", attrs, id, output, v.ID, ctxv, keyVersion, e,
