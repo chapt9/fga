@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"fga/internal/catalog"
 	"fga/internal/delegation"
 	"fga/internal/journal"
 	"fga/internal/r1test"
@@ -99,7 +101,7 @@ func TestDisableAndRevokeLockTheTargetFirst(t *testing.T) {
 		change func() error
 	}{
 		"disable": {`SELECT 1 FROM identities WHERE tenant = $1 AND id = 'ann' FOR UPDATE`,
-			func() error { return ops.DisableIdentity(ctx, who, r1test.Tenant, "ann") }},
+			func() error { return ops.DisableIdentity(ctx, who, r1test.Tenant, "ann", false) }},
 		"revoke a delegation": {`SELECT 1 FROM delegations WHERE tenant = $1 AND id = 'dlg-1' FOR UPDATE`,
 			func() error { return ops.RevokeDelegation(ctx, who, r1test.Tenant, "dlg-1") }},
 	} {
@@ -142,5 +144,83 @@ func TestDisableAndRevokeLockTheTargetFirst(t *testing.T) {
 				t.Fatalf("the change: %v", err)
 			}
 		})
+	}
+}
+
+// TestDisableNeedsConfirmation covers the owner's safeguard of 1 November
+// 2026 (safeguard 2): disabling the only person who can open some
+// client-mode files is refused, with the number of such files per bucket
+// and no file names, until it is confirmed; nothing is journaled or
+// changed by the refusal. A person whose files others can open too is
+// disabled at once, and then those others may become last readers.
+func TestDisableNeedsConfirmation(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	st.Bucket("other", "p1")
+	ctx := context.Background()
+	ops := Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil }, Now: func() time.Time { return *st.Clock }}
+	who := Who{Actor: "root", Via: "test"}
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	alice.Pin(bob)
+	for key, to := range map[string][]*r1test.Client{"solo.bin": {alice}, "shared.bin": {alice, bob}} {
+		if _, err := alice.Put("reports", key, []byte(key), to...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up, err := alice.PrepareDocument("other", "notes.md", []string{"one", "two"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := func(principal, fingerprint string) []catalog.Unreadable {
+		t.Helper()
+		u, err := catalog.LastReaders(ctx, st.Pool, r1test.Tenant, principal, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	want := []catalog.Unreadable{{Bucket: "other", Files: 1}, {Bucket: "reports", Files: 1}}
+	if got := unreadable("alice", ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("alice is the last reader of %+v, want %+v", got, want)
+	}
+	if got := unreadable("", alice.Recipient.Fingerprint().String()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("alice's key is the last reader of %+v, want %+v", got, want)
+	}
+	if got := unreadable("bob", ""); len(got) != 0 {
+		t.Fatalf("bob is the last reader of %+v", got)
+	}
+
+	entries := func() int {
+		t.Helper()
+		es, err := st.Journal.Entries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(es)
+	}
+	before := entries()
+	err = ops.DisableIdentity(ctx, who, r1test.Tenant, "alice", false)
+	var last *catalog.LastReaderError
+	if !errors.As(err, &last) || !reflect.DeepEqual(last.Unreadable, want) || strings.Contains(err.Error(), "solo") || strings.Contains(err.Error(), "notes") {
+		t.Fatalf("disabling the last reader: %v", err)
+	}
+	if n := st.Count(`SELECT count(*) FROM identities WHERE id = 'alice' AND disabled`); n != 0 || entries() != before {
+		t.Fatal("a refused disable changed something")
+	}
+	if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "bob", false); err != nil {
+		t.Fatalf("disabling a reader others can stand in for: %v", err)
+	}
+	if got := unreadable("alice", ""); !reflect.DeepEqual(got, []catalog.Unreadable{{Bucket: "other", Files: 1}, {Bucket: "reports", Files: 2}}) {
+		t.Fatalf("with bob disabled, alice is the last reader of %+v", got)
+	}
+	if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "alice", true); err != nil {
+		t.Fatalf("a confirmed disable: %v", err)
+	}
+	if n := st.Count(`SELECT count(*) FROM identities WHERE id = 'alice' AND disabled`); n != 1 {
+		t.Fatal("the confirmed disable did not disable alice")
 	}
 }

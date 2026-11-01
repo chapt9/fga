@@ -487,6 +487,12 @@ check $ADMIN audit export -dir audit -key audit.key
 $ADMIN backup -backup-key backup.key -out backup1
 as alice; $B/fga rm -bucket reports -key q3/report.bin
 as alice; if $B/fga get -bucket reports -key q3/report.bin -out x.out 2>/dev/null; then echo "UNEXPECTED: read after delete"; exit 1; fi; echo "deleted"
+# Safeguard 2 (1 November 2026): alice's key is the last one that opens
+# some of her client-mode files, so revoking it is refused, with their
+# number per bucket and no names, unless confirmed; nothing is journaled.
+ALICEFP=$(awk '/^recipient/{print $2}' alice.keys)
+if $ADMIN recipient revoke -tenant t-acme -fingerprint $ALICEFP 2>err.txt; then echo "UNEXPECTED: revoked the last reader's key"; exit 1; fi
+check grep -q "would have no reader left" err.txt; echo "revoking alice's key: $(cat err.txt)"
 $ADMIN recipient revoke -tenant t-acme -fingerprint $BOBFP
 check $ADMIN audit export -dir audit -key audit.key
 $ADMIN restore -backup-key backup.key -from backup1

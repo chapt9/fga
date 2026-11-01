@@ -9,6 +9,7 @@
 package adminapi
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -186,7 +187,15 @@ func (s *server) putIdentity(w http.ResponseWriter, r *http.Request, c caller) {
 }
 
 func (s *server) disableIdentity(w http.ResponseWriter, r *http.Request, c caller) {
-	if err := s.Ops.DisableIdentity(r.Context(), c.who(), c.tenant, r.PathValue("id")); err != nil {
+	// The body is optional: {"confirm_unreadable": true} disables an
+	// identity that is the last reader of client-mode files.
+	var body struct {
+		ConfirmUnreadable bool `json:"confirm_unreadable"`
+	}
+	if !s.decodeOptional(w, r, &body) {
+		return
+	}
+	if err := s.Ops.DisableIdentity(r.Context(), c.who(), c.tenant, r.PathValue("id"), body.ConfirmUnreadable); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -413,8 +422,17 @@ func LoadPolicy(dir string, publishers map[string]ed25519.PublicKey) (Policy, er
 
 // decode reads a JSON request body strictly; on failure it answers 400.
 func (s *server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	return s.decodeBody(w, r, v, false)
+}
+
+// decodeOptional is decode for a body that may be empty, leaving v as is.
+func (s *server) decodeOptional(w http.ResponseWriter, r *http.Request, v any) bool {
+	return s.decodeBody(w, r, v, true)
+}
+
+func (s *server) decodeBody(w http.ResponseWriter, r *http.Request, v any, optional bool) bool {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err == nil {
+	if err == nil && (!optional || len(bytes.TrimSpace(raw)) > 0) {
 		err = strictjson.Decode(raw, v)
 	}
 	if err != nil {
@@ -427,7 +445,11 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 // fail answers an error from a change or a read.
 func (s *server) fail(w http.ResponseWriter, err error) {
 	var pg *pgconn.PgError
+	var last *catalog.LastReaderError
 	switch {
+	case errors.As(err, &last):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error() + `; send {"confirm_unreadable": true} to make the change anyway`,
+			"unreadable": last.Unreadable})
 	case errors.Is(err, adminops.ErrInvalid), errors.Is(err, catalog.ErrBadDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, catalog.ErrNoRow):

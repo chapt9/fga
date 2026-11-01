@@ -18,14 +18,16 @@
 //	bucket create      -tenant T -name N [-project P] [-label L] [-scope S] [-encryption server|client]
 //	mcp enable         -tenant T                   register the MCP service's tools for the tenant (policy decides who uses them)
 //	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]   (removals journaled)
-//	identity disable   -tenant T -id ID                      (journaled)
+//	identity disable   -tenant T -id ID [-confirm-unreadable] (journaled; refused while the identity is the last
+//	                   reader of client-mode files, with their number per bucket, unless confirmed)
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
 //	revoke             -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]   (journaled)
 //	signing-key add    -tenant T -principal ID -public-key B64
 //	classifier add     -tenant T -id NAME -signer FP          register a label classifier with its ACTIVE signing key (LAB-002, D-06)
 //	classifier revoke  -tenant T -id NAME
 //	signing-key retire|compromise -tenant T -fingerprint FP  (compromise is journaled)
-//	recipient revoke   -tenant T -fingerprint FP             (journaled)
+//	recipient revoke   -tenant T -fingerprint FP [-confirm-unreadable] (journaled; refused likewise for the
+//	                   last key that opens client-mode files)
 //	delegation add     -tenant T -id ID -actor A -subject S -audience ADAPTER -grants 'type:a,b;type:c' -expires 24h [-parent ID]
 //	                   lets agent A act for S, presented through ADAPTER (the MCP role's workload, say), within the grants
 //	delegation revoke  -tenant T -id ID                      (journaled)
@@ -200,6 +202,8 @@ func run(args []string) error {
 	allowMissing := fs.Bool("allow-missing", false, "backup: complete although blobs of live versions cannot be read, listing them as missing")
 	acceptJournalLoss := fs.Bool("accept-journal-loss", false,
 		"restore or reconcile although the security journal cannot be shown complete; changes after the backup may be lost")
+	confirmUnreadable := fs.Bool("confirm-unreadable", false,
+		"identity disable, recipient revoke: make the change although some client-mode files would have no reader left")
 	acceptKEKLoss := fs.Bool("accept-kek-loss", false,
 		"reconcile although the KEK ring lacks KEK versions the catalog records; the versions they sealed are quarantined for good (audited)")
 	if err := fs.Parse(sub); err != nil {
@@ -297,7 +301,12 @@ func run(args []string) error {
 		if err := need(*tenant, *id); err != nil {
 			return err
 		}
-		return ops.DisableIdentity(ctx, operator, *tenant, *id)
+		err := ops.DisableIdentity(ctx, operator, *tenant, *id, *confirmUnreadable)
+		var last *catalog.LastReaderError
+		if errors.As(err, &last) {
+			return fmt.Errorf("identity disable: %w; add -confirm-unreadable to disable it anyway", err)
+		}
+		return err
 	case "grant", "revoke":
 		if err := need(*tenant, *actor); err != nil {
 			return err
@@ -356,6 +365,10 @@ func run(args []string) error {
 	case "recipient revoke":
 		if err := need(*tenant, *fingerprint); err != nil {
 			return err
+		}
+		// Checked before the journal entry, which a refusal must not leave.
+		if err := catalog.CheckLastReaders(ctx, e.store.Pool(), *tenant, "", *fingerprint, *confirmUnreadable); err != nil {
+			return fmt.Errorf("recipient revoke: %w; add -confirm-unreadable to revoke it anyway", err)
 		}
 		return journaled(journal.RecipientRevoked, *fingerprint, func() error { return e.store.RevokeRecipientKey(ctx, *tenant, *fingerprint) })
 	case "delegation add":

@@ -103,7 +103,7 @@ func TestRefusedChangesAreNotReplayed(t *testing.T) {
 		return len(es)
 	}
 	before := entries()
-	if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "eve"); !errors.Is(err, catalog.ErrNoRow) {
+	if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "eve", false); !errors.Is(err, catalog.ErrNoRow) {
 		t.Fatalf("disable an unknown identity: %v", err)
 	}
 	if err := ops.RevokeDelegation(ctx, who, r1test.Tenant, "dlg-none"); !errors.Is(err, catalog.ErrNoRow) {
@@ -116,7 +116,7 @@ func TestRefusedChangesAreNotReplayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "carl"); err != nil {
+		if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "carl", false); err != nil {
 			t.Fatal(err)
 		}
 	}

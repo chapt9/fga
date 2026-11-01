@@ -141,12 +141,17 @@ func (o Ops) PutIdentity(ctx context.Context, who Who, tenant, id string, roles 
 }
 
 // DisableIdentity disables an identity, journaled first. It is final: an
-// identity is not enabled again.
-func (o Ops) DisableIdentity(ctx context.Context, who Who, tenant, id string) error {
+// identity is not enabled again. Unless confirmUnreadable, it is refused
+// with a *catalog.LastReaderError when the identity is the last reader of
+// some client-mode files, before anything is journaled.
+func (o Ops) DisableIdentity(ctx context.Context, who Who, tenant, id string, confirmUnreadable bool) error {
 	if err := checkID("identity", id); err != nil {
 		return err
 	}
 	return o.Store.Administer(ctx, o.event(tenant, who, "identity.disable", "identity", id), o.journal(), func(a *catalog.Admin) error {
+		if err := a.CheckLastReaders(ctx, tenant, id, "", confirmUnreadable); err != nil {
+			return err
+		}
 		return a.DisableIdentity(ctx, tenant, id)
 	})
 }

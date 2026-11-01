@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/journal"
 	"fga/internal/pgtest"
+	"fga/internal/r1test"
 	"fga/internal/release"
 )
 
@@ -62,13 +64,19 @@ func newFixtureWith(t *testing.T, capacity int) *fixture {
 	if err := catalog.RecordJournal(ctx, pool, j.ID(), nil); err != nil {
 		t.Fatal(err)
 	}
+	return serve(t, pool, catalog.New(pool, capacity), j, dir)
+}
+
+// serve serves the admin API over store, bound to journal j in dir.
+func serve(t *testing.T, pool *pgxpool.Pool, store *catalog.Store, j *journal.Journal, dir string) *fixture {
+	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	issuer, err := authn.NewIssuer("test-issuer", "k1", priv, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := &fixture{t: t, issuer: issuer, journal: j, journalDir: dir, pool: pool, bundle: signedBundle(t)}
-	f.ops = adminops.Ops{Store: catalog.New(pool, capacity), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now}
+	f.ops = adminops.Ops{Store: store, Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now}
 	srv := httptest.NewServer(adminapi.Handler(adminapi.Config{
 		Ops: f.ops, Tokens: authn.NewVerifier("test-issuer", map[string]ed25519.PublicKey{"k1": pub}, time.Now), Audience: "fga-admin",
 		Admins: map[string][]string{"t-acme": {"root"}}, Consoles: []string{"console-1"},
@@ -406,6 +414,26 @@ func TestUnavailable(t *testing.T) {
 	}
 	if status, _ := f.admin("PUT", "/v1/admin/identities/dana", map[string]any{"roles": []string{"member"}}); status != http.StatusServiceUnavailable {
 		t.Errorf("a full audit outbox: %d", status)
+	}
+}
+
+// TestDisableLastReader covers safeguard 2 of 1 November 2026 through the
+// API: disabling the last reader of client-mode files answers 409 with
+// their number per bucket, and {"confirm_unreadable": true} disables.
+func TestDisableLastReader(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "solo.bin", []byte("only alice"), alice); err != nil {
+		t.Fatal(err)
+	}
+	f := serve(t, st.Pool, st.Catalog, st.Journal, "")
+	status, out := f.admin("POST", "/v1/admin/identities/alice/disable", nil)
+	if status != http.StatusConflict || !reflect.DeepEqual(out["unreadable"], []any{map[string]any{"bucket": "reports", "files": float64(1)}}) {
+		t.Fatalf("disabling the last reader: %d %v", status, out)
+	}
+	if status, out := f.admin("POST", "/v1/admin/identities/alice/disable", map[string]any{"confirm_unreadable": true}); status != http.StatusNoContent {
+		t.Fatalf("a confirmed disable: %d %v", status, out)
 	}
 }
 
