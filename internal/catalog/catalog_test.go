@@ -219,6 +219,29 @@ func TestOutbox(t *testing.T) {
 	}
 }
 
+// TestOutboxTenantShare: with a tenant bound, one tenant that fills its
+// share of the outbox does not stop another tenant's evidence (fga-audit
+// F-07).
+func TestOutboxTenantShare(t *testing.T) {
+	s, _ := testStore(t)
+	s.LimitTenants(2)
+	ctx := context.Background()
+	ev := func(id, tenant string) audit.Event {
+		return audit.Event{ID: id, Kind: audit.KindDecision, Tenant: tenant, Actor: "agent-7", Outcome: "ALLOW", At: now}
+	}
+	for _, id := range []string{"a1", "a2"} {
+		if err := s.Append(ctx, ev(id, "t-acme")); err != nil {
+			t.Fatalf("Append %s: %v", id, err)
+		}
+	}
+	if err := s.Append(ctx, ev("a3", "t-acme")); !errors.Is(err, audit.ErrFull) {
+		t.Fatalf("Append beyond the tenant's share = %v, want %v", err, audit.ErrFull)
+	}
+	if err := s.Append(ctx, ev("b1", "t-other")); err != nil {
+		t.Fatalf("another tenant's Append: %v", err)
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()

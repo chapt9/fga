@@ -62,7 +62,7 @@ func run(path string) error {
 	if err := catalog.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	store := catalog.New(pool, cfg.OutboxCapacity)
+	store := catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity)
 
 	svc, err := wire(ctx, cfg, store)
 	if err != nil {

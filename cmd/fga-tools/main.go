@@ -48,6 +48,10 @@ import (
 type Config struct {
 	roleconfig.Common
 	OutboxCapacity int `json:"outbox_capacity"`
+	// OutboxTenantCapacity, if set, bounds each tenant's undelivered audit
+	// events below outbox_capacity, so one tenant cannot fill the outbox
+	// for every other (AUD-002).
+	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
 	// Worker names this replica as a lease owner; it defaults to the host
 	// name. Lease bounds a dispatch before another worker may reconcile
 	// it, and ConnectorTimeout one destination call (Go durations).
@@ -67,6 +71,9 @@ func (c Config) Validate() error {
 	errs := c.Common.Validate()
 	if c.OutboxCapacity <= 0 {
 		errs = append(errs, errors.New("outbox_capacity is required"))
+	}
+	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.OutboxCapacity {
+		errs = append(errs, errors.New("outbox_tenant_capacity must be in [0, outbox_capacity]"))
 	}
 	for name, v := range map[string]string{"lease": c.Lease, "connector_timeout": c.ConnectorTimeout, "reconcile_every": c.ReconcileEvery} {
 		if v != "" {
@@ -120,7 +127,7 @@ func run(args []string) error {
 	if err := toolstore.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	store := catalog.New(pool, cfg.OutboxCapacity)
+	store := catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity)
 	if rest := global.Args(); len(rest) > 0 {
 		return admin(ctx, pool, store, toolstore.New(pool), rest)
 	}

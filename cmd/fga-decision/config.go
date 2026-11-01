@@ -28,6 +28,10 @@ type Config struct {
 	Audiences      []string          `json:"audiences"`
 	DecisionMaxAge string            `json:"decision_max_age"`
 	OutboxCapacity int               `json:"outbox_capacity"`
+	// OutboxTenantCapacity, if set, bounds each tenant's undelivered audit
+	// events below outbox_capacity, so one tenant cannot fill the outbox
+	// for every other (AUD-002).
+	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
 	// TokenIssuer verifies first-hop user tokens (TRU-003). Without it only
 	// delegated requests can be decided.
 	TokenIssuer *TokenIssuerConfig `json:"token_issuer,omitempty"`
@@ -152,6 +156,9 @@ func (c Config) Validate() error {
 	}
 	if c.OutboxCapacity <= 0 {
 		fail("outbox_capacity must be positive")
+	}
+	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.OutboxCapacity {
+		fail("outbox_tenant_capacity must be in [0, outbox_capacity]")
 	}
 	if ti := c.TokenIssuer; ti != nil {
 		if ti.Issuer == "" || len(ti.Keys) == 0 {

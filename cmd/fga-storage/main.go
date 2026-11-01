@@ -44,6 +44,10 @@ type Config struct {
 	TokenKeyFile       string `json:"token_key_file"`
 	MaxCiphertextBytes int64  `json:"max_ciphertext_bytes,omitempty"`
 	OutboxCapacity     int    `json:"outbox_capacity"`
+	// OutboxTenantCapacity, if set, bounds each tenant's undelivered audit
+	// events below outbox_capacity, so one tenant cannot fill the outbox
+	// for every other (AUD-002).
+	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
 	// JournalDir is the security journal, shared with the keys role: the
 	// storage role journals removed share grants (AVL-008).
 	JournalDir string `json:"journal_dir"`
@@ -57,6 +61,9 @@ func (c Config) Validate() error {
 	errs := c.Common.Validate()
 	if c.BlobDir == "" || c.Keys.URL == "" || c.TokenKeyFile == "" || c.OutboxCapacity <= 0 || c.JournalDir == "" {
 		errs = append(errs, errors.New("blob_dir, keys.url, token_key_file, outbox_capacity and journal_dir are required"))
+	}
+	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.OutboxCapacity {
+		errs = append(errs, errors.New("outbox_tenant_capacity must be in [0, outbox_capacity]"))
 	}
 	if c.Profile == roleconfig.Production && (!strings.HasPrefix(c.Keys.URL, "https://") || c.Keys.CertFile == "") {
 		errs = append(errs, errors.New("production calls the keys role over mutual TLS"))
@@ -91,7 +98,7 @@ func run(path string) error {
 	if err := catalog.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	store := catalog.New(pool, cfg.OutboxCapacity)
+	store := catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity)
 	blobs, err := blob.Open(cfg.BlobDir)
 	if err != nil {
 		return err

@@ -46,6 +46,10 @@ type Config struct {
 	// StorageAdapter is the workload allowed to call internal delivery.
 	StorageAdapter string `json:"storage_adapter"`
 	OutboxCapacity int    `json:"outbox_capacity"`
+	// OutboxTenantCapacity, if set, bounds each tenant's undelivered audit
+	// events below outbox_capacity, so one tenant cannot fill the outbox
+	// for every other (AUD-002).
+	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
 	// KEKFile is the ring of server-mode key-encryption keys (internal/kek);
 	// without it server mode is unavailable. A protected ring is opened
 	// with $FGA_KEK_PASSPHRASE or KEKPassphraseFile. It is development
@@ -59,6 +63,9 @@ func (c Config) Validate() error {
 	errs := c.Common.Validate()
 	if c.JournalDir == "" || c.ReceiptKeyFile == "" || c.ReceiptKeyID == "" || c.StorageAdapter == "" || c.OutboxCapacity <= 0 {
 		errs = append(errs, errors.New("journal_dir, receipt_key_file, receipt_key_id, storage_adapter and outbox_capacity are required"))
+	}
+	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.OutboxCapacity {
+		errs = append(errs, errors.New("outbox_tenant_capacity must be in [0, outbox_capacity]"))
 	}
 	if c.KEKFile != "" && c.Profile == "production" {
 		errs = append(errs, errors.New("kek_file is development key custody; production server-mode key custody is decision D-13, which is open"))
@@ -113,7 +120,7 @@ func run(path string) error {
 	if err != nil {
 		return err
 	}
-	svc, err := envelope.New(envelope.Deps{Catalog: catalog.New(pool, cfg.OutboxCapacity), Fence: fence.New(pool, time.Second, time.Now),
+	svc, err := envelope.New(envelope.Deps{Catalog: catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity), Fence: fence.New(pool, time.Second, time.Now),
 		Decider: rpc.DecisionClient{BaseURL: cfg.Decision.URL, HTTP: decisionHTTP}, Verifier: verifier,
 		ReceiptKeyID: cfg.ReceiptKeyID, ReceiptKey: receiptKey, Journal: j, Now: time.Now})
 	if err != nil {
@@ -134,7 +141,7 @@ func run(path string) error {
 		if err != nil {
 			return err
 		}
-		dk, err := datakeys.New(datakeys.Deps{Catalog: catalog.New(pool, cfg.OutboxCapacity), Fence: fence.New(pool, time.Second, time.Now),
+		dk, err := datakeys.New(datakeys.Deps{Catalog: catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity), Fence: fence.New(pool, time.Second, time.Now),
 			Verifier: verifier, KEKs: keks, Now: time.Now})
 		if err != nil {
 			return err

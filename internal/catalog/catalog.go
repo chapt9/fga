@@ -36,6 +36,7 @@ var migrations embed.FS
 type Store struct {
 	pool           *pgxpool.Pool
 	outboxCapacity int
+	tenantCapacity int
 }
 
 var (
@@ -83,6 +84,14 @@ func (v resourceView) LookupAlias(ctx context.Context, tenant string, alias regi
 // New returns a Store. outboxCapacity bounds undelivered audit events.
 func New(pool *pgxpool.Pool, outboxCapacity int) *Store {
 	return &Store{pool: pool, outboxCapacity: outboxCapacity}
+}
+
+// LimitTenants also bounds each tenant's undelivered audit events to n,
+// so that one tenant cannot fill the outbox for every other (AUD-002,
+// fga-audit F-07); 0 leaves the total bound only.
+func (s *Store) LimitTenants(n int) *Store {
+	s.tenantCapacity = n
+	return s
 }
 
 // Migrate applies the core catalog migrations that have not been applied
@@ -278,13 +287,13 @@ func (s *Store) Consume(ctx context.Context, decisionID string, until time.Time)
 
 // Append implements audit.Outbox.
 func (s *Store) Append(ctx context.Context, e audit.Event) error {
-	return appendEvent(ctx, s.pool, s.outboxCapacity, e)
+	return appendEvent(ctx, s.pool, s.outboxCapacity, s.tenantCapacity, e)
 }
 
 // AppendTx appends an event inside the caller's transaction, so the event
 // commits or rolls back with the outcome it records (AUD-002).
 func (s *Store) AppendTx(ctx context.Context, tx pgx.Tx, e audit.Event) error {
-	return appendEvent(ctx, tx, s.outboxCapacity, e)
+	return appendEvent(ctx, tx, s.outboxCapacity, s.tenantCapacity, e)
 }
 
 // Querier is a connection pool or a transaction.
@@ -294,10 +303,11 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// appendEvent inserts e unless the outbox is full. The capacity check and
-// the insert are one statement; under concurrent appends the bound can be
-// exceeded by at most the number of concurrent writers.
-func appendEvent(ctx context.Context, q Querier, capacity int, e audit.Event) error {
+// appendEvent inserts e unless the outbox, or with a tenant bound the
+// tenant's share of it, is full. The capacity checks and the insert are
+// one statement; under concurrent appends a bound can be exceeded by at
+// most the number of concurrent writers.
+func appendEvent(ctx context.Context, q Querier, capacity, tenantCapacity int, e audit.Event) error {
 	if e.ID == "" {
 		return errors.New("catalog: event ID is required")
 	}
@@ -309,8 +319,9 @@ func appendEvent(ctx context.Context, q Querier, capacity int, e audit.Event) er
 		`INSERT INTO audit_outbox (id, tenant, kind, event)
 		 SELECT $1, $2, $3, $4
 		  WHERE (SELECT count(*) FROM audit_outbox WHERE delivered_at IS NULL) < $5
+		    AND ($6 = 0 OR (SELECT count(*) FROM audit_outbox WHERE delivered_at IS NULL AND tenant = $2) < $6)
 		 ON CONFLICT (id) DO NOTHING`,
-		e.ID, e.Tenant, string(e.Kind), payload, capacity)
+		e.ID, e.Tenant, string(e.Kind), payload, capacity, tenantCapacity)
 	if err != nil {
 		return err
 	}

@@ -52,6 +52,8 @@ Export files are evidence, so changing, deleting, reordering or truncating them 
 
 ## Capacity alarm
 
+Each role's `outbox_capacity` bounds all undelivered events. The optional `outbox_tenant_capacity`, at most that, also bounds each tenant's events, so that one tenant filling the outbox does not stop every other tenant's operations.
+
 `fga-admin audit status [-capacity N [-warn 0.8]]` prints the outbox backlog and the chain head. When the backlog reaches the alarm level of the roles' `outbox_capacity`, it fails with a nonzero exit, for a monitor to act on before the roles start refusing operations (AUD-002).
 
 ## Not done
