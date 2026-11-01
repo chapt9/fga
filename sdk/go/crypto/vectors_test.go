@@ -562,3 +562,113 @@ func TestBrowserVectors(t *testing.T) {
 	}
 	checkVectors(t, v)
 }
+
+// browserProduced is what the console's browser code made with the keys
+// of browser-v1.json (fga-console test/produce-fga-samples.mjs).
+type browserProduced struct {
+	Format  string `json:"format"`
+	About   string `json:"about"`
+	Samples []struct {
+		Name                string         `json:"name"`
+		PlaintextLength     int            `json:"plaintext_length"`
+		Ciphertext          []byte         `json:"ciphertext"`
+		Descriptor          []byte         `json:"descriptor"`
+		DescriptorSignature string         `json:"descriptor_signature"`
+		Envelope            envelopeVector `json:"envelope"`
+	} `json:"samples"`
+	Reshare struct {
+		Of         string         `json:"of"`
+		Recipient  string         `json:"recipient"`
+		KeyVersion uint64         `json:"key_version"`
+		Generation uint64         `json:"generation"`
+		Envelope   envelopeVector `json:"envelope"`
+	} `json:"reshare"`
+	RecipientProof struct {
+		ChallengeID      string `json:"challenge_id"`
+		Tenant           string `json:"tenant"`
+		Principal        string `json:"principal"`
+		Nonce            []byte `json:"nonce"`
+		EphemeralPrivate []byte `json:"ephemeral_private"`
+		EphemeralPublic  []byte `json:"ephemeral_public"`
+		Proof            []byte `json:"proof"`
+	} `json:"recipient_proof"`
+	SigningProof struct {
+		ChallengeID string `json:"challenge_id"`
+		Tenant      string `json:"tenant"`
+		Principal   string `json:"principal"`
+		Nonce       []byte `json:"nonce"`
+		JWS         string `json:"jws"`
+	} `json:"signing_proof"`
+}
+
+// TestBrowserProduced opens and verifies, with this SDK, what the second
+// implementation of profile 1 made: the other half of the
+// cross-implementation check RCP-007 asks for.
+func TestBrowserProduced(t *testing.T) {
+	read := func(name string, v any) {
+		b, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var v browserVectors
+	var got browserProduced
+	read("browser-v1.json", &v)
+	read("browser-produced-v1.json", &got)
+	if got.Format != "fga.browser-produced/v1" || len(got.Samples) == 0 {
+		t.Fatalf("format %q, %d samples", got.Format, len(got.Samples))
+	}
+	rec, other := recipientFromVector(t, v.Recipient), recipientFromVector(t, v.Other)
+	signer := SigningKeyFromPrivate(ed25519.NewKeyFromSeed(v.Signer.Seed))
+	tr := trust{signers: map[cryptowire.Digest]ed25519.PublicKey{signer.Fingerprint: signer.Private.Public().(ed25519.PublicKey)}}
+	pkgOf := func(desc []byte, sig string, e envelopeVector) Package {
+		return Package{Descriptor: desc, DescriptorSignature: sig, Envelope: Envelope{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature}}
+	}
+	for _, s := range got.Samples {
+		var out bytes.Buffer
+		if err := Decrypt(&out, bytes.NewReader(s.Ciphertext), pkgOf(s.Descriptor, s.DescriptorSignature, s.Envelope), rec, tr); err != nil ||
+			!bytes.Equal(out.Bytes(), pattern(s.PlaintextLength)) {
+			t.Errorf("%s: %v", s.Name, err)
+		}
+	}
+
+	var text sampleVector
+	for _, s := range v.Samples {
+		if s.Name == got.Reshare.Of {
+			text = s
+		}
+	}
+	ctx, err := cryptowire.ParseEnvelopeContext(got.Reshare.Envelope.Context)
+	if err != nil || ctx.Recipient != other.Fingerprint() || ctx.RecipientKeyVersion != got.Reshare.KeyVersion || ctx.Generation != got.Reshare.Generation {
+		t.Fatalf("reshared context %+v: %v", ctx, err)
+	}
+	var out bytes.Buffer
+	if err := Decrypt(&out, bytes.NewReader(text.Ciphertext), pkgOf(text.Descriptor, text.DescriptorSignature, got.Reshare.Envelope), other, tr); err != nil ||
+		!bytes.Equal(out.Bytes(), pattern(text.PlaintextLength)) {
+		t.Errorf("reshared envelope: %v", err)
+	}
+
+	rp := got.RecipientProof
+	eph, err := ecdh.X25519().NewPrivateKey(rp.EphemeralPrivate)
+	if err != nil || !bytes.Equal(eph.PublicKey().Bytes(), rp.EphemeralPublic) {
+		t.Fatalf("ephemeral key: %v", err)
+	}
+	pub, _ := ecdh.X25519().NewPublicKey(rec.PublicKey())
+	shared, err := eph.ECDH(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, err := cryptowire.RecipientProof(shared, rp.Nonce, rp.ChallengeID, rp.Tenant, rp.Principal, rec.Fingerprint()); err != nil || !bytes.Equal(want, rp.Proof) {
+		t.Errorf("the browser's recipient proof does not verify: %v", err)
+	}
+	sp := got.SigningProof
+	if _, err := cryptowire.Verify(cryptowire.TypeSigningProof, sp.JWS, cryptowire.SigningProofInput(sp.ChallengeID, sp.Tenant, sp.Principal, signer.Fingerprint, sp.Nonce),
+		func(string) (ed25519.PublicKey, error) { return signer.Private.Public().(ed25519.PublicKey), nil }); err != nil {
+		t.Errorf("the browser's signing proof does not verify: %v", err)
+	}
+}
