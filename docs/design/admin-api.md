@@ -60,6 +60,9 @@ The change is refused, with the count per bucket and never a file name, until it
 |---|---|---|
 | `POST /v1/admin/identities/{id}/disable` | 409, `{"error", "unreadable": [{"bucket", "files"}]}` | body `{"confirm_unreadable": true}` |
 | `fga-admin identity disable`, `fga-admin recipient revoke` | an error naming the counts | `-confirm-unreadable` |
+| `DELETE /v1/recipients/{fp}` (the key's owner, through the keys role) | 409 `LAST_READER` with `unreadable`, once the revocation is authorized | `?confirm_unreadable=true` |
+
+The count tells the key's owner, per bucket, how many of the files they can open nobody else can; it names no file and no other reader.
 
 ## What it does not do
 

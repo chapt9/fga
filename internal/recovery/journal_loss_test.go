@@ -33,7 +33,7 @@ func TestLostJournalFailsClosed(t *testing.T) {
 	// An older copy of the journal, from before the revocation.
 	older := filepath.Join(t.TempDir(), "older")
 	copyDir(t, st.JournalDir, older)
-	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String(), true); err != nil {
 		t.Fatal(err)
 	}
 	now := func() time.Time { return *st.Clock }
@@ -154,7 +154,7 @@ func TestJournalHistoryContinuity(t *testing.T) {
 	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String(), true); err != nil {
 		t.Fatal(err)
 	}
 	// Alice's entry is lost; bob's revocation brings the count back.
@@ -165,7 +165,7 @@ func TestJournalHistoryContinuity(t *testing.T) {
 	if err := os.Remove(files[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("bob"), bob.Recipient.Fingerprint().String()); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("bob"), bob.Recipient.Fingerprint().String(), false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); !errors.Is(err, recovery.ErrJournalContinuity) {
@@ -197,7 +197,7 @@ func TestRestoreWithoutCatalogRecord(t *testing.T) {
 	}
 	older := filepath.Join(t.TempDir(), "older")
 	copyDir(t, st.JournalDir, older)
-	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String(), true); err != nil {
 		t.Fatal(err)
 	}
 	// The catalog's record of the journal is lost with it.

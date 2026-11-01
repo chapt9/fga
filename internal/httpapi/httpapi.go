@@ -40,6 +40,10 @@ const (
 	// CodeEncryptionMode answers 409: the target is in the other
 	// encryption mode than the route serves (ENC-002).
 	CodeEncryptionMode = "ENCRYPTION_MODE"
+	// CodeLastReader answers 409: the change would leave client-mode
+	// files with no reader; the body counts them per bucket, and the
+	// change is made only once confirmed (safeguard 2 of 1 November 2026).
+	CodeLastReader = "LAST_READER"
 )
 
 // ApprovalHeader carries the approval a caller presents when repeating an

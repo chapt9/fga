@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"fga/internal/admission"
+	"fga/internal/catalog"
 	"fga/internal/enforce"
 	"fga/internal/envelope"
 	"fga/internal/httpapi"
@@ -41,6 +42,11 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	var need *enforce.ApprovalRequired
 	if errors.As(err, &need) {
 		httpapi.WriteJSON(w, http.StatusAccepted, map[string]string{"status": httpapi.CodeApprovalRequired, "approval_id": need.ID})
+		return
+	}
+	var last *catalog.LastReaderError
+	if errors.As(err, &last) {
+		httpapi.WriteJSON(w, http.StatusConflict, map[string]any{"error": httpapi.CodeLastReader, "unreadable": last.Unreadable})
 		return
 	}
 	httpapi.Fail(w, r, err, classify)
@@ -168,7 +174,7 @@ func Keys(svc *envelope.Service, tokens httpapi.TokenVerifier, adapterOf func(*h
 		httpapi.WriteJSON(w, http.StatusOK, rec)
 	}))
 	mux.HandleFunc("DELETE /v1/recipients/{fp}", auth(func(w http.ResponseWriter, r *http.Request, c enforce.Caller) {
-		if err := svc.RevokeRecipient(r.Context(), c, r.PathValue("fp")); err != nil {
+		if err := svc.RevokeRecipient(r.Context(), c, r.PathValue("fp"), r.URL.Query().Get("confirm_unreadable") == "true"); err != nil {
 			fail(w, r, err)
 			return
 		}

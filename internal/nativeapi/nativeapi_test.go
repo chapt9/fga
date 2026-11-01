@@ -12,8 +12,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -725,5 +727,42 @@ func TestChainedEvidence(t *testing.T) {
 	}
 	if r := list("alice", mcp.Evidence()); r.Outcome == "ALLOW" {
 		t.Fatal("a gateway decision from an earlier incarnation was accepted")
+	}
+}
+
+// TestRevokeLastReaderKey covers safeguard 2 of 1 November 2026 on the
+// keys API: revoking the last key that opens some client-mode files
+// answers 409 LAST_READER with their number per bucket and leaves the key
+// as it is; ?confirm_unreadable=true revokes it.
+func TestRevokeLastReaderKey(t *testing.T) {
+	d := deploy(t)
+	d.st.Bucket("reports", "p1")
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	if _, err := a.Put("reports", "solo.bin", []byte("only alice"), a); err != nil {
+		t.Fatal(err)
+	}
+	revoke := func(query string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodDelete, d.keys.URL+"/v1/recipients/"+url.PathEscape(a.Recipient.Fingerprint().String())+query, nil)
+		req.Header.Set("Authorization", "Bearer "+d.st.KeysCaller("alice").Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	status, out := revoke("")
+	if status != http.StatusConflict || out["error"] != httpapi.CodeLastReader ||
+		!reflect.DeepEqual(out["unreadable"], []any{map[string]any{"bucket": "reports", "files": float64(1)}}) {
+		t.Fatalf("revoking the last reader's key: %d %v", status, out)
+	}
+	if n := d.st.Count(`SELECT count(*) FROM recipient_keys WHERE status = 'ACTIVE' AND principal = 'alice'`); n != 1 {
+		t.Fatal("a refused revocation changed the key")
+	}
+	if status, out := revoke("?confirm_unreadable=true"); status != http.StatusOK || out["status"] != "REVOKED" {
+		t.Fatalf("a confirmed revocation: %d %v", status, out)
 	}
 }

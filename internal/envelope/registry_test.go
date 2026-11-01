@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"fga/internal/catalog"
 	"fga/internal/content"
 	"fga/internal/enforce"
 	"fga/internal/envelope"
@@ -115,7 +116,10 @@ func TestShareAndRetire(t *testing.T) {
 }
 
 // TestRevokeRecipient covers KEY-008 and KEY-010: after revocation no new
-// delivery or sharing reaches the key.
+// delivery or sharing reaches the key. Safeguard 2 of 1 November 2026: the
+// last key that opens some client-mode files is revoked only once the
+// owner confirms, after being told how many per bucket; until then it
+// still opens them and nothing is journaled.
 func TestRevokeRecipient(t *testing.T) {
 	st := r1test.New(t)
 	st.Bucket("reports", "p1")
@@ -123,7 +127,23 @@ func TestRevokeRecipient(t *testing.T) {
 	if _, err := alice.Put("reports", "doc", []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Envelopes.RevokeRecipient(context.Background(), st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+	fp := alice.Recipient.Fingerprint().String()
+	before, err := st.Journal.Entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.Envelopes.RevokeRecipient(context.Background(), st.KeysCaller("alice"), fp, false)
+	var last *catalog.LastReaderError
+	if !errors.As(err, &last) || len(last.Unreadable) != 1 || last.Unreadable[0] != (catalog.Unreadable{Bucket: "reports", Files: 1}) {
+		t.Fatalf("revoking the last reader's key: %v", err)
+	}
+	if after, _ := st.Journal.Entries(); len(after) != len(before) {
+		t.Fatal("a refused revocation was journaled")
+	}
+	if _, err := alice.Get("reports", "doc", ""); err != nil {
+		t.Fatalf("the key after a refused revocation: %v", err)
+	}
+	if err := st.Envelopes.RevokeRecipient(context.Background(), st.KeysCaller("alice"), fp, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := alice.Get("reports", "doc", ""); err == nil {
@@ -222,13 +242,13 @@ func TestKeyApprovals(t *testing.T) {
 	if rec, err := st.Envelopes.ActivateRecipient(ctx, with(erin, id), ch.Fingerprint, ch.ID, proof); err != nil || rec.Status != "ACTIVE" {
 		t.Fatalf("activation with the approval: %+v %v", rec, err)
 	}
-	err = st.Envelopes.RevokeRecipient(ctx, erin, ch.Fingerprint)
+	err = st.Envelopes.RevokeRecipient(ctx, erin, ch.Fingerprint, false)
 	id = held(err)
 	approve(id)
-	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint, false); err != nil {
 		t.Fatalf("revocation with the approval: %v", err)
 	}
-	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint); err == nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, with(erin, id), ch.Fingerprint, false); err == nil {
 		t.Fatal("a consumed approval served again")
 	}
 

@@ -229,11 +229,17 @@ func (s *Service) ActivateRecipient(ctx context.Context, c enforce.Caller, fp, c
 
 // RevokeRecipient revokes one of the caller's keys: future deliveries and
 // sharing to it stop at the fence (KEY-008, KEY-010). The change is
-// journaled before it is committed.
-func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp string) error {
+// journaled before it is committed. Unless confirmUnreadable, a key that
+// is the last one opening some client-mode files is not revoked: the
+// caller, once authorized, gets a *catalog.LastReaderError with their
+// number per bucket (safeguard 2 of 1 November 2026).
+func (s *Service) RevokeRecipient(ctx context.Context, c enforce.Caller, fp string, confirmUnreadable bool) error {
 	rec, err := s.authorizePlanned(ctx, c, registry.OpRevokeRecipient, []enforce.Check{{ID: "recipient", Role: registry.RoleRecipient,
 		Action: "revoke", Resource: canonical("crypto.recipient", fp)}}, keyPlan("revoke", registry.RoleRecipient, "crypto.recipient", fp))
 	if err != nil {
+		return err
+	}
+	if err := catalog.CheckLastReaders(ctx, s.d.Catalog.Pool(), c.Tenant, "", fp, confirmUnreadable); err != nil {
 		return err
 	}
 	var journalID string

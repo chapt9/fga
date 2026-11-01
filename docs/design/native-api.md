@@ -28,7 +28,7 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Delete key | `DELETE /v1/buckets/{bucket}/object?key=` | `delete`; writes a delete marker |
 | Delete version | `DELETE /v1/buckets/{bucket}/object?key=&version=` | `delete-version`; retention and reference guards |
 | Enroll recipient | `POST /v1/recipients`, then `POST /v1/recipients/{fp}/activate` | `crypto.recipient` `enroll`, then `activate`, with possession proof |
-| Revoke recipient | `DELETE /v1/recipients/{fp}` | `crypto.recipient` `revoke` |
+| Revoke recipient | `DELETE /v1/recipients/{fp}[?confirm_unreadable=true]` | `crypto.recipient` `revoke`. The last key that opens some client-mode files answers `409 LAST_READER` with their number per bucket until confirmed ([admin-api.md](admin-api.md), "Last readers") |
 | Content-signing keys | `fga-admin signing-key add`, `retire`, `compromise` | Trusted provisioning by the local administrator (RCP-002). Each key is also a `crypto.signing-key` resource whose only action is `discover`, so a self-service operation fails closed (RES-001) |
 | Look up a key | `GET /v1/recipients/{fp}`, `GET /v1/signing-keys/{fp}` | `crypto.recipient` `discover` (`crypto.recipient.discover`; a PENDING key is decided as its planned resource) or `crypto.signing-key` `discover` (`crypto.signing-key.discover`), with a fence check. Without a rule the lookup is denied (ruling 7). A directory answer is not a trust anchor (RCP-002) |
 | Set a label | `PUT /v1/buckets/{bucket}/object/label?key=` | Object `label` (`storage.object.label`) to raise or keep, `relabel` (`storage.object.relabel`) to lower, on the proposed change `change.label` (labels-and-approvals.md) |

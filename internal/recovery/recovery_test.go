@@ -52,7 +52,7 @@ func TestRestoreReconcilesRevocation(t *testing.T) {
 	if len(m.Blobs) != 1 || m.Incarnation != 1 {
 		t.Fatalf("manifest = %+v", m)
 	}
-	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String()); err != nil {
+	if err := st.Envelopes.RevokeRecipient(ctx, st.KeysCaller("alice"), alice.Recipient.Fingerprint().String(), true); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := st.Journal.Entries()
