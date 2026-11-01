@@ -92,3 +92,17 @@ func TestVerify(t *testing.T) {
 		t.Error("issuing a token above the maximum lifetime must fail")
 	}
 }
+
+// TestBearer covers audit F8: the Bearer scheme in any case, then a token
+// without spaces; nothing else is a bearer token.
+func TestBearer(t *testing.T) {
+	for header, want := range map[string]string{
+		"Bearer tok": "tok", "bearer tok": "tok", "BEARER tok": "tok", "Bearer  tok": "tok",
+		"": "", "Bearer": "", "Bearer ": "", "Basic tok": "", "Bearertok": "", "Bearer tok more": "", "tok": "", "Bearer\ttok": "",
+	} {
+		got, ok := Bearer(header)
+		if got != want || ok != (want != "") {
+			t.Errorf("%q: %q %t, want %q", header, got, ok, want)
+		}
+	}
+}

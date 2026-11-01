@@ -7,7 +7,7 @@
 Every request passes three checks, in this order:
 
 1. **Console.** The client certificate, verified against `tls.client_ca_file`, names one of `consoles` (its URI SAN, else its common name). In the development profile without TLS, on a loopback address only, every caller is `dev_console_id`.
-2. **Token.** The bearer token verifies with `token_issuer` (D-04: keys, a JWKS URL or a JWKS file) for `audience`, normally `fga-admin`.
+2. **Token.** The bearer token (the `Bearer` scheme in any case, audit F8) verifies with `token_issuer` (D-04: keys, a JWKS URL or a JWKS file) for `audience`, normally `fga-admin`.
 3. **Administrator.** The token's subject is listed under its tenant in `admins`. Only the configuration file names administrators, so no request can make one (ADM-002). A request acts in the token's tenant only.
 
 A refusal is logged with the console, tenant and subject; it changes nothing.

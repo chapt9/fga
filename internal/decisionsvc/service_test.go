@@ -656,3 +656,26 @@ func TestAdmission(t *testing.T) {
 		t.Fatal("a refused request waited for its body")
 	}
 }
+
+// TestPublicFacadeBearerScheme covers audit F8 for the decision role: the
+// public check takes the bearer scheme in any case (RFC 9110, section
+// 11.1).
+func TestPublicFacadeBearerScheme(t *testing.T) {
+	f := newFixture(t, 100)
+	srv := httptest.NewServer(f.svc.Handler(func(*http.Request) (string, error) { return "", errors.New("no adapter") }))
+	defer srv.Close()
+	good, _ := f.issuer.Issue("user-42", "t-acme", "fga-decision", time.Minute)
+	body := `{"request_id":"r","tenant":"t-acme","operation":"unit.read","operation_id":"o","operation_digest":"d","audience":"storage",
+	  "single_use":false,"actor":{"id":"user-42","revision":88},
+	  "checks":[{"id":"c1","role":"unit","action":"read","resource":{"namespace":"mcp","name":"doc://q3#overview"}}]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/check", strings.NewReader(body))
+	req.Header.Set("Authorization", "bearer "+good)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a check with a lower-case bearer scheme: %d", resp.StatusCode)
+	}
+}

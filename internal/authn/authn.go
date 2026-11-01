@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -164,4 +165,17 @@ func (i *Issuer) Issue(subject, tenant, audience string, lifetime time.Duration)
 	std := jwt.Claims{Issuer: i.issuer, Subject: subject, Audience: jwt.Audience{audience}, ID: hex.EncodeToString(id),
 		IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(lifetime))}
 	return jwt.Signed(i.signer).Claims(std).Claims(private{Tenant: tenant, ClientID: "fga-dev"}).Serialize()
+}
+
+// Bearer returns the token of an Authorization header value in the Bearer
+// scheme: the scheme's name in any case (RFC 9110, section 11.1; audit
+// F8), spaces, and a token without spaces. Every role that reads a bearer
+// token itself reads it with Bearer.
+func Bearer(header string) (string, bool) {
+	scheme, token, ok := strings.Cut(header, " ")
+	token = strings.TrimLeft(token, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" || strings.ContainsAny(token, " \t") {
+		return "", false
+	}
+	return token, true
 }

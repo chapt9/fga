@@ -202,6 +202,15 @@ func TestRefusals(t *testing.T) {
 	if ids, _ := f.ops.Store.ListIdentities(ctx, "t-acme", "", 10); len(ids) != 0 {
 		t.Fatalf("a refused request made %+v", ids)
 	}
+	// The scheme is case-insensitive (RFC 9110, section 11.1; audit F8).
+	req, _ := http.NewRequest("GET", f.url+"/v1/admin/whoami", nil)
+	req.Header.Set("X-Console", "console-1")
+	req.Header.Set("Authorization", "bearer "+root)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("a lower-case bearer scheme: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
 	if status, _, _ := f.call("GET", "/healthz", "", "", nil); status != http.StatusOK {
 		t.Fatalf("healthz = %d", status)
 	}

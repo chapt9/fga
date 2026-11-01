@@ -6,8 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
+	"fga/internal/authn"
 	"fga/internal/strictjson"
 )
 
@@ -68,12 +68,12 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 	// verified before an admission slot is taken or anything is recorded,
 	// so an unauthenticated caller holds neither (fga-audit F-12).
 	mux.HandleFunc("POST /v1/check", func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if ok && token != "" && s.d.Authn != nil {
+		token, ok := authn.Bearer(r.Header.Get("Authorization"))
+		if ok && s.d.Authn != nil {
 			_, err := s.d.Authn.Verify(token, s.d.PublicAudience)
 			ok = err == nil
 		}
-		if !ok || token == "" || s.d.Authn == nil {
+		if !ok || s.d.Authn == nil {
 			w.Header().Set("Connection", "close")
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return

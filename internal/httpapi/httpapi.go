@@ -80,8 +80,8 @@ func Fail(w http.ResponseWriter, r *http.Request, err error, classify func(error
 // Authenticate verifies the bearer token for audience and returns the
 // caller (TB1, ADP-001).
 func Authenticate(tokens TokenVerifier, audience string, r *http.Request) (enforce.Caller, bool) {
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
+	token, ok := authn.Bearer(r.Header.Get("Authorization"))
+	if !ok {
 		return enforce.Caller{}, false
 	}
 	c, err := tokens.Verify(token, audience)

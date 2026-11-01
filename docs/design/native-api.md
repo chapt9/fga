@@ -9,7 +9,7 @@ Status: design record, 31 October 2026. The machine-readable contract is [native
 | storage | `fga-storage` | `fga-storage` | Uploads, reads, stat, listing, deletion |
 | keys | `fga-keys` | `fga-keys` | Recipient and content-signing key registry, envelope publication and retirement; internal envelope delivery to the storage role |
 
-Every request carries `Authorization: Bearer <access token>` ([first-hop authentication](first-hop-authentication.md)). The one exception is the MCP role's call for a user (TB3). It comes from a configured MCP workload with no bearer token, and carries in `Fga-Decision` the decision the MCP role obtained for the user's MCP tool call. Every route then checks it as for the user ([mcp-gateway.md](mcp-gateway.md)). Bucket creation is a control operation performed with `fga-admin` (ADM-003); clients cannot set authority metadata.
+Every request carries `Authorization: Bearer <access token>` ([first-hop authentication](first-hop-authentication.md)). Every role reads the scheme in any case (RFC 9110; `authn.Bearer`, audit F8). The one exception is the MCP role's call for a user (TB3). It comes from a configured MCP workload with no bearer token, and carries in `Fga-Decision` the decision the MCP role obtained for the user's MCP tool call. Every route then checks it as for the user ([mcp-gateway.md](mcp-gateway.md)). Bucket creation is a control operation performed with `fga-admin` (ADM-003); clients cannot set authority metadata.
 
 ## Operations
 

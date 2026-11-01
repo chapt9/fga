@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -108,8 +107,8 @@ func (s *server) auth(h func(http.ResponseWriter, *http.Request, caller)) http.H
 			writeError(w, http.StatusForbidden, "not a configured console")
 			return
 		}
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
+		token, ok := authn.Bearer(r.Header.Get("Authorization"))
+		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "an administrator's bearer token is required")
 			return
