@@ -66,8 +66,9 @@ $B/fga-keys -config keys.json > keys.log 2>&1 & echo $! >> pids
 $B/fga-storage -config storage.json > storage.log 2>&1 & echo $! >> pids
 $B/fga-mcp -config mcp.json > mcp.log 2>&1 & echo $! >> pids
 trap 'kill $(cat pids) 2>/dev/null; sleep 1; dropdb -h localhost --if-exists '$DB'' EXIT
-sleep 2
-curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && curl -sf http://127.0.0.1:18446/healthz && echo "roles ready"
+ready() { curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && curl -sf http://127.0.0.1:18446/healthz; }
+for _ in $(seq 60); do ready >/dev/null 2>&1 && break; sleep 0.5; done
+check ready && echo "roles ready"
 
 ADMIN="$B/fga-admin -db $URL -journal journal -blobs blobs"
 export FGA_BACKUP_KEY_PASSPHRASE="smoke backup passphrase"
@@ -403,7 +404,8 @@ TOOLS="$B/fga-tools -config tools.json"
 check $TOOLS tool add -tenant t-acme -file notify.json
 check $TOOLS destination add -tenant t-acme -id hooks -url http://127.0.0.1:18447 -cidrs 127.0.0.0/8 -credential-file hooks.token -approved
 $TOOLS > tools.log 2>&1 & echo $! >> pids
-sleep 1
+for _ in $(seq 60); do curl -sf http://127.0.0.1:18448/readyz >/dev/null 2>&1 && break; sleep 0.5; done
+check curl -sf http://127.0.0.1:18448/readyz
 $ADMIN grant -tenant t-acme -actor bob -type network.destination -actions send
 invoke() { curl -s -o invoke.out -w '%{http_code}' -H "Authorization: Bearer $(tok $1 fga-tools)" -H 'Content-Type: application/json' \
              -d "{\"tool\":\"notify\",\"version\":1,\"idempotency_key\":\"$2\",\"arguments\":{\"message\":\"$3\"}}" \
