@@ -26,7 +26,6 @@ import (
 
 	"fga/internal/admission"
 	"fga/internal/approval"
-	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
@@ -157,15 +156,7 @@ func tokenVerifier(cfg Config) (decisionsvc.TokenVerifier, error) {
 	if cfg.TokenIssuer == nil {
 		return nil, nil
 	}
-	keys := map[string]ed25519.PublicKey{}
-	for id, b64 := range cfg.TokenIssuer.Keys {
-		key, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil || len(key) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("token issuer key %q is not a base64 Ed25519 public key", id)
-		}
-		keys[id] = key
-	}
-	return authn.NewVerifier(cfg.TokenIssuer.Issuer, keys, time.Now), nil
+	return cfg.TokenIssuer.Verifier(time.Now)
 }
 
 func loadSigner(cfg Config) (*signing.Signer, error) {

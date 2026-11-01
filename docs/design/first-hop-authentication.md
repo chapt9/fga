@@ -1,6 +1,6 @@
 # First-hop authentication (TRU-003, DEC-007, ID-001, ID-007)
 
-Status: design record, 31 October 2026. D-04 (identity providers) is open, so this record defines the evidence interface and a development profile only. No provider is chosen.
+Status: design record, 31 October 2026; production issuers 1 November 2026 (D-04, [ruling](../decisions/D-04-identity-providers.md)).
 
 ## Evidence
 
@@ -29,6 +29,25 @@ type Verifier interface {
 
 The development issuer is a local Ed25519 key pair. `fga dev-token` signs tokens with its private key; the roles hold only the public key. The issuer is named `fga-dev` and is accepted only by roles whose configuration profile is `development`; a production profile refuses to start with it.
 
+## Production issuers (D-04)
+
+Every role that verifies tokens (decision, storage, keys, tools, MCP) reads one `token_issuer` configuration, `authn.IssuerConfig`:
+
+| Field | Meaning |
+|---|---|
+| `issuer` | The `iss` every token must carry |
+| `keys` | Ed25519 public keys by key ID (base64): the development issuer, or any issuer that signs with fixed EdDSA keys |
+| `jwks_url` | An OIDC provider's JSON Web Key Set over https (Keycloak, Entra ID, Okta, Auth0). Fetched on first use, again hourly, and at most once a minute when a token names a key ID it does not hold. A failed fetch keeps the keys it had. Responses are bounded to 1 MiB |
+| `jwks_ca_file` | The CA the key set's server certificate must chain to, for a provider with a private CA |
+| `jwks_file` | The same key set from a local file |
+| `token_types` | Accepted JOSE `typ` values, default `at+jwt`. A provider that types its access tokens `JWT` needs `JWT` here, and then the role's audience must be one its ID tokens never carry |
+| `max_lifetime` | The longest token lifetime accepted, default 1 h, at most 24 h |
+
+Exactly one of `keys`, `jwks_url` and `jwks_file` is set.
+- **Keys from a set.** Only signing keys are taken from a set: Ed25519, ECDSA P-256 and RSA of at least 2048 bits, public, with a key ID, and with `use` absent or `sig`. Each key verifies only its own algorithm (EdDSA, ES256 or RS256), so a token cannot pick a weaker algorithm for a key. Symmetric algorithms are never accepted.
+- **Claims.** A production provider must issue the same claims as the development profile, `fga_tenant` included (a claim mapper in Keycloak, an optional claim in Entra ID).
+- **Profiles.** Production refuses the `fga-dev` issuer and a key set fetched over plain http.
+
 ## Binding at the decision role
 
 1. The adapter is authenticated by its connection.
@@ -40,6 +59,6 @@ Roles and attributes still come only from the catalog (ID-002, ID-003); a token 
 
 ## Not done
 
-- No OIDC discovery, JWKS refresh, introspection or production issuer (D-04).
+- No OIDC discovery document, token introspection or opaque tokens: a provider is configured by its issuer and key set.
 - No sender-constrained tokens (RCP-009, R2).
 - Identity expiry: the catalog's `identities.expires_at` bounds `valid_until` (DEC-005); token expiry bounds only the first hop.

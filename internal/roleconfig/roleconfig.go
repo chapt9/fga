@@ -31,8 +31,6 @@ import (
 const (
 	Production  = "production"
 	Development = "development"
-	// DevIssuer is the development token issuer, refused in production.
-	DevIssuer = "fga-dev"
 )
 
 // Common is the configuration every storage-side role has.
@@ -79,11 +77,8 @@ type Peer struct {
 	CAFile   string `json:"ca_file,omitempty"`
 }
 
-// TokenIssuer is one access-token issuer and its keys.
-type TokenIssuer struct {
-	Issuer string            `json:"issuer"`
-	Keys   map[string]string `json:"keys"`
-}
+// TokenIssuer is one access-token issuer (D-04).
+type TokenIssuer = authn.IssuerConfig
 
 // Load reads a configuration file into cfg strictly.
 func Load(path string, cfg any) error {
@@ -109,9 +104,6 @@ func (c Common) Validate() []error {
 		if c.TLS == nil || c.DevAdapter != "" {
 			fail("production requires tls and no dev_adapter_id")
 		}
-		if c.TokenIssuer.Issuer == DevIssuer {
-			fail("the development token issuer is not allowed in production")
-		}
 		if !strings.HasPrefix(c.Decision.URL, "https://") || c.Decision.CertFile == "" {
 			fail("production calls the decision role over mutual TLS")
 		}
@@ -128,8 +120,11 @@ func (c Common) Validate() []error {
 	if c.Listen == "" || c.DatabaseURL == "" || c.Decision.URL == "" {
 		fail("listen, database_url and decision.url are required")
 	}
-	if c.TokenIssuer.Issuer == "" || len(c.TokenIssuer.Keys) == 0 || len(c.DecisionKeys) == 0 {
-		fail("token_issuer and decision_keys are required")
+	if err := c.TokenIssuer.Validate(c.Profile == Production); err != nil {
+		fail("%v", err)
+	}
+	if len(c.DecisionKeys) == 0 {
+		fail("decision_keys are required")
 	}
 	if c.Admission != nil {
 		if err := c.Admission.Validate(); err != nil {
@@ -173,15 +168,7 @@ func PrivateKeyFile(path string) (ed25519.PrivateKey, error) {
 
 // Tokens returns the access-token verifier.
 func (c Common) Tokens() (*authn.Verifier, error) {
-	keys := map[string]ed25519.PublicKey{}
-	for id, b64 := range c.TokenIssuer.Keys {
-		k, err := PublicKey(b64)
-		if err != nil {
-			return nil, fmt.Errorf("token issuer key %q: %w", id, err)
-		}
-		keys[id] = k
-	}
-	return authn.NewVerifier(c.TokenIssuer.Issuer, keys, time.Now), nil
+	return c.TokenIssuer.Verifier(time.Now)
 }
 
 // Verifier returns a decision verifier for audience. Single-use

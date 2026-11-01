@@ -2,21 +2,25 @@
 // access tokens issued by a registered provider (specification 2.5,
 // TRU-003, DEC-007, ID-001, ID-007).
 //
-// D-04 (identity providers) is open, so the only profile is the development
-// one: JWT access tokens (typ at+jwt, RFC 9068) signed with EdDSA by a
-// configured local issuer. An ID token or any other token type is rejected,
-// keys are never taken from the token (no jku, x5u, x5c or embedded jwk),
-// and the same JOSE implementation verifies tokens, decisions and content
-// signatures.
+// Tokens are JWT access tokens (typ at+jwt, RFC 9068, unless an issuer is
+// configured otherwise) from the development issuer, signed with EdDSA, or
+// from an OIDC provider by its JSON Web Key Set, signed with RS256, ES256
+// or EdDSA (D-04, issuer.go). An ID token or any other token type is
+// rejected, keys are never taken from the token (no jku, x5u, x5c or
+// embedded jwk), and the same JOSE implementation verifies tokens,
+// decisions and content signatures.
 package authn
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -26,7 +30,7 @@ import (
 // TokenType is the JOSE type of an access token.
 const TokenType = "at+jwt"
 
-// Bounds of the development profile.
+// Default bounds of a token.
 const (
 	MaxLifetime = time.Hour
 	ClockSkew   = 30 * time.Second
@@ -56,14 +60,16 @@ type private struct {
 
 // Verifier verifies access tokens from one issuer.
 type Verifier struct {
-	issuer string
-	keys   map[string]ed25519.PublicKey
-	now    func() time.Time
+	issuer      string
+	keys        func(kid string) (any, bool)
+	now         func() time.Time
+	types       []string
+	maxLifetime time.Duration
 }
 
-// NewVerifier returns a Verifier for issuer's keys, by key ID.
+// NewVerifier returns a Verifier for issuer's Ed25519 keys, by key ID.
 func NewVerifier(issuer string, keys map[string]ed25519.PublicKey, now func() time.Time) *Verifier {
-	return &Verifier{issuer: issuer, keys: keys, now: now}
+	return &Verifier{issuer: issuer, keys: staticKeys(keys), now: now, types: []string{TokenType}, maxLifetime: MaxLifetime}
 }
 
 // Verify checks the token's type, algorithm, key, signature, issuer,
@@ -72,7 +78,7 @@ func (v *Verifier) Verify(token, audience string) (Claims, error) {
 	fail := func(format string, args ...any) (Claims, error) {
 		return Claims{}, fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 	}
-	tok, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.EdDSA})
+	tok, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.EdDSA, jose.ES256, jose.RS256})
 	if err != nil {
 		return fail("parse: %v", err)
 	}
@@ -80,16 +86,30 @@ func (v *Verifier) Verify(token, audience string) (Claims, error) {
 		return fail("want exactly one signature")
 	}
 	h := tok.Headers[0]
-	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); typ != TokenType {
-		return fail("token type %q is not %q", typ, TokenType)
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); !slices.Contains(v.types, typ) {
+		return fail("token type %q is not one of %q", typ, v.types)
 	}
 	_, x5cErr := h.Certificates(x509.VerifyOptions{})
 	if h.JSONWebKey != nil || !errors.Is(x5cErr, jose.ErrMissingX5cHeader) || h.ExtraHeaders["jku"] != nil || h.ExtraHeaders["x5u"] != nil {
 		return fail("the token names its own key")
 	}
-	key, ok := v.keys[h.KeyID]
+	key, ok := v.keys(h.KeyID)
 	if !ok {
 		return fail("unknown key %q", h.KeyID)
+	}
+	// Each key signs with its own algorithm only.
+	switch key.(type) {
+	case ed25519.PublicKey:
+		ok = h.Algorithm == string(jose.EdDSA)
+	case *ecdsa.PublicKey:
+		ok = h.Algorithm == string(jose.ES256)
+	case *rsa.PublicKey:
+		ok = h.Algorithm == string(jose.RS256)
+	default:
+		ok = false
+	}
+	if !ok {
+		return fail("algorithm %q does not fit key %q", h.Algorithm, h.KeyID)
 	}
 	var std jwt.Claims
 	var priv private
@@ -105,8 +125,8 @@ func (v *Verifier) Verify(token, audience string) (Claims, error) {
 		return fail("sub, jti and fga_tenant are required")
 	case std.Expiry == nil || std.IssuedAt == nil:
 		return fail("exp and iat are required")
-	case std.Expiry.Time().Sub(std.IssuedAt.Time()) > MaxLifetime:
-		return fail("lifetime above %s", MaxLifetime)
+	case std.Expiry.Time().Sub(std.IssuedAt.Time()) > v.maxLifetime:
+		return fail("lifetime above %s", v.maxLifetime)
 	}
 	return Claims{Issuer: std.Issuer, Subject: std.Subject, Tenant: priv.Tenant, ClientID: priv.ClientID, TokenID: std.ID,
 		Audience: std.Audience, IssuedAt: std.IssuedAt.Time(), ExpiresAt: std.Expiry.Time()}, nil

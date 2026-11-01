@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fga/internal/admission"
+	"fga/internal/authn"
 	"fga/internal/strictjson"
 )
 
@@ -68,16 +69,8 @@ func (c Config) limits() admission.Limits {
 	return admission.Limits{TenantRequests: a.AdapterRequests, TenantStreams: 1, TotalRequests: a.TotalRequests}
 }
 
-// TokenIssuerConfig names one token issuer and its Ed25519 verification
-// keys by key ID (base64). D-04 is open: the only qualified use is the
-// development issuer, which production refuses.
-type TokenIssuerConfig struct {
-	Issuer string            `json:"issuer"`
-	Keys   map[string]string `json:"keys"`
-}
-
-// devIssuer is the development token issuer of first-hop-authentication.md.
-const devIssuer = "fga-dev"
+// TokenIssuerConfig is one token issuer (D-04).
+type TokenIssuerConfig = authn.IssuerConfig
 
 // TLSConfig names the server certificate and the CA that issues adapter
 // workload certificates. Client certificates are required (DEC-007).
@@ -161,11 +154,8 @@ func (c Config) Validate() error {
 		fail("outbox_tenant_capacity must be in [0, outbox_capacity]")
 	}
 	if ti := c.TokenIssuer; ti != nil {
-		if ti.Issuer == "" || len(ti.Keys) == 0 {
-			fail("token_issuer needs issuer and keys")
-		}
-		if ti.Issuer == devIssuer && c.Profile == profileProduction {
-			fail("the development token issuer is not allowed in production")
+		if err := ti.Validate(c.Profile == profileProduction); err != nil {
+			fail("%v", err)
 		}
 	}
 	for gw, audiences := range c.Gateways {

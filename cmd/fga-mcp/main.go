@@ -10,10 +10,8 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -86,12 +84,8 @@ type ServerTLS struct {
 	KeyFile  string `json:"key_file"`
 }
 
-// TokenIssuer is the issuer of the users' tokens and its keys by key ID
-// (base64 Ed25519).
-type TokenIssuer struct {
-	Issuer string            `json:"issuer"`
-	Keys   map[string]string `json:"keys"`
-}
+// TokenIssuer is the issuer of the users' tokens (D-04).
+type TokenIssuer = authn.IssuerConfig
 
 // Peer is a role this role calls.
 type Peer struct {
@@ -112,9 +106,6 @@ func (c Config) Validate() error {
 	case "production":
 		if c.TLS == nil {
 			fail("production requires tls")
-		}
-		if c.TokenIssuer.Issuer == "fga-dev" {
-			fail("the development token issuer is not allowed in production")
 		}
 		if !strings.HasPrefix(c.PublicURL, "https://") || len(c.AuthorizationServers) == 0 {
 			fail("production serves its protected resource metadata: public_url (https) and authorization_servers")
@@ -154,8 +145,8 @@ func (c Config) Validate() error {
 	if c.Tools != nil && (c.Tools.URL == "" || c.ToolsAudience == "") {
 		fail("tools needs a url and tools_audience")
 	}
-	if c.TokenIssuer.Issuer == "" || len(c.TokenIssuer.Keys) == 0 {
-		fail("token_issuer is required")
+	if err := c.TokenIssuer.Validate(c.Profile == "production"); err != nil {
+		fail("%v", err)
 	}
 	if c.MaxBytes < 0 || c.MaxUnits < 0 || c.UserRequests < 0 || c.TotalRequests < 0 || c.UserSessions < 0 || c.TotalSessions < 0 {
 		fail("limits are positive when given")
@@ -226,15 +217,7 @@ func (p Peer) client() (*http.Client, error) {
 
 // tokens returns the verifier of the users' tokens.
 func (c Config) tokens() (*authn.Verifier, error) {
-	keys := map[string]ed25519.PublicKey{}
-	for id, b64 := range c.TokenIssuer.Keys {
-		k, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil || len(k) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("token issuer key %q is not a base64 Ed25519 public key", id)
-		}
-		keys[id] = k
-	}
-	return authn.NewVerifier(c.TokenIssuer.Issuer, keys, time.Now), nil
+	return c.TokenIssuer.Verifier(time.Now)
 }
 
 func main() {
