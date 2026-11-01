@@ -51,11 +51,14 @@ func (r Removal) Empty() bool {
 
 // Journal is how an administrative change reaches the security journal,
 // which the catalog does not link: Append journals one entry and returns
-// the journal's ID and chain values, and RemovalKind is the entry kind of
-// a Removal (journal.AccessRemoved).
+// the journal's ID and chain values. The kinds name the entries of a
+// Removal (journal.AccessRemoved), a disable (journal.IdentityDisabled)
+// and a delegation revoke (journal.DelegationRevoked).
 type Journal struct {
-	Append      func(kind, tenant, subject string) (journalID string, chains []string, err error)
-	RemovalKind string
+	Append       func(kind, tenant, subject string) (journalID string, chains []string, err error)
+	RemovalKind  string
+	DisabledKind string
+	RevokedKind  string
 }
 
 // Admin makes administrative changes inside one transaction.
@@ -147,8 +150,23 @@ func (a *Admin) PutIdentity(ctx context.Context, tenant, id string, roles []stri
 	return err
 }
 
-// DisableIdentity disables an identity. The caller journals it first.
+// DisableIdentity disables an identity, journaled first. The identity is
+// locked before the journal's state is, the order every journaled change
+// takes (audit F1). An unknown identity is refused and a disabled one left
+// as it is, neither journaled, so a restore cannot disable an identity
+// created later (audit F2).
 func (a *Admin) DisableIdentity(ctx context.Context, tenant, id string) error {
+	var disabled bool
+	err := a.tx.QueryRow(ctx, `SELECT disabled FROM identities WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id).Scan(&disabled)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrNoRow
+	case err != nil || disabled:
+		return err
+	}
+	if err := a.Journal(ctx, a.journal.DisabledKind, tenant, id); err != nil {
+		return err
+	}
 	return disableIdentity(ctx, a.tx, tenant, id)
 }
 
@@ -194,8 +212,21 @@ func (a *Admin) PutDelegation(ctx context.Context, d delegation.Delegation, now 
 	return a.s.putDelegation(ctx, a.tx, d, now)
 }
 
-// RevokeDelegation revokes a delegation. The caller journals it first.
+// RevokeDelegation revokes a delegation, journaled first, as
+// DisableIdentity disables an identity: locked first, an unknown one
+// refused and a revoked one left as it is.
 func (a *Admin) RevokeDelegation(ctx context.Context, tenant, id string) error {
+	var revoked bool
+	err := a.tx.QueryRow(ctx, `SELECT revoked FROM delegations WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id).Scan(&revoked)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrNoRow
+	case err != nil || revoked:
+		return err
+	}
+	if err := a.Journal(ctx, a.journal.RevokedKind, tenant, id); err != nil {
+		return err
+	}
 	return revokeDelegation(ctx, a.tx, tenant, id)
 }
 

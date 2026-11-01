@@ -88,20 +88,21 @@ func (o Ops) event(tenant string, who Who, change, typ, id string) audit.Event {
 }
 
 func (o Ops) journal() catalog.Journal {
-	return catalog.Journal{RemovalKind: journal.AccessRemoved, Append: func(kind, tenant, subject string) (string, []string, error) {
-		if o.Journal == nil {
-			return "", nil, catalog.ErrNoJournal
-		}
-		j, err := o.Journal()
-		if err != nil {
-			return "", nil, fmt.Errorf("%w: %v", catalog.ErrNoJournal, err)
-		}
-		if err := j.Append(kind, tenant, subject); err != nil {
-			return "", nil, err
-		}
-		js, err := j.State()
-		return js.ID, js.Chains, err
-	}}
+	return catalog.Journal{RemovalKind: journal.AccessRemoved, DisabledKind: journal.IdentityDisabled, RevokedKind: journal.DelegationRevoked,
+		Append: func(kind, tenant, subject string) (string, []string, error) {
+			if o.Journal == nil {
+				return "", nil, catalog.ErrNoJournal
+			}
+			j, err := o.Journal()
+			if err != nil {
+				return "", nil, fmt.Errorf("%w: %v", catalog.ErrNoJournal, err)
+			}
+			if err := j.Append(kind, tenant, subject); err != nil {
+				return "", nil, err
+			}
+			js, err := j.State()
+			return js.ID, js.Chains, err
+		}}
 }
 
 // An identifier names an identity, delegation or role. It is printable,
@@ -138,9 +139,6 @@ func (o Ops) DisableIdentity(ctx context.Context, who Who, tenant, id string) er
 		return err
 	}
 	return o.Store.Administer(ctx, o.event(tenant, who, "identity.disable", "identity", id), o.journal(), func(a *catalog.Admin) error {
-		if err := a.Journal(ctx, journal.IdentityDisabled, tenant, id); err != nil {
-			return err
-		}
 		return a.DisableIdentity(ctx, tenant, id)
 	})
 }
@@ -273,9 +271,6 @@ func (o Ops) RevokeDelegation(ctx context.Context, who Who, tenant, id string) e
 		return err
 	}
 	return o.Store.Administer(ctx, o.event(tenant, who, "delegation.revoke", "delegation", id), o.journal(), func(a *catalog.Admin) error {
-		if err := a.Journal(ctx, journal.DelegationRevoked, tenant, id); err != nil {
-			return err
-		}
 		return a.RevokeDelegation(ctx, tenant, id)
 	})
 }

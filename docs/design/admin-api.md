@@ -39,7 +39,7 @@ Each change commits in one transaction with an `administration` audit event nami
 
 A change that takes access away is journaled before it is made, and the journal's state is recorded in its transaction:
 
-- disabling an identity and revoking a delegation, as before (`identity-disabled`, `delegation-revoked`);
+- disabling an identity and revoking a delegation, as before (`identity-disabled`, `delegation-revoked`). The target is locked before the journal's state, the order every journaled change takes, so concurrent changes cannot deadlock (audit F1). An unknown target is refused (404) and one already disabled or revoked is left as it is, neither journaled, so a restore cannot disable an identity or revoke a delegation created under that ID later (audit F2);
 - replacing an identity's roles or attributes, or revoking capabilities, when something is taken away: an `access-removed` entry lists the roles, attribute values and capabilities removed.
 
 After a restore, reconcile re-applies each `access-removed` entry: it removes what the entry names that is still there, and adds nothing. Access granted after the backup is therefore lost by the restore, and access removed after it stays removed (owner decision of 1 November 2026, closing review item AMB-1 for directory changes). A list attribute loses the removed values; a scalar that was changed or dropped is removed if it still holds the old value, so rules that read it no longer match. Without a journal, such a change is refused; a change that only adds is made.

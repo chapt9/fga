@@ -277,8 +277,8 @@ func TestDirectory(t *testing.T) {
 	status, out = f.admin("POST", "/v1/admin/identities/ghost/disable", nil)
 	expect("disable an unknown identity", status, http.StatusNotFound, out)
 	want := []string{journal.AccessRemoved, journal.DelegationRevoked, journal.IdentityDisabled}
-	if got := f.journalKinds(); !slices.Equal(got[:3], want) {
-		t.Fatalf("journal = %v, want %v first", got, want)
+	if got := f.journalKinds(); !slices.Equal(got, want) {
+		t.Fatalf("journal = %v, want %v (an unknown identity's disable journals nothing)", got, want)
 	}
 
 	status, out = f.admin("GET", "/v1/admin/events?limit=200", nil)

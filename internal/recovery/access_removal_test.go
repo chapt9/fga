@@ -1,6 +1,7 @@
 package recovery_test
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -77,4 +78,77 @@ func TestRestoreKeepsAccessRemoval(t *testing.T) {
 	if slices.Contains(got.Capabilities["storage.object"], "approve") || !slices.Contains(got.Capabilities["storage.bucket"], "approve") {
 		t.Fatalf("capabilities after reconcile = %v", got.Capabilities)
 	}
+}
+
+// TestRefusedChangesAreNotReplayed covers audit F2: disabling an unknown
+// identity or revoking an unknown delegation is refused without a journal
+// entry, and disabling an identity twice journals it once. Otherwise a
+// restore would disable an identity created after the refusal.
+func TestRefusedChangesAreNotReplayed(t *testing.T) {
+	st := r1test.New(t)
+	ops := adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
+		Now: func() time.Time { return *st.Clock }}
+	who := adminops.Who{Actor: "root", Via: "test"}
+	entries := func() int {
+		t.Helper()
+		es, err := st.Journal.Entries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(es)
+	}
+	before := entries()
+	if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "eve"); !errors.Is(err, catalog.ErrNoRow) {
+		t.Fatalf("disable an unknown identity: %v", err)
+	}
+	if err := ops.RevokeDelegation(ctx, who, r1test.Tenant, "dlg-none"); !errors.Is(err, catalog.ErrNoRow) {
+		t.Fatalf("revoke an unknown delegation: %v", err)
+	}
+	if n := entries(); n != before {
+		t.Fatalf("refused changes journaled %d entries", n-before)
+	}
+	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "carl", []string{"member"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ops.DisableIdentity(ctx, who, r1test.Tenant, "carl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := entries(); n != before+1 {
+		t.Fatalf("disabling twice journaled %d entries, want 1", n-before)
+	}
+
+	// eve is created after the refused disable, and is in the backup.
+	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "eve", []string{"member"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); err != nil {
+		t.Fatal(err)
+	}
+	if eve := identityOf(t, st, "eve"); eve.Disabled {
+		t.Fatal("the restore disabled eve, created after a refused disable")
+	}
+}
+
+func identityOf(t *testing.T, st *r1test.Stack, id string) catalog.IdentityRecord {
+	t.Helper()
+	ids, err := st.Catalog.ListIdentities(ctx, r1test.Tenant, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range ids {
+		if rec.ID == id {
+			return rec
+		}
+	}
+	t.Fatalf("%s is missing", id)
+	return catalog.IdentityRecord{}
 }
