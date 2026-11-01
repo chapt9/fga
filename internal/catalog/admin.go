@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"time"
@@ -83,16 +84,64 @@ type Admin struct {
 	tx      pgx.Tx
 	s       *Store
 	journal Journal
+	// stated names the identities whose state the transaction journaled.
+	stated []identityRef
 }
 
+type identityRef struct{ tenant, id string }
+
+// restateTimeout bounds journaling an identity's committed state after a
+// failed change, which runs even when the change's context was canceled.
+const restateTimeout = 30 * time.Second
+
 // Administer runs change and appends e in one transaction, so the change
-// commits only together with its audit event.
+// commits only together with its audit event. An IdentityState is
+// journaled before its change commits; when the transaction then fails,
+// the identity's committed state is journaled after it, so a restore does
+// not set a state that never committed (review F1 of 2 November 2026).
 func (s *Store) Administer(ctx context.Context, e audit.Event, j Journal, change func(*Admin) error) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if err := change(&Admin{tx: tx, s: s, journal: j}); err != nil {
+	a := &Admin{s: s, journal: j}
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		a.tx = tx
+		if err := change(a); err != nil {
 			return err
 		}
 		return s.AppendTx(ctx, tx, e)
+	})
+	if err == nil || j.Append == nil {
+		return err
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restateTimeout)
+	defer cancel()
+	for _, r := range a.stated {
+		if rerr := s.restate(rctx, j, r.tenant, r.id); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("catalog: journal the committed state of %s: %w", r.id, rerr))
+		}
+	}
+	return err
+}
+
+// restate journals an identity's committed roles and attributes, read
+// under its row lock, so that no other change's entry comes between.
+// A crash between a change's entry and its commit still leaves the entry
+// last.
+func (s *Store) restate(ctx context.Context, j Journal, tenant, id string) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var roles []string
+		var raw []byte
+		err := tx.QueryRow(ctx, `SELECT roles, attributes FROM identities WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, id).Scan(&roles, &raw)
+		if err != nil {
+			return err
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal(raw, &attrs); err != nil {
+			return err
+		}
+		state, err := json.Marshal(IdentityState{Identity: id, Roles: roles, Attributes: attrs})
+		if err != nil {
+			return err
+		}
+		return (&Admin{tx: tx, s: s, journal: j}).Journal(ctx, j.StateKind, tenant, string(state))
 	})
 }
 
@@ -164,6 +213,7 @@ func (a *Admin) PutIdentity(ctx context.Context, tenant, id string, roles []stri
 		if err != nil {
 			return err
 		}
+		a.stated = append(a.stated, identityRef{tenant, id})
 		if err := a.Journal(ctx, a.journal.StateKind, tenant, string(state)); err != nil {
 			return err
 		}

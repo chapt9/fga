@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fga/internal/adminops"
+	"fga/internal/audit"
 	"fga/internal/backupcrypt"
 	"fga/internal/catalog"
 	"fga/internal/journal"
@@ -140,6 +141,45 @@ func TestRefusedChangesAreNotReplayed(t *testing.T) {
 	}
 	if eve := identityOf(t, st, "eve"); eve.Disabled {
 		t.Fatal("the restore disabled eve, created after a refused disable")
+	}
+}
+
+// TestFailedChangesAreNotReplayed covers review F1 of 2 November 2026: an
+// identity change is journaled before its transaction commits, so a change
+// that then fails, here on a full audit outbox, leaves its entry. The
+// identity's committed state is journaled after it, so a restore does not
+// give the identity roles it never had.
+func TestFailedChangesAreNotReplayed(t *testing.T) {
+	st := r1test.New(t)
+	ops := adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
+		Now: func() time.Time { return *st.Clock }}
+	who := adminops.Who{Actor: "root", Via: "test"}
+	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "lena", []string{"member", "lead"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "lena", []string{"member"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	full := ops
+	full.Store = catalog.New(st.Pool, 1)
+	if err := full.PutIdentity(ctx, who, r1test.Tenant, "lena", []string{"member", "admin"}, nil); !errors.Is(err, audit.ErrFull) {
+		t.Fatalf("a change on a full outbox: %v", err)
+	}
+	if got := identityOf(t, st, "lena").Roles; !slices.Equal(got, []string{"member"}) {
+		t.Fatalf("lena's roles after the failed change = %v", got)
+	}
+	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); err != nil {
+		t.Fatal(err)
+	}
+	if got := identityOf(t, st, "lena").Roles; !slices.Equal(got, []string{"member"}) {
+		t.Fatalf("lena's roles after reconcile = %v, want [member], the last committed", got)
 	}
 }
 

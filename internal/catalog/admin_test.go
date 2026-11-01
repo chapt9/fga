@@ -113,6 +113,57 @@ func TestAdministerJournalsIdentityState(t *testing.T) {
 	}
 }
 
+// TestFailedChangeRestatesIdentity covers review F1 of 2 November 2026: a
+// change that journaled an identity's state and then does not commit,
+// because a later step fails or its context is canceled, journals the
+// identity's committed state after it.
+func TestFailedChangeRestatesIdentity(t *testing.T) {
+	s, ctx := adminStore(t), context.Background()
+	var j recordingJournal
+	if err := s.Administer(ctx, adminEvent(), j.journal(), func(a *Admin) error {
+		return a.PutIdentity(ctx, "t-acme", "lena", []string{"member"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("a later step failed")
+	if err := s.Administer(ctx, adminEvent(), j.journal(), func(a *Admin) error {
+		if err := a.PutIdentity(ctx, "t-acme", "lena", []string{"member", "admin"}, nil); err != nil {
+			return err
+		}
+		return failed
+	}); !errors.Is(err, failed) {
+		t.Fatalf("a failed change: %v", err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	if err := s.Administer(cctx, adminEvent(), j.journal(), func(a *Admin) error {
+		defer cancel()
+		return a.PutIdentity(cctx, "t-acme", "lena", []string{"member", "lead"}, map[string]any{"dept": "sales"})
+	}); err == nil {
+		t.Fatal("a change whose context was canceled committed")
+	}
+	committed := IdentityState{Identity: "lena", Roles: []string{"member"}, Attributes: map[string]any{}}
+	want := []IdentityState{
+		{Identity: "lena", Roles: []string{"member", "admin"}, Attributes: map[string]any{}}, committed,
+		{Identity: "lena", Roles: []string{"member", "lead"}, Attributes: map[string]any{"dept": "sales"}}, committed,
+	}
+	if len(j.subjects) != len(want) {
+		t.Fatalf("journal = %v %v", j.kinds, j.subjects)
+	}
+	for i, w := range want {
+		if got := j.state(t, i); j.kinds[i] != "identity-set" || !reflect.DeepEqual(got, w) {
+			t.Fatalf("entry %d = %s %+v, want %+v", i, j.kinds[i], got, w)
+		}
+	}
+	var entries int
+	if err := s.pool.QueryRow(ctx, `SELECT entries FROM journal_state`).Scan(&entries); err != nil || entries != len(want) {
+		t.Fatalf("journal state records %d entries, %v", entries, err)
+	}
+	ids, err := s.ListIdentities(ctx, "t-acme", "", 10)
+	if err != nil || len(ids) != 1 || !slices.Equal(ids[0].Roles, []string{"member"}) {
+		t.Fatalf("identities = %+v, %v", ids, err)
+	}
+}
+
 // TestIdentityChangeNeedsJournal: without a security journal, a change to
 // an existing identity is refused, an addition as much as a removal, and
 // nothing of it commits, its audit event included; a new identity is

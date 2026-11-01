@@ -3,8 +3,10 @@
 // record of security-critical changes (revocations, removed share grants,
 // compromised signers, raised epochs, recovery incarnations). Each change is written here
 // durably before it is committed to the catalog, so a restore from an older
-// backup can replay it. Every entry is restrictive, so replaying an entry
-// whose catalog change never committed only removes access.
+// backup can replay it. Every entry but IdentitySet is restrictive, so
+// replaying one whose catalog change never committed only removes access;
+// an IdentitySet whose change fails is followed by the identity's
+// committed state (catalog.Store.Administer).
 //
 // The entries form a hash chain (review v2 finding 1): each names its
 // position and the chain value of the entry before it, and is published
