@@ -87,6 +87,13 @@ func SetLabel(ctx context.Context, tx pgx.Tx, tenant, typ, id, label string) (ui
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, registry.ErrUnknownResource
 	}
+	if err != nil {
+		return 0, err
+	}
+	// The envelopes of the resource carry its label for policy, and keep
+	// it current (fga-audit F-11).
+	_, err = tx.Exec(ctx, `UPDATE resources SET attributes = attributes || jsonb_build_object('label', $3::text), metadata_revision = metadata_revision + 1
+	                        WHERE tenant = $1 AND type = 'crypto.envelope' AND attributes->>'object' = $2`, tenant, id, label)
 	return meta, err
 }
 

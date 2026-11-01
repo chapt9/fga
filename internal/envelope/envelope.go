@@ -134,13 +134,35 @@ func InsertUnitEnvelope(ctx context.Context, tx pgx.Tx, tenant, scope string, ob
 	if documentVersion != nil {
 		attrs["document_version"] = documentVersion.String()
 	}
+	// The attributes of the resource the envelope wraps as they are now,
+	// not as they were when the upload began (fga-audit F-11);
+	// catalog.SetLabel keeps the label current after.
+	var current map[string]any
+	err := tx.QueryRow(ctx, `SELECT attributes FROM resources WHERE tenant = $1 AND id = $2 AND type <> 'crypto.envelope'`, tenant, object.String()).Scan(&current)
+	switch {
+	case err == nil:
+		objectAttrs = current
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
+	}
 	for _, k := range []string{"owner", "project", "label", "bucket"} {
 		if v, ok := objectAttrs[k]; ok {
 			attrs[k] = v
 		}
 	}
 	b, _ := json.Marshal(attrs)
-	_, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.envelope', $3, 1, 1, 1, $4)`, tenant, id.String(), scope, b)
+	_, err = tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'crypto.envelope', $3, 1, 1, 1, $4)`, tenant, id.String(), scope, b)
+	return err
+}
+
+// RetireTx retires the tenant's ACTIVE envelopes that cond selects, and
+// sets their resources' status with them, so policy sees what the rows
+// hold (fga-audit Q-7). cond is a constant condition over envelopes whose
+// parameters are args, from $2 on.
+func RetireTx(ctx context.Context, tx pgx.Tx, tenant, cond string, args ...any) error {
+	_, err := tx.Exec(ctx, `WITH r AS (UPDATE envelopes SET status = 'RETIRED' WHERE tenant = $1 AND status = 'ACTIVE' AND `+cond+` RETURNING id)
+		UPDATE resources SET generation = generation + 1, attributes = attributes || '{"status":"RETIRED"}'
+		 WHERE tenant = $1 AND type = 'crypto.envelope' AND id IN (SELECT id::text FROM r)`, append([]any{tenant}, args...)...)
 	return err
 }
 

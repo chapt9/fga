@@ -50,6 +50,12 @@ func TestLabelChanges(t *testing.T) {
 	if label, meta := objectLabel(t, st, "doc"); label != "confidential" || meta != 2 {
 		t.Fatalf("stored label %s at revision %d", label, meta)
 	}
+	// The object's envelopes carry its label for policy (fga-audit F-11).
+	var stale int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM resources e JOIN objects o ON e.attributes->>'object' = o.id::text
+	                                  WHERE e.type = 'crypto.envelope' AND o.key = 'doc' AND e.attributes->>'label' <> 'confidential'`).Scan(&stale); err != nil || stale != 0 {
+		t.Fatalf("%d envelopes keep the old label (%v)", stale, err)
+	}
 	for _, label := range []string{"public", "secret", ""} {
 		if _, err := st.Content.SetLabel(ctx, alice.Caller, "reports", "doc", label); !errors.Is(err, content.ErrInvalid) {
 			t.Errorf("label %q: %v, want invalid", label, err)
