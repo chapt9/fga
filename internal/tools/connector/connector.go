@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fga/internal/tools"
@@ -150,13 +151,17 @@ func (h *HTTP) Do(ctx context.Context, d tools.Destination, call Call) Result {
 		req.Header.Set("If-Match", call.IfMatch)
 	}
 
-	var written bool
+	// Once the request's first bytes were written it may have reached the
+	// destination: a failure after that is UNKNOWN, never FAILED. The
+	// transport sets the flag on its own goroutine, possibly after Do
+	// returned (fga-audit F-14).
+	var started atomic.Bool
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-		WroteRequest: func(httptrace.WroteRequestInfo) { written = true },
+		WroteHeaders: func() { started.Store(true) },
 	}))
 	resp, err := h.client(d).Do(req)
 	if err != nil {
-		if !written {
+		if !started.Load() {
 			return Result{Outcome: Failed, Detail: "not sent: " + err.Error()}
 		}
 		return Result{Outcome: Unknown, Detail: "sent, no answer: " + err.Error()}

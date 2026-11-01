@@ -129,6 +129,35 @@ func TestLostAnswerIsUnknown(t *testing.T) {
 	}
 }
 
+// TestStalledSendIsUnknown covers fga-audit F-14: a call whose request
+// had begun to go out when the caller gave up may have reached the
+// destination, so it is UNKNOWN. With -race it also covers the flag the
+// transport sets after Do returned.
+func TestStalledSendIsUnknown(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			accepted <- c // never read: the body's write stalls
+		}
+	}()
+	d := tools.Destination{ID: "slow", BaseURL: "http://" + ln.Addr().String(), AllowedCIDRs: loopback}
+	c := call()
+	c.Body = make([]byte, 16<<20)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	res := New(time.Minute).Do(ctx, d, c)
+	(<-accepted).Close()
+	time.Sleep(100 * time.Millisecond) // the transport finishes its write
+	if res.Outcome != Unknown {
+		t.Fatalf("result = %+v, want UNKNOWN", res)
+	}
+}
+
 func TestNotSentIsFailed(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
