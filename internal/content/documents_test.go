@@ -212,15 +212,24 @@ func TestDocumentReuse(t *testing.T) {
 			t.Fatalf("v2 unit %d = %q, %v", i, got, err)
 		}
 	}
-	// Carol has no read on alice's unit; the reuse is decided at finalize
-	// and refused there.
+	// Carol has no read on alice's unit: preparation refuses the reuse
+	// before it returns the unit's ciphertext metadata (review v5 F06).
 	carol := st.Client("carol", []string{"member"}, "p2")
-	up3, err := carol.PrepareDocument("other", "copy.md", []string{"x", "y"}, map[int]*crypto.SealedUnit{1: kept}, carol)
-	if err != nil {
+	if _, err := carol.PrepareDocument("other", "copy.md", []string{"x", "y"}, map[int]*crypto.SealedUnit{1: kept}, carol); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("reuse without read: %v", err)
+	}
+	// A retry is answered only while the reuse is still allowed.
+	dave := st.Client("dave", []string{"member"}, "p1", "p2")
+	req := content.DocumentBeginRequest{Bucket: "other", Key: "copy.md", IdempotencyKey: "reuse-1", Units: []content.DocumentUnitSpec{{},
+		{ReuseUnit: kept.Params.Unit.String(), ReuseVersion: kept.Params.UnitVersion.String()}}}
+	if _, err := st.Content.BeginDocument(ctx, dave.Caller, req); err != nil {
+		t.Fatalf("reuse with read: %v", err)
+	}
+	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "dave", []string{"member"}, map[string]any{"projects": []any{"p2"}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := carol.FinalizeDocument(up3); !errors.Is(err, content.ErrNotFound) {
-		t.Fatalf("reuse without read: %v", err)
+	if _, err := st.Content.BeginDocument(ctx, dave.Caller, req); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a retry after read was taken away: %v", err)
 	}
 }
 

@@ -160,6 +160,10 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		if err := s.checked(ctx, rec); err != nil {
 			return storedDocIntent{}, err
 		}
+		kind, _ := in.attributes["kind"].(string)
+		if err := s.decideReuse(ctx, c, unitsOf(kind), in.Units); err != nil {
+			return storedDocIntent{}, err
+		}
 		if in.encryption != mode {
 			return storedDocIntent{}, ErrEncryptionMode
 		}
@@ -208,6 +212,15 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	}
 	if types == textEntries && !in.newDocument && r.BaseVersion == "" && slices.ContainsFunc(r.Units, func(u DocumentUnitSpec) bool { return u.ReuseUnit != "" }) {
 		return storedDocIntent{}, fmt.Errorf("%w: a collection version that keeps entries names the version it extends", ErrInvalid)
+	}
+	var reused []UnitIntent
+	for i, u := range r.Units {
+		if u.ReuseUnit != "" {
+			reused = append(reused, UnitIntent{Position: i, Unit: u.ReuseUnit, Reused: true})
+		}
+	}
+	if err := s.decideReuse(ctx, c, types, reused); err != nil {
+		return storedDocIntent{}, err
 	}
 	for i, u := range r.Units {
 		ui := UnitIntent{Position: i, Label: u.Label}
@@ -336,6 +349,33 @@ func (s *Service) reusable(ctx context.Context, tenant string, position int, u D
 		return ui, ErrNotFound
 	}
 	return ui, err
+}
+
+// decideReuse decides read on every unit a document intent reuses, before
+// begin returns their ciphertext metadata (review v5 F06); finalize
+// decides the same checks with the publication.
+func (s *Service) decideReuse(ctx context.Context, c Caller, types unitTypes, units []UnitIntent) error {
+	var groups [][]check
+	for _, u := range units {
+		if u.Reused {
+			groups = append(groups, reuseCheck(strconv.Itoa(u.Position), u.Unit, types))
+		}
+	}
+	for _, batch := range batches(groups, maxBatch) {
+		_, rec, err := s.decide(ctx, c, types.reuseOp, Audience, false, batch)
+		if err != nil {
+			return err
+		}
+		if err := s.checked(ctx, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reuseCheck is the check that the caller may read a reused unit.
+func reuseCheck(n, unit string, types unitTypes) []check {
+	return []check{{id: "unit-" + n, role: registry.RoleUnit, action: "read", ref: canonical(types.typ, unit)}}
 }
 
 // docChecks is the check on the document: create-object on the bucket for
@@ -641,7 +681,7 @@ func (s *Service) documentDecisions(ctx context.Context, c Caller, in storedDocI
 		name, ref := unitRef(u)
 		switch {
 		case u.Reused:
-			reuse = append(reuse, []check{{id: "unit-" + n, role: registry.RoleUnit, action: "read", ref: ref}})
+			reuse = append(reuse, reuseCheck(n, u.Unit, types))
 		case u.Label != "":
 			labels = append(labels, []check{{id: "label-" + n, role: registry.RoleLabel, action: "label", ref: ref}})
 		}
