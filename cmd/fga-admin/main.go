@@ -4,14 +4,22 @@
 // is meant for the operator of a local deployment.
 //
 //	fga-admin -db URL [-journal DIR] [-blobs DIR] COMMAND [flags]
+//	fga-admin serve -config admin.json
+//
+// serve runs the admin API for an administration console (serve.go,
+// docs/design/admin-api.md). The directory commands below make the same
+// changes as the API, through package adminops: each is audited, and one
+// that takes access away (a role, an attribute value, a capability) is
+// journaled, so it needs -journal.
 //
 // Commands:
 //
 //	bucket create      -tenant T -name N [-project P] [-label L] [-scope S] [-encryption server|client]
 //	mcp enable         -tenant T                   register the MCP service's tools for the tenant (policy decides who uses them)
-//	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]
+//	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]   (removals journaled)
 //	identity disable   -tenant T -id ID                      (journaled)
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]
+//	revoke             -tenant T -actor ID [-type T -actions a,b | -preset storage|approver]   (journaled)
 //	signing-key add    -tenant T -principal ID -public-key B64
 //	classifier add     -tenant T -id NAME -signer FP          register a label classifier with its ACTIVE signing key (LAB-002, D-06)
 //	classifier revoke  -tenant T -id NAME
@@ -72,6 +80,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fga/internal/adminops"
 	"fga/internal/auditexport"
 	"fga/internal/backupcrypt"
 	"fga/internal/blob"
@@ -92,36 +101,6 @@ func main() {
 	}
 }
 
-// StoragePreset is the capability set of an ordinary storage user (DLG-004).
-var StoragePreset = map[string][]string{
-	"storage.bucket": {"create-object", "list", "share"},
-	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
-		"label", "relabel", "propose-label", "export"},
-	"crypto.envelope":    {"create", "release", "retire"},
-	"document.version":   {"read-units", "raw-read", "discover", "share", "export"},
-	"document.text_unit": {"read", "share", "label", "relabel", "propose-label", "export-key"},
-	"document.derived":   {"deliver", "declassify", "label", "relabel", "new-version", "share"},
-	"text.entry":         {"read", "use-in-model", "update", "share"},
-	"crypto.recipient":   {"enroll", "activate", "receive-key", "revoke", "discover"},
-	"crypto.signing-key": {"discover", "enroll", "activate", "retire"},
-	"agent.tool":         {"discover", "invoke"},
-}
-
-// ApproverPreset lets an actor decide approvals (ruling 6); policies still
-// say on which resources.
-var ApproverPreset = map[string][]string{
-	"storage.bucket":     {"approve"},
-	"storage.object":     {"approve"},
-	"document.text_unit": {"approve"},
-	"document.derived":   {"approve"},
-	"document.version":   {"approve"},
-	"text.entry":         {"approve"},
-	"crypto.envelope":    {"approve"},
-	"crypto.recipient":   {"approve"},
-	"crypto.signing-key": {"approve"},
-	"agent.tool":         {"approve"},
-}
-
 type env struct {
 	ctx     context.Context
 	store   *catalog.Store
@@ -139,6 +118,9 @@ func run(args []string) error {
 		return err
 	}
 	rest := global.Args()
+	if len(rest) > 0 && rest[0] == "serve" {
+		return serve(rest[1:])
+	}
 	if len(rest) > 1 && rest[0] == "audit" && rest[1] == "verify" && *db == "" {
 		// Offline, with the public keys alone: an auditor's check.
 		return auditVerify(rest[2:], "")
@@ -259,6 +241,9 @@ func run(args []string) error {
 		}
 		return change()
 	}
+	// The directory commands make their changes as the admin API does.
+	ops := adminops.Ops{Store: e.store, Journal: e.journal, Now: time.Now}
+	operator := adminops.Who{Actor: "operator", Via: "cli"}
 
 	switch cmd {
 	case "journal init":
@@ -280,7 +265,7 @@ func run(args []string) error {
 		if err := need(*tenant); err != nil {
 			return err
 		}
-		if err := e.store.EnableMCP(ctx, *tenant); err != nil {
+		if err := ops.EnableMCP(ctx, operator, *tenant); err != nil {
 			return err
 		}
 		fmt.Printf("tenant %s: %d MCP tools registered\n", *tenant, len(registry.MCPTools))
@@ -289,7 +274,7 @@ func run(args []string) error {
 		if err := need(*tenant, *name); err != nil {
 			return err
 		}
-		bid, err := e.store.CreateBucket(ctx, *tenant, catalog.Bucket{Name: *name, Project: *project, Label: *label, Scope: *scope,
+		bid, err := ops.CreateBucket(ctx, operator, *tenant, catalog.Bucket{Name: *name, Project: *project, Label: *label, Scope: *scope,
 			Encryption: *encryption})
 		if err == nil {
 			fmt.Println(bid, *encryption)
@@ -303,28 +288,32 @@ func run(args []string) error {
 		if err := json.Unmarshal([]byte(*attrs), &a); err != nil {
 			return fmt.Errorf("-attrs: %w", err)
 		}
-		return e.store.PutIdentity(ctx, *tenant, *id, split(*roles), a, nil)
+		return ops.PutIdentity(ctx, operator, *tenant, *id, split(*roles), a)
 	case "identity disable":
 		if err := need(*tenant, *id); err != nil {
 			return err
 		}
-		return journaled(journal.IdentityDisabled, *id, func() error { return e.store.DisableIdentity(ctx, *tenant, *id) })
-	case "grant":
+		return ops.DisableIdentity(ctx, operator, *tenant, *id)
+	case "grant", "revoke":
 		if err := need(*tenant, *actor); err != nil {
 			return err
 		}
-		set := map[string][]string{}
-		switch {
-		case *preset == "storage":
-			set = StoragePreset
-		case *preset == "approver":
-			set = ApproverPreset
-		case *typ != "" && *actions != "":
-			set[*typ] = split(*actions)
-		default:
-			return errors.New("grant needs -preset storage|approver or -type and -actions")
+		explicit := map[string][]string{}
+		if *typ != "" || *actions != "" {
+			explicit[*typ] = split(*actions)
 		}
-		return e.store.GrantCapabilities(ctx, *tenant, *actor, set)
+		set, err := adminops.Capabilities(*preset, explicit)
+		if err != nil {
+			return fmt.Errorf("%s needs -preset storage|approver or -type and -actions: %w", cmd, err)
+		}
+		if cmd == "grant" {
+			return ops.Grant(ctx, operator, *tenant, *actor, set)
+		}
+		held, err := ops.Revoke(ctx, operator, *tenant, *actor, set)
+		if err == nil && !held {
+			fmt.Printf("%s held none of these capabilities\n", *actor)
+		}
+		return err
 	case "signing-key add":
 		if err := need(*tenant, *principal, *publicKey); err != nil {
 			return err
@@ -369,23 +358,13 @@ func run(args []string) error {
 		if err := need(*tenant, *id, *actor, *subject, *audience, *grantList); err != nil {
 			return err
 		}
-		d := delegation.Delegation{ID: delegation.ID(*id), Tenant: *tenant, Actor: *actor, Subject: *subject, Audience: *audience,
-			ExpiresAt: time.Now().Add(*expires), Parent: delegation.ID(*parentID)}
-		types := registry.CoreTypes()
-		for _, part := range strings.Split(*grantList, ";") {
-			typ, acts, ok := strings.Cut(strings.TrimSpace(part), ":")
-			if !ok || !types.HasResourceType(typ) {
-				return fmt.Errorf("delegation add: %q is not resource-type:actions of a known type", part)
-			}
-			g := delegation.Grant{ResourceType: typ, Actions: split(acts)}
-			for _, a := range g.Actions {
-				if a != delegation.AllActions && !types.HasAction(typ, a) {
-					return fmt.Errorf("delegation add: %s has no action %q", typ, a)
-				}
-			}
-			d.Grants = append(d.Grants, g)
+		grants, err := adminops.ParseGrants(*grantList)
+		if err != nil {
+			return fmt.Errorf("delegation add: %w", err)
 		}
-		if err := e.store.PutDelegation(ctx, d, time.Now()); err != nil {
+		d := delegation.Delegation{ID: delegation.ID(*id), Tenant: *tenant, Actor: *actor, Subject: *subject, Audience: *audience,
+			Grants: grants, ExpiresAt: time.Now().Add(*expires), Parent: delegation.ID(*parentID)}
+		if err := ops.AddDelegation(ctx, operator, d); err != nil {
 			return err
 		}
 		fmt.Printf("delegation %s: %s acts for %s through %s until %s\n", *id, *actor, *subject, *audience, d.ExpiresAt.Format(time.RFC3339))
@@ -394,7 +373,7 @@ func run(args []string) error {
 		if err := need(*tenant, *id); err != nil {
 			return err
 		}
-		return journaled(journal.DelegationRevoked, *id, func() error { return e.store.RevokeDelegation(ctx, *tenant, *id) })
+		return ops.RevokeDelegation(ctx, operator, *tenant, *id)
 	case "epoch raise":
 		if err := need(*tenant); err != nil || *epoch == 0 {
 			return errors.New("epoch raise needs -tenant and -epoch")

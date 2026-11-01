@@ -454,6 +454,31 @@ as alice; check $B/fga rm -bucket shared -key q4/draft.txt -version "$(echo "$DR
 RECLAIM_OUT=$($ADMIN reclaim) || { echo "SMOKE FAILED: reclaim"; exit 1; }; echo "$RECLAIM_OUT"
 echo "$RECLAIM_OUT" | grep -q "destroyed 1 server-mode data keys" || { echo "SMOKE FAILED: reclaim destroyed no data key"; exit 1; }
 
+# The admin API (docs/design/admin-api.md): a console, curl on loopback
+# here, changes the directory for root, an administrator named only in
+# admin.json. Each change is audited, a removed role is journaled, and a
+# user's own token is refused.
+cat > admin.json <<J
+{"version":1,"profile":"development","listen":"127.0.0.1:18450","consoles":["console-dev"],"dev_console_id":"console-dev",
+ "database_url":"$URL","journal_dir":"journal","token_issuer":{"issuer":"fga-dev","keys":{"tok-1":"$ISS"}},"audience":"fga-admin",
+ "admins":{"t-acme":["root"]},"bundle_dir":"bundle","publisher_keys":{"publisher-1":"$PUB"},"outbox_capacity":100000}
+J
+$B/fga-admin serve -config admin.json > admin.log 2>&1 & echo $! >> pids
+for _ in $(seq 60); do curl -sf http://127.0.0.1:18450/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+check curl -sf http://127.0.0.1:18450/healthz
+api() { curl -s -o api.out -w '%{http_code}' -X "$1" -H "Authorization: Bearer $2" -H 'Content-Type: application/json' ${4:+-d "$4"} "http://127.0.0.1:18450$3"; }
+expect() { [ "$1" = "$2" ] || { echo "SMOKE FAILED: admin API $3 answered $1: $(cat api.out)"; exit 1; }; }
+ROOT=$(tok root fga-admin)
+expect "$(api PUT "$ROOT" /v1/admin/identities/dana '{"roles":["member","lead"],"attributes":{"projects":["p1"]}}')" 204 "put dana"
+expect "$(api POST "$ROOT" /v1/admin/identities/dana/capabilities/grant '{"preset":"storage"}')" 204 "grant"
+expect "$(api GET "$ROOT" '/v1/admin/identities?after=carl&limit=1')" 200 "list"; check grep -q '"id":"dana"' api.out
+expect "$(api PUT "$ROOT" /v1/admin/identities/dana '{"roles":["member"],"attributes":{"projects":["p1"]}}')" 204 "remove a role"
+grep -rq '"kind":"access-removed"' journal || { echo "SMOKE FAILED: the role removal was not journaled"; exit 1; }
+expect "$(api PUT "$(tok bob fga-admin)" /v1/admin/identities/bob '{"roles":["member","lead"]}')" 403 "bob's own token"
+expect "$(api GET "$ROOT" /v1/admin/policy)" 200 "policy"; check grep -q '"key_id":"publisher-1"' api.out
+ADMIN_EVENTS=$(psql "$URL" -tAc "SELECT count(*) FROM audit_outbox WHERE kind = 'administration' AND event->>'actor' = 'root'")
+[ "$ADMIN_EVENTS" = 3 ] || { echo "SMOKE FAILED: $ADMIN_EVENTS audited admin API changes, want 3"; exit 1; }
+echo "admin API: root created dana and took a role away (journaled); bob's own token refused; $ADMIN_EVENTS changes audited"
 
 # Audit export as a signed hash chain (AUD-002, AUD-003): the export key
 # signs each file's link, the catalog keeps the chain head.

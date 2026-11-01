@@ -39,6 +39,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Client | `internal/cryptowire` (wire profile 1), `sdk/go/crypto` (Tink streaming AEAD and HPKE), `sdk/go/client`, `cmd/fga` | CRY-*, KEY-006, RCP-006 to RCP-008 |
 | Recovery | `internal/journal` (security journal), `internal/recovery` (backup, restore, reconcile against the KEK ring, reclaim with data-key destruction), `internal/backupcrypt` (encrypted backups), `cmd/fga-admin` | AVL-005, AVL-008, KEY-017, PUB-005, PUB-006, SSE-006 |
 | Operations | `internal/auditexport` (outbox to a signed chain of durable files, collector), `internal/admission` (per-tenant limits), `internal/roleconfig` (configuration, mutual TLS) | AUD-002, AUD-003, AVL-006, TRU-002 |
+| Administration | `internal/adminops` (directory changes for `fga-admin`'s commands and its API: audited, removals journaled), `internal/adminapi` and `fga-admin serve`, the admin API for a console on another machine ([admin-api.md](docs/design/admin-api.md)) | ADM-001 to ADM-003, AVL-008 |
 | Fault isolation | One process per role; `internal/guard` keeps a panic inside its request or goroutine ([fault-isolation.md](docs/design/fault-isolation.md)) | MOD-002, AVL-006 |
 | MCP | `internal/mcpsvc`, `cmd/fga-mcp` on the official MCP Go SDK: resources, read tools and export over the native API, decisions per call through the gateway hop; `internal/mcpwire`, the encrypted-package profile; `internal/mcpbridge` and `fga mcp-bridge`, the local bridge ([mcp-role.md](docs/design/mcp-role.md), [mcp-gateway.md](docs/design/mcp-gateway.md), [mcp-bridge.md](docs/design/mcp-bridge.md)) | MCP-001 to MCP-008 |
 | Labels | `internal/labels` (order arithmetic); ranks in `internal/decision`; the label order published to the catalog on activation; label, relabel and proposals in `internal/content` ([labels-and-approvals.md](docs/design/labels-and-approvals.md)) | LAB-001 to LAB-005, FLW-004 (storage objects so far) |
@@ -80,6 +81,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Content-signing keys** are provisioned by the administrator, or enrolled by their own principal with a possession proof and retired for rotation; compromise stays the administrator's, journaled.
 - **Approvals** cover publication, deletion and label changes of objects, documents, units and derived outputs, and sharing. Envelope retirement and the activation and revocation of recipient keys are approvable too; enrollment only records a PENDING key. Label proposals come only from registered classifiers, signed by their keys, and stay advisory until a principal applies them.
 - **Security journal:** it must be created once with `fga-admin journal init` before the keys and storage roles start. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
+- **Directory changes** (identities, capabilities, delegations, buckets) are audited, from the command line and from the admin API alike. Taking a role, an attribute value or a capability away is journaled, and reconcile takes it away again after a restore ([admin-api.md](docs/design/admin-api.md)). The admin API's administrators are named in its configuration only.
 - **CI is local by decision:** `make ci` runs the checks with PostgreSQL (import allowlists included), the specification check, the smoke run and the vulnerability scan ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)). No hosted CI runs them.
 
 ## Checks
@@ -112,6 +114,7 @@ make spec
 - a document read back unit by unit by both recipients, an original file only its owner may read, and a metadata search;
 - in a server-mode bucket, an object, a document, an appended collection and a derived output that another member reads by policy alone, an original only its owner may read, and a share grant that lets a member of another project read an object until it is removed;
 - reclaim retiring a withdrawn server-mode version and destroying its data key;
+- the admin API (`fga-admin serve`): an administrator creates an identity and takes a role away (journaled), and a user's own token is refused;
 - deletion.
 
 It then exports the audit outbox as a signed chain, takes an encrypted backup, journals a recipient revocation, restores (admission stays closed until reconcile), reconciles (refused without the KEK ring, then checking every server-mode data key against it) and checks the result, including that the audit chain continues across the restore. The database is dropped at the end.
