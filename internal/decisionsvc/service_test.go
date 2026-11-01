@@ -1,11 +1,15 @@
 package decisionsvc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -509,6 +513,48 @@ func TestRecipientExpiryBoundsValidity(t *testing.T) {
 	}
 	if want := now.Add(20 * time.Second); !resp.ValidUntil.Equal(want) {
 		t.Fatalf("valid until %s, want the recipient's expiry %s", resp.ValidUntil, want)
+	}
+}
+
+// TestPublicFacadeAuthenticatesFirst: a public check with a token that
+// does not verify is refused before it takes the public admission slot or
+// records anything (fga-audit F-12).
+func TestPublicFacadeAuthenticatesFirst(t *testing.T) {
+	f := newFixture(t, 100)
+	f.svc.d.Admission = admission.New(admission.Limits{TenantRequests: 1, TenantStreams: 1, TotalRequests: 2})
+	srv := httptest.NewServer(f.svc.Handler(func(*http.Request) (string, error) { return "", errors.New("no adapter") }))
+	defer srv.Close()
+	pending, _ := f.outbox.Pending(context.Background(), 1000)
+	check := func(token string, body io.Reader) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/check", body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	// A bad token with a body that never arrives is answered at once.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprint(conn, "POST /v1/check HTTP/1.1\r\nHost: decision\r\nAuthorization: Bearer not-a-token\r\nContent-Length: 100\r\n\r\n{")
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if status, err := bufio.NewReader(conn).ReadString('\n'); err != nil || !strings.Contains(status, " 401 ") {
+		t.Fatalf("a check with a bad token while its body is still open: %q %v", status, err)
+	}
+	good, _ := f.issuer.Issue("user-42", "t-acme", "fga-decision", time.Minute)
+	body := `{"request_id":"r","tenant":"t-acme","operation":"unit.read","operation_id":"o","operation_digest":"d","audience":"storage",
+	  "single_use":false,"actor":{"id":"user-42","revision":88},
+	  "checks":[{"id":"c1","role":"unit","action":"read","resource":{"namespace":"mcp","name":"doc://q3#overview"}}]}`
+	if code := check(good, strings.NewReader(body)); code != http.StatusOK {
+		t.Fatalf("a check with a good token: %d", code)
+	}
+	if after, _ := f.outbox.Pending(context.Background(), 1000); len(after) != len(pending)+1 {
+		t.Fatalf("audit events: %d before, %d after; want only the authenticated check's", len(pending), len(after))
 	}
 }
 
