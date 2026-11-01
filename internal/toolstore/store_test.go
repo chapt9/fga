@@ -25,33 +25,6 @@ func testTool() tools.Tool {
 		Arguments: []tools.ArgSpec{{Name: "vendor", Type: tools.ArgString, Required: true}}, MaxHoldAge: "1h"}
 }
 
-func TestAPIKeys(t *testing.T) {
-	s, _ := testStore(t)
-	ctx := context.Background()
-	key, err := s.IssueKey(ctx, "t-acme", "agent-7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tenant, id, err := s.Authenticate(ctx, key)
-	if err != nil || tenant != "t-acme" || id != "agent-7" {
-		t.Fatalf("Authenticate = %s %s %v", tenant, id, err)
-	}
-	if _, _, err := s.Authenticate(ctx, key+"x"); !errors.Is(err, ErrUnknownKey) {
-		t.Errorf("wrong key: %v", err)
-	}
-	if err := s.RevokeKey(ctx, key); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.Authenticate(ctx, key); !errors.Is(err, ErrUnknownKey) {
-		t.Errorf("revoked key: %v", err)
-	}
-	var stored int
-	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM agent_keys WHERE position(convert_to($1, 'UTF8') in key_hash) > 0`, key).Scan(&stored)
-	if stored != 0 {
-		t.Error("the key itself must not be stored")
-	}
-}
-
 // TestToolsNeedReview covers AGT-001 and V-034: an unreviewed record, or a
 // record changed after review, is not usable.
 func TestToolsNeedReview(t *testing.T) {

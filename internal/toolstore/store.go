@@ -1,5 +1,5 @@
-// Package toolstore is the PostgreSQL store of the tools role: API keys,
-// tool records, destinations and budgets (specification 2.5, AGT-001,
+// Package toolstore is the PostgreSQL store of the tools role: tool
+// records, destinations and budgets (specification 2.5, AGT-001,
 // APR-004). It is separate from the catalog so that the decision role does
 // not link tool code (MOD-004). Part of the optional R2 executor (feature
 // executor).
@@ -7,10 +7,7 @@ package toolstore
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +34,6 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 // Errors returned by the tool-side catalog.
 var (
-	ErrUnknownKey         = errors.New("unknown or revoked API key")
 	ErrUnknownTool        = errors.New("unknown tool")
 	ErrToolNotReviewed    = errors.New("tool record changed since it was reviewed")
 	ErrUnknownDestination = errors.New("unknown destination")
@@ -51,44 +47,6 @@ type Store struct {
 
 // New returns a Store. The schema is created by catalog.Migrate.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
-
-// KeyPrefix marks platform API keys.
-const KeyPrefix = "fga_"
-
-// IssueKey creates an API key for an identity and stores only its hash. The
-// key is returned once and cannot be recovered.
-func (s *Store) IssueKey(ctx context.Context, tenant, identity string) (string, error) {
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return "", err
-	}
-	key := KeyPrefix + base64.RawURLEncoding.EncodeToString(secret)
-	hash := sha256.Sum256([]byte(key))
-	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_keys (key_hash, tenant, identity) VALUES ($1, $2, $3)`,
-		hash[:], tenant, identity); err != nil {
-		return "", err
-	}
-	return key, nil
-}
-
-// Authenticate returns the tenant and identity an API key belongs to.
-func (s *Store) Authenticate(ctx context.Context, key string) (tenant, identity string, err error) {
-	hash := sha256.Sum256([]byte(key))
-	var revoked bool
-	err = s.pool.QueryRow(ctx, `SELECT tenant, identity, revoked FROM agent_keys WHERE key_hash = $1`, hash[:]).
-		Scan(&tenant, &identity, &revoked)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && revoked) {
-		return "", "", ErrUnknownKey
-	}
-	return tenant, identity, err
-}
-
-// RevokeKey disables an API key.
-func (s *Store) RevokeKey(ctx context.Context, key string) error {
-	hash := sha256.Sum256([]byte(key))
-	_, err := s.pool.Exec(ctx, `UPDATE agent_keys SET revoked = true WHERE key_hash = $1`, hash[:])
-	return err
-}
 
 // PutTool stores a tool record. reviewed marks the current record as
 // reviewed; otherwise the tool stays unusable until ReviewTool is called.
