@@ -144,7 +144,7 @@ The keys role delivers it only if the envelope is that version's original, and n
 - The storage role decides `document.export` in batches: `export` and `read-units` on the version, `read` and `export-key` on each unit.
 - For each unit, the keys role releases the target's existing envelope against `document.export-envelope`. That decision carries the same caller checks plus the envelope's `release` and the target's `read-units`, `read` and `receive-key`.
 - The keys role accepts only that exact check set, bound to the envelope's document version, unit, version and recipient. A decision of any other operation, or one lacking a check such as `receive-key`, is refused (V-136).
-- The ciphertext is admitted under the fence over all storage decisions and returned inline, at most 32 MiB per package.
+- The ciphertext is admitted under the fence over all storage decisions and returned inline, at most 32 MiB per package. The size is compared with that bound only after the storage role's decisions, so a caller who may not export the units gets the generic `404` whatever their size (review v5 F07). Object exports and server-mode unit exports do the same.
 - The target must already have an envelope: the server never creates or rewraps one. Any denial, or a missing envelope, is a generic `404` (V-132 to V-135).
 - Releasing someone else's envelope needs a `release` rule. The fixture and example policies let an owner release envelopes of its own content for export.
 

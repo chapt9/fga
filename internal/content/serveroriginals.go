@@ -128,13 +128,6 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 	if len(ms) != len(units) {
 		return PlainExport{}, ErrNotFound
 	}
-	var total int64
-	for _, m := range ms {
-		total += m.entry.CiphertextLength
-	}
-	if total > MaxExportBytes {
-		return PlainExport{}, ErrTooLarge
-	}
 	versionRef := canonical("document.version", d.id.String())
 	var recs []signing.Record
 	for start := 0; start < len(ms); start += (maxBatch - 2) / 2 {
@@ -152,6 +145,9 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 			return PlainExport{}, err
 		}
 		recs = append(recs, rec)
+	}
+	if exportSize(ms) > MaxExportBytes {
+		return PlainExport{}, ErrTooLarge
 	}
 	bindings := make([]fence.Binding, len(recs))
 	for i, rec := range recs {

@@ -91,6 +91,7 @@ So in server mode a member who may read every source reads the output with no sh
 | `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end, including a multipart upload with an original and an export |
 | `TestServerDerived` | Lineage recorded unsigned; the label from the lineage; a member reads by their own path and loses it when a source is restricted; a lead reads by declassification, and her stream ends when a source changes; a retry; mode refusals |
 | `TestServerApprovals` | An approved publication finalized with its lineage; another lineage is not covered (objects too) |
+| `TestExportSizeAfterAuthorization` | An export over 32 MiB is too large only to a caller who may export it; to anyone else not found, as a missing key (review v5 F07) |
 | `internal/datakeys` `TestReleaseDerived` | A path over another source, no path, or another output's declassification releases no key |
 | `internal/nativeapi` `TestServerDerivedHTTP` | A multi-segment output streamed with its lineage and read by another member; a repeated finalize by sources; malformed uploads |
 | `scripts/smoke.sh` | A server-mode document and an appended collection read by another member; an original the owner reads and another member may not; a derived output another member reads through their own read of the source |

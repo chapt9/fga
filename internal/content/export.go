@@ -29,6 +29,17 @@ import (
 // (cryptowire.MaxExportBytes).
 const MaxExportBytes = cryptowire.MaxExportBytes
 
+// exportSize is the ciphertext length of the members an export carries.
+// It is compared with MaxExportBytes only after the export's decisions,
+// so a caller who may not export learns nothing from it (review v5 F07).
+func exportSize(ms []member) int64 {
+	var total int64
+	for _, m := range ms {
+		total += m.entry.CiphertextLength
+	}
+	return total
+}
+
 // ExportUnit is one exported unit: its descriptor, its exact ciphertext and
 // the target recipient's existing envelope with a delivery receipt.
 type ExportUnit struct {
@@ -77,13 +88,6 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 	if len(ms) != len(units) {
 		return Export{}, ErrNotFound
 	}
-	var total int64
-	for _, m := range ms {
-		total += m.entry.CiphertextLength
-	}
-	if total > MaxExportBytes {
-		return Export{}, ErrTooLarge
-	}
 	versionRef := canonical("document.version", d.id.String())
 	// The storage role's own decisions, for disclosing the ciphertext.
 	var recs []signing.Record
@@ -102,6 +106,10 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 			return Export{}, err
 		}
 		recs = append(recs, rec)
+	}
+	// The size only once the caller may export the units (review v5 F07).
+	if exportSize(ms) > MaxExportBytes {
+		return Export{}, ErrTooLarge
 	}
 	// The target's existing envelopes, released by the keys role.
 	out := Export{DocumentVersion: d.id.String(), Recipient: recipient}
@@ -387,9 +395,6 @@ func (s *Service) ExportObject(ctx context.Context, c Caller, bucketName, key, v
 	if err != nil {
 		return ObjectExport{}, err
 	}
-	if v.Length > MaxExportBytes {
-		return ObjectExport{}, ErrTooLarge
-	}
 	ref := canonical("storage.object", o.ID.String())
 	checks := []check{
 		{id: "object", role: registry.RoleObject, action: "export", ref: ref, version: v.ID.String()},
@@ -400,6 +405,10 @@ func (s *Service) ExportObject(ctx context.Context, c Caller, bucketName, key, v
 	_, rec, err := s.decide(ctx, c, registry.OpObjectExport, Audience, true, checks)
 	if err != nil {
 		return ObjectExport{}, err
+	}
+	// The size only once the caller may export the object (review v5 F07).
+	if v.Length > MaxExportBytes {
+		return ObjectExport{}, ErrTooLarge
 	}
 	var envelopeID string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT id::text FROM envelopes WHERE tenant = $1 AND version = $2 AND recipient = $3

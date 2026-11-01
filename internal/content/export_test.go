@@ -258,3 +258,60 @@ func TestObjectExport(t *testing.T) {
 		t.Fatalf("export to a target without an envelope: %v", err)
 	}
 }
+
+// TestExportSizeAfterAuthorization covers review v5 F07: an export larger
+// than one package is refused as too large only to a caller allowed to
+// export it. To anyone else it is not found, as a key that does not exist
+// is, so its size class tells nothing.
+func TestExportSizeAfterAuthorization(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	bob := st.Client("bob", []string{"member"}, "p1")
+	if _, err := alice.Put("reports", "doc", []byte("large"), alice); err != nil {
+		t.Fatal(err)
+	}
+	up, err := alice.PrepareDocument("reports", "q3.md", paragraphs(2), nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "report.md", IdempotencyKey: "t1"},
+		[]byte("Summary.\n\nDetails.\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE object_versions SET ciphertext_length = $1`, content.MaxExportBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	fp := alice.Recipient.Fingerprint().String()
+	docUnits := st.UnitIDs(alice.Caller, "reports", "q3.md", "")
+	vaultUnits := st.UnitIDs(alice.Caller, "vault", "report.md", "")
+	for name, export := range map[string]func(c content.Caller, key string) error{
+		"object": func(c content.Caller, key string) error {
+			_, err := st.Content.ExportObject(ctx, c, "reports", key, "", fp)
+			return err
+		},
+		"units": func(c content.Caller, key string) error {
+			_, err := st.Content.ExportUnits(ctx, c, "reports", key, "", docUnits, fp)
+			return err
+		},
+		"plain units": func(c content.Caller, key string) error {
+			_, err := st.Content.ExportUnitsPlain(ctx, c, "vault", key, "", vaultUnits)
+			return err
+		},
+	} {
+		key := map[string]string{"object": "doc", "units": "q3.md", "plain units": "report.md"}[name]
+		if err := export(bob.Caller, key); !errors.Is(err, content.ErrNotFound) {
+			t.Errorf("%s: a caller without export: %v, want not found", name, err)
+		}
+		if err := export(bob.Caller, "missing"); !errors.Is(err, content.ErrNotFound) {
+			t.Errorf("%s: a missing key: %v", name, err)
+		}
+		if err := export(alice.Caller, key); !errors.Is(err, content.ErrTooLarge) {
+			t.Errorf("%s: the owner: %v, want too large", name, err)
+		}
+	}
+}
