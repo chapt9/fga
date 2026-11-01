@@ -6,7 +6,8 @@ In server mode (specification 2.6, [D-12](../decisions/D-12-encryption-modes.md)
 
 | Role | Holds |
 |---|---|
-| keys (`internal/datakeys`, `internal/kek`) | The ring of KEKs. It seals and opens data keys. It never sees blobs, ciphertext streams or payload plaintext |
+| kms (`cmd/fga-kms`, `internal/kms`), production custody | The ring of KEKs, alone. It seals and opens data keys for the keys role and decides nothing (D-13) |
+| keys (`internal/datakeys`) | Data keys while it seals or releases one, under its fence. In development it may read the ring itself (`kek_file`). It never sees blobs, ciphertext streams or payload plaintext |
 | storage | Blobs, and a data key only for the duration of one upload or read stream (S3). It links no KEK code, which `cmd/fga-storage` `TestNoKeyEncryptionKeys` checks |
 | decision, MCP, tools | Neither KEKs nor data keys |
 | catalog | Each version's and upload intent's sealed data key and KEK version (`sealed_key`, `kek_version`), and which KEK versions exist and which is active (`kek_versions`). Never a key |
@@ -17,7 +18,12 @@ The import allowlist of `cmd/fga-keys` admits the KEK code and Tink's AES-GCM `a
 
 `fga-admin kek init -file F [-encrypt]` creates a ring file. With `-encrypt`, the file is protected with the passphrase from `$FGA_KEK_PASSPHRASE` or `-passphrase-file` (Argon2id and AES-256-GCM, as for other [key files](key-files.md)). The keys role opens it from `kek_file` in its configuration, with `$FGA_KEK_PASSPHRASE` or `kek_passphrase_file`. Without `kek_file`, the data-key routes are not served.
 
-The ring is **development custody**. The keys role refuses `kek_file` in the production profile while decision D-13 (production KEK custody) is open.
+**Custody (D-13, [ruling](../decisions/D-13-kek-custody.md)).**
+- **Production.** The KEKs live only in the key management role, `fga-kms`. It reads the ring, which production requires to be passphrase-protected, with the passphrase from `kek_passphrase_file`. It serves `POST /v1/seal` and `POST /v1/open` over mutual TLS to the workloads in `clients` (the keys role's certificate) and refuses every other caller. The keys role names it as `kms` (url, client certificate) and refuses `kek_file` in production.
+- **Development.** The keys role may read the ring itself from `kek_file`, or use `fga-kms` on loopback with one `dev_client`.
+- **Error mapping.** A version the ring lacks answers 404 and a key that does not open answers 422; the client maps them back to the ring's errors.
+- **Requests.** Requests are bounded to 4 KiB, and both sides clear the keys they handled.
+- **Imports.** `fga-kms` links no catalog, policy, decision, storage or data-key code (`cmd/fga-kms` `TestNoAuthorityCode`). The keys role has already authorized every release under its fence before it asks.
 
 A ring holds, per tenant, numbered versions of 32-byte AES-256-GCM keys. The catalog decides which version is active, so the ring itself has no state flag.
 
@@ -28,7 +34,7 @@ A ring holds, per tenant, numbered versions of 32-byte AES-256-GCM keys. The cat
 1. It adds the tenant's next version to the ring and writes the file.
 2. In one transaction, it locks the tenant's `kek_versions` rows, so no data key is sealed meanwhile. It retires the active version, makes the new one active, and reseals every sealed data key of the tenant's versions and upload intents under it. Ciphertext does not change (V-166).
 
-If step 2 fails, the ring holds an unused version and nothing refers to it. Old versions stay in the ring. The keys role reads the ring file again when asked for a version it does not hold, so a rotation needs no restart.
+If step 2 fails, the ring holds an unused version and nothing refers to it. Old versions stay in the ring. The role that holds the ring (`fga-kms`, or the keys role with `kek_file`) reads the ring file again when asked for a version it does not hold, so a rotation needs no restart. `fga-admin kek rotate` runs on the host of the ring.
 
 `kek init` and `kek rotate` hold an exclusive lock on `<ring>.lock` from reading the ring until the catalog step is done. So two rotations, of one tenant or of different tenants sharing the ring, cannot write different keys for the same version or drop each other's versions (review v3 F07). The ring file is replaced atomically and its directory is flushed before the catalog commits the resealed keys, so the new version survives a crash in between (F14).
 
@@ -72,7 +78,8 @@ Document units, originals, exports and derived outputs get their release operati
 | `TestRotation` | V-166: resealing versions and intents, unchanged digests, new seals under the new version |
 | `TestRoutes` | Only the storage workload may call the routes; the storage role's RPC client |
 | `cmd/fga-keys` | The allowlist; production refusing `kek_file` |
+| `internal/kms` `TestSealAndOpen`, `cmd/fga-kms` | Seal and open through the key management role; another binding, an unknown version, a workload that is not a client; production rules (mutual TLS, protected ring, passphrase file); the role's allowlist |
 | `internal/recovery` `TestBackupHoldsSealedKeysOnly` | A backup holds the sealed key, never the unsealed key or a KEK |
 | `TestReconcileChecksKeys` | No ring: admission stays closed; a ring without the KEK version, or an altered sealed key, quarantines; the right ring reopens and the content reads |
 | `TestReclaimDestroysKeys` | Retirement destroys the version's and the intent's sealed keys; a backup taken before still restores them |
-| `scripts/smoke.sh` | A protected ring, the first rotation, and the keys role opening the ring at start; reclaim destroying a withdrawn version's key; reconcile refusing without the ring and reopening with it |
+| `scripts/smoke.sh` | A protected ring, the first rotation, and the keys role sealing and opening through `fga-kms`; reclaim destroying a withdrawn version's key; reconcile refusing without the ring and reopening with it |

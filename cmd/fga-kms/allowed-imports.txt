@@ -1,0 +1,34 @@
+# Packages the key management role may link (MOD-004, D-13). One import-path
+# prefix per line. Adding a line needs review: this role holds every
+# tenant's key-encryption keys. No catalog, policy, decision, payload,
+# client decryption, MCP or executor package belongs here.
+fga/cmd/fga-kms
+fga/internal/cryptowire
+fga/internal/guard
+fga/internal/kek
+fga/internal/keyfile
+fga/internal/kms
+fga/internal/strictjson
+# Reviewed 2026-11-01: linked by the ring through cryptowire (go-jose) and
+# Tink (protobuf), as in the keys role.
+github.com/go-jose/go-jose/
+google.golang.org/protobuf/
+github.com/tink-crypto/tink-go/v2/aead
+github.com/tink-crypto/tink-go/v2/core
+github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess
+github.com/tink-crypto/tink-go/v2/internal
+github.com/tink-crypto/tink-go/v2/key
+github.com/tink-crypto/tink-go/v2/keyset
+github.com/tink-crypto/tink-go/v2/monitoring
+github.com/tink-crypto/tink-go/v2/prf
+github.com/tink-crypto/tink-go/v2/proto
+github.com/tink-crypto/tink-go/v2/secretdata
+github.com/tink-crypto/tink-go/v2/subtle
+github.com/tink-crypto/tink-go/v2/tink
+golang.org/x/crypto/argon2
+golang.org/x/crypto/blake2b
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/

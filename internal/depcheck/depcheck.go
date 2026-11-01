@@ -86,7 +86,7 @@ var PayloadCipher = []string{
 }
 
 // KeyEncryption is the server-mode key-encryption code: only the keys role
-// may link it (SSE-002).
+// and the key management role, fga-kms, may link it (SSE-002, D-13).
 var KeyEncryption = []string{
 	"fga/internal/kek",
 	"fga/internal/datakeys",

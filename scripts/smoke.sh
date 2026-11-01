@@ -38,7 +38,12 @@ COMMON="\"database_url\":\"$URL\",\"dev_adapter_id\":\"local-dev\",\"token_issue
 cat > keys.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18442",$COMMON,"journal_dir":"journal",
  "receipt_key_file":"receipt.key","receipt_key_id":"receipt-1","storage_adapter":"local-dev","outbox_capacity":100000,
- "kek_file":"keks"}
+ "kms":{"url":"http://127.0.0.1:18449"}}
+J
+# The key management role alone holds the KEK ring (D-13); the keys role
+# seals and opens data keys through it.
+cat > kms.json <<J
+{"version":1,"profile":"development","listen":"127.0.0.1:18449","clients":["keys-1"],"dev_client":"keys-1","kek_file":"keks"}
 J
 cat > storage.json <<J
 {"version":1,"profile":"development","listen":"127.0.0.1:18441",$COMMON,"blob_dir":"blobs","journal_dir":"journal",
@@ -62,11 +67,13 @@ export FGA_KEK_PASSPHRASE="smoke kek passphrase"
 $B/fga-admin -db $URL kek init -file keks -encrypt
 $B/fga-admin -db $URL kek rotate -tenant t-acme -file keks
 grep -q '"format":"fga.keyfile/v1"' keks && echo "KEK ring is passphrase-protected"
+$B/fga-kms -config kms.json > kms.log 2>&1 & echo $! >> pids
 $B/fga-keys -config keys.json > keys.log 2>&1 & echo $! >> pids
 $B/fga-storage -config storage.json > storage.log 2>&1 & echo $! >> pids
 $B/fga-mcp -config mcp.json > mcp.log 2>&1 & echo $! >> pids
 trap 'kill $(cat pids) 2>/dev/null; sleep 1; dropdb -h localhost --if-exists '$DB'' EXIT
-ready() { curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && curl -sf http://127.0.0.1:18446/healthz; }
+ready() { curl -sf http://127.0.0.1:18441/readyz && curl -sf http://127.0.0.1:18442/readyz && curl -sf http://127.0.0.1:18446/healthz &&
+          curl -sf http://127.0.0.1:18449/healthz; }
 for _ in $(seq 60); do ready >/dev/null 2>&1 && break; sleep 0.5; done
 check ready && echo "roles ready"
 

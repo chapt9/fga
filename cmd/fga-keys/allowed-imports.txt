@@ -19,6 +19,10 @@ fga/internal/datakeys
 fga/internal/datakeysapi
 fga/internal/kek
 fga/internal/keyfile
+# Reviewed 2026-11-01 (D-13): the client of the fga-kms role, which holds
+# the KEKs in production; it sends a data key to seal or a sealed one to
+# open over mutual TLS and links no cipher.
+fga/internal/kms
 github.com/tink-crypto/tink-go/v2/aead
 github.com/tink-crypto/tink-go/v2/core
 github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"fga/internal/kek"
 	"fga/internal/keyfile"
 	"fga/internal/keysapi"
+	"fga/internal/kms"
 	"fga/internal/roleconfig"
 	"fga/internal/rpc"
 )
@@ -50,12 +52,15 @@ type Config struct {
 	// events below outbox_capacity, so one tenant cannot fill the outbox
 	// for every other (AUD-002).
 	OutboxTenantCapacity int `json:"outbox_tenant_capacity,omitempty"`
-	// KEKFile is the ring of server-mode key-encryption keys (internal/kek);
-	// without it server mode is unavailable. A protected ring is opened
-	// with $FGA_KEK_PASSPHRASE or KEKPassphraseFile. It is development
-	// custody: production refuses it while decision D-13 is open (SSE-002).
-	KEKFile           string `json:"kek_file,omitempty"`
-	KEKPassphraseFile string `json:"kek_passphrase_file,omitempty"`
+	// KMS is the fga-kms role that holds the server-mode key-encryption
+	// keys and seals and opens data keys for this role (D-13). KEKFile is
+	// the development alternative: the ring read by this role itself,
+	// protected with $FGA_KEK_PASSPHRASE or KEKPassphraseFile, which
+	// production refuses (SSE-002). Without either, server mode is
+	// unavailable.
+	KMS               *roleconfig.Peer `json:"kms,omitempty"`
+	KEKFile           string           `json:"kek_file,omitempty"`
+	KEKPassphraseFile string           `json:"kek_passphrase_file,omitempty"`
 }
 
 // Validate reports every configuration problem.
@@ -67,8 +72,13 @@ func (c Config) Validate() error {
 	if c.OutboxTenantCapacity < 0 || c.OutboxTenantCapacity > c.OutboxCapacity {
 		errs = append(errs, errors.New("outbox_tenant_capacity must be in [0, outbox_capacity]"))
 	}
-	if c.KEKFile != "" && c.Profile == "production" {
-		errs = append(errs, errors.New("kek_file is development key custody; production server-mode key custody is decision D-13, which is open"))
+	switch {
+	case c.KEKFile != "" && c.KMS != nil:
+		errs = append(errs, errors.New("kek_file and kms exclude each other"))
+	case c.KEKFile != "" && c.Profile == "production":
+		errs = append(errs, errors.New("kek_file is development key custody; production uses the fga-kms role (kms, D-13)"))
+	case c.KMS != nil && (c.KMS.URL == "" || c.Profile == "production" && (!strings.HasPrefix(c.KMS.URL, "https://") || c.KMS.CertFile == "")):
+		errs = append(errs, errors.New("kms needs a url; production calls the fga-kms role over mutual TLS"))
 	}
 	return errors.Join(errs...)
 }
@@ -136,9 +146,15 @@ func run(path string) error {
 		return err
 	}
 	var more []func(*http.ServeMux)
-	if cfg.KEKFile != "" {
-		keks, err := kek.Load(cfg.KEKFile, func() ([]byte, error) { return keyfile.Passphrase("FGA_KEK_PASSPHRASE", cfg.KEKPassphraseFile) })
-		if err != nil {
+	if cfg.KEKFile != "" || cfg.KMS != nil {
+		var keks datakeys.Sealer
+		if cfg.KMS != nil {
+			client, err := cfg.KMS.Client()
+			if err != nil {
+				return err
+			}
+			keks = kms.Client{URL: cfg.KMS.URL, HTTP: client}
+		} else if keks, err = kek.Load(cfg.KEKFile, func() ([]byte, error) { return keyfile.Passphrase("FGA_KEK_PASSPHRASE", cfg.KEKPassphraseFile) }); err != nil {
 			return err
 		}
 		dk, err := datakeys.New(datakeys.Deps{Catalog: catalog.New(pool, cfg.OutboxCapacity).LimitTenants(cfg.OutboxTenantCapacity), Fence: fence.New(pool, time.Second, time.Now),

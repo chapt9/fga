@@ -32,7 +32,7 @@ Focus: object storage plus access control (R1). MCP (R2) comes after R1 is accep
 | Authority | `internal/identity`, `internal/delegation`, `internal/registry` (R1 types, operations, planned resources), `internal/catalog`, `internal/audit`, `internal/authn` (development token profile) | ID-*, DLG-*, RES-*, DAT-*, AUD-* |
 | Authority fence | `internal/fence`: checks, consumption and transition in one transaction under a fixed lock order | DAT-007, DEC-006, DEC-011 |
 | Storage | `internal/content` (content service), `internal/blob` (single-node store), `internal/nativeapi`, `cmd/fga-storage` | CNT-*, PUB-*, BKD-* |
-| Keys | `internal/envelope` (recipient registry, envelope publication, delivery of object, unit, original, derived and export envelopes, retirement), `cmd/fga-keys` | KEY-*, RCP-*, TRU-005 |
+| Keys | `internal/envelope` (recipient registry, envelope publication, delivery of object, unit, original, derived and export envelopes, retirement), `cmd/fga-keys`; server-mode KEK custody in `cmd/fga-kms` and `internal/kms` (D-13) | KEY-*, RCP-*, TRU-005, SSE-002 |
 | Documents | `internal/content` (documents.go, disclosure.go, export.go, units.go), `internal/cryptowire` (wire profile 2, manifest, unit descriptor), `sdk/go/crypto` (splitting, unit sealing) ([documents.md](docs/design/documents.md)) | DOC-*, DSC-*, CNT-003, SRH-* |
 | Derived outputs | `internal/content/derived.go`, `internal/cryptowire/lineage.go` ([derived-outputs.md](docs/design/derived-outputs.md)) | DRV-001 to DRV-003, DRV-007 to DRV-009 |
 | Share grants | `internal/content/grants.go`, `internal/catalog/grants.go`; `shared_with` and grant-bounded validity in `internal/decisionsvc`; removals journaled ([share-grants.md](docs/design/share-grants.md)) | SHR-001 to SHR-003 |
@@ -70,7 +70,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
   - **Derived outputs:** the lineage is declared with the upload and bound to the caller's decision; a reader reads under their own reader path, which the keys role checks again when it releases the key (S4b).
   - **Share grants:** a user with `share` names a reader of the same tenant, actions from the resource type's read set and an expiry; policy sees the grantees as `resource.attributes.shared_with`, and only a rule that tests it turns a grant into an allow ([share-grants.md](docs/design/share-grants.md), S5).
   - **Recovery:** backups hold sealed data keys and never a KEK; reconcile needs the KEK ring and quarantines versions whose keys do not open; final removal destroys a version's data key and reports that older backups still hold it ([server-keys.md](docs/design/server-keys.md), S6).
-  - **Key custody:** KEKs are kept in a development ring file, which production refuses; KEK custody (D-13) is open.
+  - **Key custody (D-13):** in production a separate key management role, `fga-kms`, alone holds the KEK ring (passphrase-protected), and seals and opens data keys for the keys role over mutual TLS. In development the keys role may read the ring itself ([server-keys.md](docs/design/server-keys.md)).
 - **D-04 (identity providers)** is decided: OIDC providers by their JSON Web Key Set (RS256, ES256, EdDSA), from a URL or a file, configured as `token_issuer` in every role ([first-hop-authentication.md](docs/design/first-hop-authentication.md)). It is tested against generated provider keys, not yet against a running Keycloak, Entra ID, Okta or Auth0.
 - **D-08 (client key custody) is open.** Client private keys and the backup key are files (mode 0600). They can optionally be protected with a passphrase (Argon2id and Tink AES-256-GCM, [key-files.md](docs/design/key-files.md)) and are then decrypted in memory only when used. The passphrase comes from an environment variable or a file; there is no interactive prompt. Server roles' keys are not covered.
 - **Crypto interoperability (RCP-007)** is tested only against our own implementation. Frozen positive and negative wire examples exist; no independent implementation has been run.
@@ -104,7 +104,7 @@ make spec
 
 ## Run the storage roles locally
 
-`scripts/smoke.sh` builds every binary and creates a throwaway database and security journal (`fga-admin journal init`). It starts `fga-decision`, `fga-keys` and `fga-storage` on loopback, then drives them with `fga-admin` and `fga`. The run covers:
+`scripts/smoke.sh` builds every binary and creates a throwaway database and security journal (`fga-admin journal init`). It starts `fga-decision`, `fga-kms`, `fga-keys`, `fga-storage`, `fga-mcp` and `fga-tools` on loopback, then drives them with `fga-admin` and `fga`. The run covers:
 - recipient enrollment, an encrypted round trip, denial before sharing, sharing and listing;
 - a derived output (only its owner reads it) and a check that no blob holds plaintext;
 - a label raise, and a lowering that needs a lead's approval (requested, listed, approved, consumed, refused on reuse), and a label proposal;
