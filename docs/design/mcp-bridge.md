@@ -26,7 +26,7 @@ Every authorization is still the MCP role's and the storage role's. The bridge d
 3. **Envelope and ciphertext:** the envelope opens with the user's private key, and the ciphertext authenticates against the descriptor (CRY-006).
 4. **Identity:**
    - For an object, the signed descriptor names the version the package claims, and the asked-for version if any.
-   - For a document, each unit's signed descriptor names the unit, unit version and document version the package claims.
+   - For a document, each unit's signed descriptor names the unit, unit version and document version the package claims. A package names each unit once. When the application asked for units (`units` of a tool call, `?unit=` of a resource), the package holds exactly those: another unit of the same version, though signed and encrypted for this key, is refused (review v5 F09).
 
 A package that fails any step is an error with no plaintext: a tool error for `tools/call`, a JSON-RPC error for `resources/read`. Plaintext and keys stay in memory; nothing is written to disk.
 
@@ -53,6 +53,7 @@ Stdout carries MCP only; diagnostics go to stderr.
 | Test | Covers |
 |---|---|
 | `internal/mcpbridge` `TestBridge` | T-10 MCP client interoperability: the application reads a client-mode object and document as plaintext; server-mode content passes through; an export made for another recipient passes through unopened; a user without an envelope gets nothing; the MCP role's output schemas are dropped |
-| `TestOpenRefusesBadPackages` | Altered, truncated or swapped ciphertext, a unit claimed as another, another version claimed or asked for, another recipient, a compromised signer and an untrusted signer each fail with no plaintext |
+| `TestOpenRefusesBadPackages` | Altered, truncated or swapped ciphertext, a unit claimed as another, another version claimed or asked for, another recipient, a compromised signer and an untrusted signer each fail with no plaintext; so do a unit not asked for, a unit asked for and missing, a unit twice, and units asked of an object |
+| `TestBridgeBindsRequestedUnits` | An upstream that answers a request for unit A with unit B's package, or for units A and B with B alone, gets an error and no plaintext, by resource and by tool; B asked for and given opens (review v5 F09) |
 | `cmd/fga` `TestNoServerCode` | The CLI and bridge link no server-side catalog, content, payload, key-encryption, envelope, fence, decision-service or MCP-role code |
 | `scripts/smoke.sh` | A Python application starts `fga mcp-bridge` and reads bob's client-mode object and document over stdio, equal to the originals |

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -184,10 +185,11 @@ func (b *Bridge) openTool(ctx context.Context, args json.RawMessage, res *mcp.Ca
 		return res
 	}
 	var in struct {
-		Version string `json:"version"`
+		Version string   `json:"version"`
+		Units   []string `json:"units"`
 	}
 	_ = json.Unmarshal(args, &in)
-	o, err := b.Open(ctx, out.Package, in.Version)
+	o, err := b.Open(ctx, out.Package, in.Version, in.Units...)
 	if err != nil {
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
 	}
@@ -209,11 +211,11 @@ func (b *Bridge) openResource(ctx context.Context, uri string, res *mcp.ReadReso
 		if p.Recipient != b.d.Key.Fingerprint().String() {
 			continue
 		}
-		version := ""
+		version, units := "", []string(nil)
 		if u, err := url.Parse(uri); err == nil {
-			version = u.Query().Get("version")
+			version, units = u.Query().Get("version"), u.Query()["unit"]
 		}
-		o, err := b.Open(ctx, &p, version)
+		o, err := b.Open(ctx, &p, version, units...)
 		if err != nil {
 			return nil, err
 		}
@@ -250,8 +252,11 @@ var ErrVerify = errors.New("the encrypted package failed verification")
 // a signer the user trusts and the keys role reports usable, the envelope
 // for this key, the authenticated ciphertext, and the identity the package
 // claims (and version, when one was asked for) against the signed
-// descriptor. All of it opens, or nothing is returned.
-func (b *Bridge) Open(ctx context.Context, p *mcpwire.Package, version string) (Opened, error) {
+// descriptor. With units asked for, the package must hold exactly those
+// units, each once: another unit of the version, signed and encrypted for
+// this key, is refused too (review v5 F09). All of it opens, or nothing is
+// returned.
+func (b *Bridge) Open(ctx context.Context, p *mcpwire.Package, version string, units ...string) (Opened, error) {
 	fail := func(format string, args ...any) (Opened, error) {
 		return Opened{}, fmt.Errorf("%w: %s", ErrVerify, fmt.Sprintf(format, args...))
 	}
@@ -260,6 +265,9 @@ func (b *Bridge) Open(ctx context.Context, p *mcpwire.Package, version string) (
 	}
 	trust := crypto.StatusTrust{TrustStore: b.d.Trust, Status: func(fp cryptowire.Digest) (string, error) { return b.d.SignerStatus(ctx, fp) }}
 	if p.Object != nil {
+		if len(units) > 0 {
+			return fail("units were asked for and the package is an object")
+		}
 		desc, err1 := base64.StdEncoding.DecodeString(p.Object.Descriptor)
 		ct, err2 := base64.StdEncoding.DecodeString(p.Object.Ciphertext)
 		env, err3 := envelope(p.Object.Delivery)
@@ -281,7 +289,12 @@ func (b *Bridge) Open(ctx context.Context, p *mcpwire.Package, version string) (
 		return fail("the package is of another document version")
 	}
 	o := Opened{DocumentVersion: p.DocumentVersion, Units: []UnitText{}}
+	seen := map[string]bool{}
 	for _, u := range p.Units {
+		if seen[u.Unit] || len(units) > 0 && !slices.Contains(units, u.Unit) {
+			return fail("unit %s was not asked for, or appears twice", u.Unit)
+		}
+		seen[u.Unit] = true
 		desc, err1 := base64.StdEncoding.DecodeString(u.Descriptor)
 		ct, err2 := base64.StdEncoding.DecodeString(u.Ciphertext)
 		env, err3 := envelope(u.Delivery)
@@ -298,6 +311,11 @@ func (b *Bridge) Open(ctx context.Context, p *mcpwire.Package, version string) (
 			return fail("unit %s: the descriptor names another unit or version", u.Unit)
 		}
 		o.Units = append(o.Units, UnitText{Unit: u.Unit, UnitVersion: u.UnitVersion, Text: out.String()})
+	}
+	for _, id := range units {
+		if !seen[id] {
+			return fail("unit %s was asked for and is missing", id)
+		}
 	}
 	return o, nil
 }
