@@ -62,6 +62,41 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// TestOpenReusesOnlyCurrentBindings covers review v5 F11: a repeated
+// request gets its pending approval back only if that approval was
+// requested under the same policy epoch and resource revisions, which
+// settling it requires; after a change it gets a fresh one.
+func TestOpenReusesOnlyCurrentBindings(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := setup(t)
+	open := func(epoch, generation uint64) string {
+		t.Helper()
+		a, err := s.Open(ctx, Approval{Tenant: "t-acme", Operation: "op-2", OperationDigest: "sha256:op-2",
+			Summary: opplan.Summary{Operation: "storage.object.delete-version", OperationDigest: "sha256:op-2", Action: "delete-version",
+				Targets: []opplan.Target{{Role: "object", Type: "storage.object", ID: "o-1", Version: "v-1"}}},
+			RequestedBy: "user-42", Actor: "agent-7", ExpiresAt: now.Add(time.Hour), PolicyEpoch: epoch,
+			Bindings: []Binding{{Type: "storage.object", ID: "o-1", Generation: generation, MetadataRevision: 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
+	}
+	first := open(5, 1)
+	if again := open(5, 1); again != first {
+		t.Fatalf("a repeated request got %s, want its pending %s", again, first)
+	}
+	changed := open(5, 2)
+	if changed == first {
+		t.Error("a request after the resource changed got the stale approval")
+	}
+	if epoch := open(6, 1); epoch == first || epoch == changed {
+		t.Error("a request under another policy epoch got a stale approval")
+	}
+	if again := open(5, 2); again != changed {
+		t.Errorf("a repeated request got %s, want its pending %s", again, changed)
+	}
+}
+
 // TestNoToolDependency covers MOD-004 and the decoupling of approvals from
 // tool execution: the approval package links no executor package.
 func TestNoToolDependency(t *testing.T) {

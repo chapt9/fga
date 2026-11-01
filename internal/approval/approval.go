@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,6 +72,12 @@ type Approval struct {
 	Bindings    []Binding
 }
 
+// BoundTo reports whether the approval was requested under policy epoch
+// and resource revisions bindings, as a request must be to use it.
+func (a Approval) BoundTo(epoch uint64, bindings []Binding) bool {
+	return a.PolicyEpoch == epoch && slices.Equal(a.Bindings, bindings)
+}
+
 // Binding is a resource revision an approval is bound to.
 type Binding struct {
 	Type             string `json:"type"`
@@ -115,21 +122,34 @@ func (s *Store) Request(ctx context.Context, a Approval) (Approval, error) {
 }
 
 // Open returns the pending, unexpired approval of the same requester,
-// actor, operation and digest, or records a new one, so that repeating a
-// request does not pile up approvals.
+// actor, operation and digest, requested under a's policy epoch and
+// resource revisions, or records a new one, so that repeating a request
+// does not pile up approvals. One requested before the policy or a bound
+// resource changed could never be used, so it is not returned (review v5
+// F11).
 func (s *Store) Open(ctx context.Context, a Approval) (Approval, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		SELECT id FROM approvals
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+columns+` FROM approvals
 		 WHERE tenant = $1 AND state = 'PENDING' AND expires_at > $2 AND operation = $3 AND operation_digest = $4
 		   AND requested_by = $5 AND actor = $6
-		 ORDER BY created_at LIMIT 1`, a.Tenant, s.now(), a.Operation, a.OperationDigest, a.RequestedBy, a.Actor).Scan(&id)
-	switch {
-	case err == nil:
-		return s.Get(ctx, a.Tenant, id)
-	case !errors.Is(err, pgx.ErrNoRows):
+		 ORDER BY created_at`, a.Tenant, s.now(), a.Operation, a.OperationDigest, a.RequestedBy, a.Actor)
+	if err != nil {
 		return Approval{}, err
 	}
+	defer rows.Close()
+	for rows.Next() {
+		p := Approval{Tenant: a.Tenant}
+		if err := scan(rows, &p); err != nil {
+			return Approval{}, err
+		}
+		if p.BoundTo(a.PolicyEpoch, a.Bindings) {
+			return p, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Approval{}, err
+	}
+	rows.Close()
 	return s.Request(ctx, a)
 }
 

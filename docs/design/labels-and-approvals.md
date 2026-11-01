@@ -62,7 +62,7 @@ The operation digest is SHA-256 over `fga.opplan/v1`, a zero byte and the plan's
 **Flow.**
 
 1. The storage role asks for a decision with the plan. Every check holds only with an approval, so the decision is `NEEDS_APPROVAL`.
-2. The decision role opens a pending approval, or returns the caller's existing pending one for the same digest. The approval records:
+2. The decision role opens a pending approval, or returns the caller's existing pending one for the same digest, requested under the current policy epoch and resource revisions (step 4 would refuse any other; review v5 F11). The approval records:
    - the plan, digest, requester and acting agent;
    - the approval target;
    - the policy epoch and the generation and metadata revision of every existing bound resource (APR-001);

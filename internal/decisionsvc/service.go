@@ -829,7 +829,7 @@ func (s *Service) settleApproval(ctx context.Context, req Request, epoch uint64,
 	case same && a.State == approval.StatePending && s.d.Now().Before(a.ExpiresAt):
 		return a, "", nil
 	case !same || a.State != approval.StateApproved || !s.d.Now().Before(a.ExpiresAt) || a.Approver == requester ||
-		a.Approver == req.Actor.ID || a.PolicyEpoch != epoch || !slices.Equal(a.Bindings, bindings):
+		a.Approver == req.Actor.ID || !a.BoundTo(epoch, bindings):
 		return approval.Approval{}, ReasonApprovalNotUsable, nil
 	}
 	d.Requires = slices.DeleteFunc(d.Requires, func(p string) bool { return p == policy.RequireApproval })
