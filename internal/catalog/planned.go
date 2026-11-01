@@ -15,8 +15,8 @@ var _ registry.Planner = resourceView{}
 
 // Planned implements registry.Planner from the catalog's own rows: an
 // upload intent's planned object, an envelope planned for an object (or an
-// intent's object) and a recipient key, or a recipient key planned for
-// enrollment.
+// intent's object) and a recipient key, a recipient key planned for
+// enrollment, or a principal's own record.
 func (v resourceView) Planned(ctx context.Context, tenant string, alias registry.Alias) (registry.Resource, error) {
 	switch alias.Namespace {
 	case registry.PlannedObject:
@@ -80,6 +80,12 @@ func (v resourceView) Planned(ctx context.Context, tenant string, alias registry
 		}
 		return registry.Resource{ID: fingerprint, Tenant: tenant, Type: "crypto.signing-key",
 			Attributes: map[string]any{"principal": principal, "status": "PENDING"}}, nil
+	case registry.PlannedSelf:
+		if _, err := v.s.GetIdentity(ctx, tenant, alias.Name); err != nil {
+			return registry.Resource{}, registry.ErrUnknownResource
+		}
+		return registry.Resource{ID: alias.Name, Tenant: tenant, Type: "principal.self",
+			Attributes: map[string]any{"principal": alias.Name}}, nil
 	}
 	return registry.Resource{}, registry.ErrUnknownAlias
 }

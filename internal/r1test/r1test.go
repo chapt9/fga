@@ -152,6 +152,8 @@ var Policies = map[string]string{
 	// a call reaches is checked as for any other client (MCP-003).
 	"tools.json": `{"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
   {"id":"members-use-mcp","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"mcp\""}]}`,
+	"self.json": `{"format":"fga.policy/v1","set":"business","resource":"principal.self","scope":"","rules":[
+  {"id":"own-record","effect":"allow","actions":["read"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}`,
 	"ceiling.json": `{"format":"fga.policy/v1","set":"ceiling","resource":"crypto.recipient","scope":"","rules":[
 	  {"id":"only-active-keys-receive","effect":"deny","actions":["receive-key"],"roles":["*"],
 	   "when":"resource.attributes.status != \"ACTIVE\""}]}`,
@@ -172,6 +174,7 @@ var UserActions = map[string][]string{
 	"agent.tool":          {"discover", "invoke", "approve", "resolve", "write-off"},
 	"network.destination": {"send"},
 	"business.record":     {"read", "update", "approve"},
+	"principal.self":      {"read"},
 }
 
 // Stack is a running fixture.

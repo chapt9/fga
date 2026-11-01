@@ -1,7 +1,7 @@
 {
   "epoch": 0,
   "audience": "fga-decision",
-  "business": ["buckets.json", "derived.json", "destinations.json", "documents.json", "entries.json", "envelopes.json", "objects.json", "recipients.json", "signing-keys.json", "tools.json", "units.json"],
+  "business": ["buckets.json", "derived.json", "destinations.json", "documents.json", "entries.json", "envelopes.json", "objects.json", "recipients.json", "self.json", "signing-keys.json", "tools.json", "units.json"],
   "ceiling": ["ceiling-recipients.json"],
   "cost_limit": 10000,
   "label_order": ["public", "internal", "confidential", "restricted"],
@@ -66,6 +66,14 @@
     {"name": "a member of another project does not receive a derived output", "set": "business",
      "principal": {"id": "user-7", "roles": ["member"], "attributes": {"projects": ["p2"]}},
      "resource": {"type": "document.derived", "id": "d-1", "scope": "", "attributes": {"project": "p1", "owner": "user-9", "label": "internal"}},
-     "action": "deliver", "want": "deny"}
+     "action": "deliver", "want": "deny"},
+    {"name": "a person reads their own record", "set": "business",
+     "principal": {"id": "user-42", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "principal.self", "id": "user-42", "scope": "", "attributes": {"principal": "user-42"}},
+     "action": "read", "want": "allow"},
+    {"name": "nobody reads another person's record", "set": "business",
+     "principal": {"id": "user-7", "roles": ["member"], "attributes": {"projects": ["p1"]}},
+     "resource": {"type": "principal.self", "id": "user-42", "scope": "", "attributes": {"principal": "user-42"}},
+     "action": "read", "want": "deny"}
   ]
 }

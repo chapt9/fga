@@ -32,6 +32,8 @@ const (
 	OpRevokeRecipient   = "crypto.recipient.revoke"
 	OpLookupRecipient   = "crypto.recipient.discover"
 	OpLookupSigner      = "crypto.signing-key.discover"
+	// OpReadSelf reads the caller's own record (principal.self).
+	OpReadSelf = "principal.self.read"
 	// Self-service content-signing keys (RCP-002, RCP-011): enrollment
 	// of the caller's planned key, activation by possession proof, and
 	// retirement for rotation. Compromise stays an administrator's,
@@ -185,6 +187,7 @@ const (
 	RoleEnvelope      = "envelope"
 	RoleRecipient     = "recipient"
 	RoleSigner        = "signer"
+	RoleSelf          = "self"
 	RoleShare         = "share"
 	RoleRecipientRead = "recipient-read"
 	RoleRecipientKey  = "recipient-key"
@@ -423,6 +426,7 @@ func baseOperations() []Operation {
 		one(OpRevokeRecipient, RoleRecipient, "crypto.recipient", "revoke"),
 		one(OpLookupRecipient, RoleRecipient, "crypto.recipient", "discover"),
 		one(OpLookupSigner, RoleSigner, "crypto.signing-key", "discover"),
+		one(OpReadSelf, RoleSelf, "principal.self", "read"),
 		one(OpLabel, RoleObject, "storage.object", "label"),
 		one(OpRelabel, RoleObject, "storage.object", "relabel"),
 		one(OpProposeLabel, RoleObject, "storage.object", "propose-label"),

@@ -95,6 +95,10 @@ var r1TypeDefs = []TypeDef{
 	{Name: "crypto.signing-key", Actions: []string{"discover", "enroll", "activate", "retire", "approve"}},
 	{Name: "crypto.envelope", Actions: []string{"create", "release", "retire", "approve"}},
 	{Name: "platform.policy", Actions: []string{"propose", "test", "approve", "activate"}},
+	// principal.self is our addition to the spec's table (owner, 1
+	// November 2026): a person's own record, read so that a console shows
+	// only what their rights allow. It is never stored as a resource.
+	{Name: "principal.self", Actions: []string{"read"}},
 }
 
 // mcpTypeDefs are the R2 types of the MCP service (MCP-003): each
@@ -223,6 +227,9 @@ const (
 	// PlannedDocumentVersion: the document intent ID. A unit intent's
 	// object resolves under PlannedObject as a document.text_unit.
 	PlannedDocumentVersion = "planned.document-version"
+	// PlannedSelf: the principal. Its principal.self record is never
+	// stored, so it stays planned and the fence finds it absent.
+	PlannedSelf = "planned.self"
 )
 
 // Planner resolves planned resources from authoritative state, never from

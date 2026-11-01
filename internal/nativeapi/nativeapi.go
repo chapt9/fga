@@ -552,6 +552,16 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, p)
 	}))
+	// The caller's own record (principal.self read), for a console that
+	// shows each person only what their rights allow.
+	mux.HandleFunc("GET /v1/me", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		me, err := svc.Me(r.Context(), c)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, me)
+	}))
 	mux.HandleFunc("GET /v1/approvals", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		q := r.URL.Query()
 		limit := 100

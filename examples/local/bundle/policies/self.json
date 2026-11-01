@@ -1,0 +1,2 @@
+{"format":"fga.policy/v1","set":"business","resource":"principal.self","scope":"","rules":[
+  {"id":"own-record","effect":"allow","actions":["read"],"roles":["*"],"when":"resource.attributes.principal == principal.id"}]}

@@ -13,6 +13,7 @@ import (
 	"fga/internal/audit"
 	"fga/internal/cryptowire"
 	"fga/internal/delegation"
+	"fga/internal/identity"
 )
 
 // Administrative changes to a tenant's directory: identities, their
@@ -427,6 +428,31 @@ func (s *Store) ListIdentities(ctx context.Context, tenant, after string, limit 
 		}
 	}
 	return out, nil
+}
+
+// IdentityRecordOf reads one identity as the directory lists it.
+func (s *Store) IdentityRecordOf(ctx context.Context, tenant, id string) (IdentityRecord, error) {
+	r := IdentityRecord{ID: id, Capabilities: map[string][]string{}}
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `SELECT roles, attributes, disabled, expires_at FROM identities WHERE tenant = $1 AND id = $2`,
+		tenant, id).Scan(&r.Roles, &raw, &r.Disabled, &r.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityRecord{}, identity.ErrUnknown
+	}
+	if err != nil {
+		return IdentityRecord{}, err
+	}
+	if err := json.Unmarshal(raw, &r.Attributes); err != nil {
+		return IdentityRecord{}, err
+	}
+	caps, err := capabilitiesOf(ctx, s.pool, tenant, []string{id})
+	if err != nil {
+		return IdentityRecord{}, err
+	}
+	if c, ok := caps[id]; ok {
+		r.Capabilities = c
+	}
+	return r, nil
 }
 
 // capabilitiesOf returns the capabilities of actors, by actor and type.

@@ -562,6 +562,26 @@ paths:
       responses:
         "200": { description: Discoverable documents in key order; no totals, content: { application/json: { schema: { type: object } } } }
         default: { $ref: "#/components/responses/Error" }
+  /v1/me:
+    get:
+      operationId: readSelf
+      description: The caller's own record, decided as principal.self read (principal.self.read); refused under a delegation.
+      responses:
+        "200":
+          description: Own record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, roles, attributes, disabled, capabilities]
+                properties:
+                  id: { type: string }
+                  roles: { type: array, items: { type: string } }
+                  attributes: { type: object }
+                  disabled: { type: boolean }
+                  expires_at: { type: string, format: date-time }
+                  capabilities: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/approvals:
     get:
       operationId: listApprovals

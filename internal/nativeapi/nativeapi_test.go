@@ -766,3 +766,52 @@ func TestRevokeLastReaderKey(t *testing.T) {
 		t.Fatalf("a confirmed revocation: %d %v", status, out)
 	}
 }
+
+// TestWhoAmI: GET /v1/me answers the caller's own record, decided as
+// principal.self read. A person without the capability gets the generic
+// refusal, and under a delegation it is not answered at all.
+func TestWhoAmI(t *testing.T) {
+	d := deploy(t)
+	a := d.st.Client("alice", []string{"member"}, "p1")
+	ctx := context.Background()
+	caps := maps.Clone(r1test.UserActions)
+	delete(caps, "principal.self")
+	if err := d.st.Catalog.PutIdentity(ctx, r1test.Tenant, "bob", []string{"member"}, map[string]any{"projects": []string{"p2"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.st.Catalog.GrantCapabilities(ctx, r1test.Tenant, "bob", caps); err != nil {
+		t.Fatal(err)
+	}
+	me := func(token string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, d.storage.URL+"/v1/me", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	status, out := me(a.Caller.Token)
+	if status != http.StatusOK || out["id"] != "alice" || !reflect.DeepEqual(out["roles"], []any{"member"}) ||
+		!reflect.DeepEqual(out["attributes"], map[string]any{"projects": []any{"p1"}}) || out["disabled"] != false {
+		t.Fatalf("alice's own record: %d %v", status, out)
+	}
+	if got := out["capabilities"].(map[string]any)["principal.self"]; !reflect.DeepEqual(got, []any{"read"}) {
+		t.Fatalf("alice's capabilities: %v", out["capabilities"])
+	}
+	if status, out := me(d.st.Caller("bob").Token); status != http.StatusNotFound || out["error"] != "NOT_FOUND" {
+		t.Fatalf("bob without principal.self read: %d %v", status, out)
+	}
+	if status, _ := me(d.st.KeysCaller("alice").Token); status != http.StatusUnauthorized {
+		t.Fatalf("a keys-role token: %d", status)
+	}
+	delegated := a.Caller
+	delegated.Subject, delegated.Delegation = "bob", "dlg-1"
+	if _, err := d.st.Content.Me(ctx, delegated); !errors.Is(err, content.ErrInvalid) {
+		t.Fatalf("under a delegation: %v", err)
+	}
+}
