@@ -428,7 +428,7 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *server) fail(w http.ResponseWriter, err error) {
 	var pg *pgconn.PgError
 	switch {
-	case errors.Is(err, adminops.ErrInvalid):
+	case errors.Is(err, adminops.ErrInvalid), errors.Is(err, catalog.ErrBadDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, catalog.ErrNoRow):
 		writeError(w, http.StatusNotFound, "no such identity or delegation")

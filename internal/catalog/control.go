@@ -114,6 +114,11 @@ func execOne(ctx context.Context, q Querier, sql string, args ...any) error {
 // delegation is never changed, only revoked and replaced (DLG-005).
 var ErrDelegationExists = errors.New("catalog: delegation exists")
 
+// ErrBadDelegation marks a delegation refused as given: a malformed one,
+// or a child whose parent is missing, unusable or narrower. It is the
+// caller's error, not a fault (audit F3).
+var ErrBadDelegation = errors.New("catalog: the delegation is refused")
+
 // PutDelegation records a new delegation (DLG-001). It must name an actor
 // other than its subject, an audience, at least one grant and a future
 // expiry; a child must narrow its usable parent (DLG-002). Actor and
@@ -125,32 +130,38 @@ func (s *Store) PutDelegation(ctx context.Context, d delegation.Delegation, now 
 func (s *Store) putDelegation(ctx context.Context, q Querier, d delegation.Delegation, now time.Time) error {
 	switch {
 	case d.ID == "" || len(d.ID) > 128 || d.Tenant == "" || d.Actor == "" || d.Subject == "" || d.Audience == "":
-		return errors.New("catalog: a delegation needs an ID, tenant, actor, subject and audience")
+		return fmt.Errorf("%w: it needs an ID of at most 128 bytes, a tenant, an actor, a subject and an audience", ErrBadDelegation)
 	case d.Actor == d.Subject:
-		return errors.New("catalog: a delegation's actor and subject differ")
+		return fmt.Errorf("%w: its actor and subject differ", ErrBadDelegation)
 	case len(d.Grants) == 0:
-		return errors.New("catalog: a delegation grants at least one action")
+		return fmt.Errorf("%w: it grants at least one action", ErrBadDelegation)
 	case !now.Before(d.ExpiresAt):
-		return errors.New("catalog: a delegation expires in the future")
+		return fmt.Errorf("%w: it expires in the future", ErrBadDelegation)
 	}
 	grants := make([]grantJSON, 0, len(d.Grants))
 	for _, g := range d.Grants {
 		if g.ResourceType == "" || len(g.Actions) == 0 {
-			return errors.New("catalog: a grant names a resource type and actions")
+			return fmt.Errorf("%w: a grant names a resource type and actions", ErrBadDelegation)
 		}
 		grants = append(grants, grantJSON{ResourceType: g.ResourceType, Actions: g.Actions})
 	}
 	var parent *string
 	if d.Parent != "" {
 		chain, err := delegation.Resolve(ctx, delegationView{q}, d.Tenant, d.Parent, now)
+		for _, bad := range []error{delegation.ErrNotFound, delegation.ErrRevoked, delegation.ErrExpired, delegation.ErrTenantMismatch,
+			delegation.ErrTooDeep, delegation.ErrCycle} {
+			if errors.Is(err, bad) {
+				return fmt.Errorf("%w: parent delegation: %w", ErrBadDelegation, err)
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("catalog: parent delegation: %w", err)
 		}
 		if len(chain) >= delegation.MaxDepth {
-			return delegation.ErrTooDeep
+			return fmt.Errorf("%w: %w", ErrBadDelegation, delegation.ErrTooDeep)
 		}
 		if err := delegation.ValidateChild(d, chain.Leaf()); err != nil {
-			return err
+			return fmt.Errorf("%w: %w", ErrBadDelegation, err)
 		}
 		p := string(d.Parent)
 		parent = &p

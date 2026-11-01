@@ -29,7 +29,10 @@ A refusal is logged with the console, tenant and subject; it changes nothing.
 | `GET /v1/admin/policy` | the signed bundle in `bundle_dir`, after its signature verifies with `publisher_keys` |
 | `GET /v1/admin/events?limit=` | the tenant's latest audit events still in the outbox |
 
-Lists answer `{"items": [...], "next": "..."}`; pass `next` as `after` for the following page (at most 500 per page). Errors answer `{"error": "..."}`: 400 for a request the directory does not take, 404 for an unknown identity or delegation, 409 for one that exists, 503 when the security journal or the bundle cannot be used.
+Lists answer `{"items": [...], "next": "..."}`; pass `next` as `after` for the following page (at most 500 per page). Errors answer `{"error": "..."}`:
+- 400 for a request the directory does not take, with the reason. This includes a delegation the catalog refuses as given: its parent is missing, revoked, expired or narrower, or its ID is longer than 128 bytes (audit F3).
+- 404 for an unknown identity or delegation, and 409 for one that exists.
+- 503 when the security journal or the bundle cannot be used.
 
 The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create` and `mcp enable` make the same changes through the same code, `internal/adminops`.
 

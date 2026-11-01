@@ -308,6 +308,48 @@ func TestDirectory(t *testing.T) {
 
 // TestTenantIsolation: an administrator sees and changes its own tenant
 // only.
+// TestDelegationRefusals covers audit F3: a delegation the catalog refuses
+// as given is a bad request (400) with the reason, not an internal error.
+func TestDelegationRefusals(t *testing.T) {
+	f := newFixture(t)
+	for _, id := range []string{"agent-7", "agent-8", "bob"} {
+		if status, out := f.admin("PUT", "/v1/admin/identities/"+id, map[string]any{"roles": []string{"member"}}); status >= 300 {
+			t.Fatalf("identity %s: %d %v", id, status, out)
+		}
+	}
+	dlg := func(id, parent, expires string, actions ...string) map[string]any {
+		return map[string]any{"id": id, "actor": "agent-8", "subject": "bob", "audience": "mcp",
+			"grants": map[string][]string{"storage.object": actions}, "expires_in": expires, "parent": parent}
+	}
+	parent := dlg("dlg-p", "", "1h", "stat")
+	parent["actor"] = "agent-7"
+	if status, out := f.admin("POST", "/v1/admin/delegations", parent); status != http.StatusCreated {
+		t.Fatalf("the parent: %d %v", status, out)
+	}
+	revoked := dlg("dlg-r", "", "1h", "stat")
+	revoked["actor"] = "agent-7"
+	if status, _ := f.admin("POST", "/v1/admin/delegations", revoked); status != http.StatusCreated {
+		t.Fatal("the revoked parent")
+	}
+	if status, _ := f.admin("POST", "/v1/admin/delegations/dlg-r/revoke", nil); status >= 300 {
+		t.Fatal("revoking the parent")
+	}
+	for name, body := range map[string]map[string]any{
+		"a missing parent":            dlg("dlg-1", "no-such", "30m", "stat"),
+		"a revoked parent":            dlg("dlg-2", "dlg-r", "30m", "stat"),
+		"wider than its parent":       dlg("dlg-3", "dlg-p", "30m", "read"),
+		"outliving its parent":        dlg("dlg-4", "dlg-p", "2h", "stat"),
+		"an ID longer than 128 bytes": dlg(strings.Repeat("d", 129), "", "30m", "stat"),
+	} {
+		if status, out := f.admin("POST", "/v1/admin/delegations", body); status != http.StatusBadRequest || out["error"] == "internal error" {
+			t.Errorf("%s: %d %v, want 400 with the reason", name, status, out)
+		}
+	}
+	if status, out := f.admin("POST", "/v1/admin/delegations", dlg("dlg-5", "dlg-p", "30m", "stat")); status != http.StatusCreated {
+		t.Fatalf("a narrowing child: %d %v", status, out)
+	}
+}
+
 func TestTenantIsolation(t *testing.T) {
 	f := newFixture(t)
 	if err := f.ops.PutIdentity(ctx, adminops.Who{Actor: "operator", Via: "test"}, "t-other", "eve", []string{"member", "lead"}, nil); err != nil {
