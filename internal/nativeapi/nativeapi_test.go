@@ -571,6 +571,10 @@ func TestMCPGatewayHTTP(t *testing.T) {
 	if !ok {
 		t.Fatal("no discover decision")
 	}
+	list, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", "resources.list", mcpToken, registry.OpMCPInvoke)
+	if !ok {
+		t.Fatal("no resources.list decision")
+	}
 	for name, c := range map[string]struct {
 		workload string
 		header   map[string]string
@@ -580,11 +584,25 @@ func TestMCPGatewayHTTP(t *testing.T) {
 		"the decision from another workload":    {r1test.StorageAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}},
 		"a decision another adapter requested":  {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: fromKeys.Evidence()}},
 		"a decision for another operation":      {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: discover.Evidence()}},
+		"a decision for another MCP tool":       {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: list.Evidence()}},
 		"a decision whose signature was broken": {r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence() + "x"}},
 	} {
 		if code := read(c.workload, c.header); code == http.StatusOK {
 			t.Errorf("%s: %d", name, code)
 		}
+	}
+	// A decision for an MCP read stands for the user on the read routes
+	// only, not on a route no MCP tool uses (fga-audit F-06).
+	del, _ := http.NewRequest(http.MethodDelete, d.storage.URL+"/v1/buckets/vault/object?key=plan.txt", nil)
+	del.Header.Set("X-Test-Workload", r1test.MCPAdapter)
+	del.Header.Set(httpapi.DecisionHeader, signed.Evidence())
+	resp, err := http.DefaultClient.Do(del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || read(r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}) != http.StatusOK {
+		t.Fatalf("a read decision presented for a deletion: %d", resp.StatusCode)
 	}
 	*d.st.Clock = d.st.Clock.Add(time.Minute)
 	if code := read(r1test.MCPAdapter, map[string]string{httpapi.DecisionHeader: signed.Evidence()}); code == http.StatusOK {

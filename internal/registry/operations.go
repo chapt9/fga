@@ -249,6 +249,31 @@ const (
 // resource of every tenant that enables MCP.
 var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export", "tools.list", "tools.call"}
 
+// mcpReadRoutes are the native API routes an MCP read uses: plaintext of
+// server-mode content, and packages and ciphertext of client-mode content.
+var mcpReadRoutes = []string{
+	"GET /v1/buckets/{bucket}/object/content", "GET /v1/buckets/{bucket}/object/package", "GET /v1/buckets/{bucket}/object/ciphertext",
+	"GET /v1/buckets/{bucket}/document/units", "POST /v1/buckets/{bucket}/document/units/select",
+	"GET /v1/buckets/{bucket}/document/unit/content", "GET /v1/buckets/{bucket}/document/unit/package",
+	"GET /v1/buckets/{bucket}/document/unit/ciphertext",
+}
+
+// MCPToolRoutes are the routes of the storage and tools roles on which a
+// gateway's decision for each MCP tool stands for the user: the routes
+// that tool's calls use, and no other (fga-audit F-06).
+var MCPToolRoutes = map[string][]string{
+	"resources.list":   {"GET /v1/buckets/{bucket}/objects", "GET /v1/buckets/{bucket}/documents/search"},
+	"resources.read":   mcpReadRoutes,
+	"documents.search": {"GET /v1/buckets/{bucket}/documents/search"},
+	"documents.read":   mcpReadRoutes,
+	"text.read":        mcpReadRoutes,
+	"documents.export": {"GET /v1/buckets/{bucket}/object/export", "POST /v1/buckets/{bucket}/object/export",
+		"GET /v1/buckets/{bucket}/document/units", "POST /v1/buckets/{bucket}/document/units/select",
+		"POST /v1/buckets/{bucket}/document/export", "POST /v1/buckets/{bucket}/document/export/content"},
+	"tools.list": {"GET /v1/tools"},
+	"tools.call": {"POST /v1/invocations"},
+}
+
 // CoreOperations returns the registered operations of the core types: R1's
 // and the MCP service's.
 func CoreOperations(types *Types) *Operations {

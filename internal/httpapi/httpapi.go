@@ -8,11 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"fga/internal/admission"
 	"fga/internal/authn"
 	"fga/internal/enforce"
+	"fga/internal/registry"
 	"fga/internal/signing"
 	"fga/internal/strictjson"
 )
@@ -106,6 +108,8 @@ const DecisionHeader = "Fga-Decision"
 // (TB3): the calling workload must be one of Adapters, and it presents its
 // decision for the user's call, for Operation, addressed to this role
 // (Verifier's audience), requested by that same workload, and still valid.
+// The decision is for one MCP tool and stands for the user only on the
+// routes that tool uses (registry.MCPToolRoutes).
 // The caller is the decision's actor, acting for themself or, under a
 // delegation the decision admitted, for its subject; the decision goes on
 // to the decision role as the caller's evidence. A gateway's own claims
@@ -127,7 +131,12 @@ func (g *Gateway) authenticate(r *http.Request) (enforce.Caller, bool) {
 		return enforce.Caller{}, false
 	}
 	rec, err := g.Verifier.Check(signed)
-	if err != nil || rec.Operation != g.Operation || rec.Adapter != adapter || (rec.Delegation == "") != (rec.Subject.ID == "") {
+	if err != nil || rec.Operation != g.Operation || rec.Adapter != adapter || (rec.Delegation == "") != (rec.Subject.ID == "") ||
+		len(rec.Checks) != 1 || rec.Checks[0].ResourceType != "agent.tool" {
+		return enforce.Caller{}, false
+	}
+	tool, ok := strings.CutPrefix(rec.Checks[0].ResourceID, registry.MCPToolNamespace+":")
+	if !ok || !slices.Contains(registry.MCPToolRoutes[tool], r.Pattern) {
 		return enforce.Caller{}, false
 	}
 	approval := r.Header.Get(ApprovalHeader)
