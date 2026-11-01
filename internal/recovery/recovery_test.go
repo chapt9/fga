@@ -253,9 +253,39 @@ func TestReclaim(t *testing.T) {
 	if _, err := alice.Prepare(content.BeginRequest{Bucket: "reports", Key: "abandoned"}, []byte("x"), alice); err != nil {
 		t.Fatal(err)
 	}
+	// Rows that served their purpose are pruned (fga-audit F-08); a
+	// recent delivered event stays.
+	if _, err := alice.Get("reports", "doc", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO signing_challenges VALUES ($1, gen_random_uuid(), 'alice', 'fp', '\x00', $2)`,
+		r1test.Tenant, st.Clock.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE audit_outbox SET delivered_at = CASE WHEN seq % 2 = 0 THEN $1::timestamptz ELSE $2::timestamptz END`,
+		st.Clock.Add(-48*time.Hour), st.Clock.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	count := func(table string) (n int) {
+		_ = st.Pool.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&n)
+		return n
+	}
+	if count("consumed_decisions") == 0 || count("read_admissions") == 0 {
+		t.Fatal("nothing to prune")
+	}
 	got, err := recovery.Reclaim(ctx, st.Pool, st.Blobs, st.Clock.Add(2*time.Hour))
-	if err != nil || got.Retired != 1 || got.Aborted != 1 {
+	if err != nil || got.Retired != 1 || got.Aborted != 1 || got.Pruned == 0 {
 		t.Fatalf("reclaim = %+v, %v", got, err)
+	}
+	for _, table := range []string{"consumed_decisions", "read_admissions", "signing_challenges"} {
+		if n := count(table); n != 0 {
+			t.Errorf("%d rows left in %s", n, table)
+		}
+	}
+	var old, recent int
+	_ = st.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE seq % 2 = 0), count(*) FILTER (WHERE seq % 2 = 1) FROM audit_outbox`).Scan(&old, &recent)
+	if old != 0 || recent == 0 {
+		t.Errorf("delivered events left: %d old, %d recent; want 0 old", old, recent)
 	}
 	var state string
 	_ = st.Pool.QueryRow(ctx, `SELECT state FROM object_versions WHERE id::text = $1`, v1.Version).Scan(&state)

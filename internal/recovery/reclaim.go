@@ -21,15 +21,29 @@ type Reclaimed struct {
 	// backup taken before At still holds them, so that content stays
 	// recoverable until every such backup is gone (SSE-006).
 	KeysDestroyed int
-	At            time.Time
+	// Pruned counts the rows removed because they served their purpose.
+	Pruned int
+	At     time.Time
 }
+
+// PruneMargin is how long after a decision's validity or a read's lease
+// its record is kept, for clock skew between roles; DeliveredKept is how
+// long a delivered audit event stays in the outbox, which only a retried
+// append still looks at: the export holds it.
+const (
+	PruneMargin   = time.Hour
+	DeliveredKept = 24 * time.Hour
+)
 
 // Reclaim removes the blobs of withdrawn versions and of expired uploads
 // (PUB-005, PUB-006). Each removal is decided from catalog identity under a
 // row lock, never from file age or a backend listing, and is idempotent.
 // Retiring a server-mode version destroys its sealed data key and records
 // when, and the sealed keys of aborted uploads are destroyed too
-// (SSE-006).
+// (SSE-006). It also prunes rows that served their purpose (fga-audit
+// F-08): consumption records of decisions past their validity, read
+// admissions past their lease, expired enrollment challenges and
+// delivered audit events.
 func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now time.Time) (Reclaimed, error) {
 	out := Reclaimed{At: now}
 	type item struct {
@@ -143,6 +157,22 @@ func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now tim
 	if _, err := pool.Exec(ctx, `UPDATE upload_intents SET sealed_key = NULL, kek_version = NULL
 	                              WHERE state = 'COMMITTED' AND sealed_key IS NOT NULL`); err != nil {
 		return out, err
+	}
+	for _, p := range []struct {
+		sql    string
+		before time.Time
+	}{
+		{`DELETE FROM consumed_decisions WHERE valid_until < $1`, now.Add(-PruneMargin)},
+		{`DELETE FROM read_admissions WHERE lease_until < $1`, now.Add(-PruneMargin)},
+		{`DELETE FROM enrollment_challenges WHERE expires_at < $1`, now},
+		{`DELETE FROM signing_challenges WHERE expires_at < $1`, now},
+		{`DELETE FROM audit_outbox WHERE delivered_at < $1`, now.Add(-DeliveredKept)},
+	} {
+		tag, err := pool.Exec(ctx, p.sql, p.before)
+		if err != nil {
+			return out, err
+		}
+		out.Pruned += int(tag.RowsAffected())
 	}
 	return out, nil
 }

@@ -39,7 +39,8 @@
 //	                   catalog), the operator states, audited, that the journal holds every change since the backup
 //	                   -kek-file is needed when the catalog holds server-mode
 //	                   data keys: each must open under the ring, or its version is quarantined (SSE-006)
-//	reclaim                                          retire withdrawn versions; destroys their server-mode data keys
+//	reclaim                                          retire withdrawn versions; destroys their server-mode data keys;
+//	                                                 prunes expired consumption, admission, challenge and delivered audit rows
 //	audit-key generate -out FILE [-encrypt]         create the audit export signing key; prints its public key
 //	audit export       -dir D -key FILE [-trusted B64,...] [-collector URL] [-reset] [-follow]
 //	                   drain the audit outbox into D as a signed hash chain (docs/design/audit-export.md);
@@ -685,7 +686,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("retired %d withdrawn versions, aborted %d expired uploads\n", got.Retired, got.Aborted)
+		fmt.Printf("retired %d withdrawn versions, aborted %d expired uploads, pruned %d expired records\n", got.Retired, got.Aborted, got.Pruned)
 		if got.KeysDestroyed > 0 {
 			fmt.Printf("destroyed %d server-mode data keys; backups taken before %s still hold them, so that content stays recoverable"+
 				" until every such backup is deleted\n", got.KeysDestroyed, got.At.UTC().Format(time.RFC3339))
