@@ -19,6 +19,7 @@ The body is the text (`Content-Length` required, at most 64 MiB), with an option
 3. **Stage.** One single-use staging decision admits the upload (as for client units). Each paragraph is encrypted into its unit's blob (`internal/payload`), and each unit intent records its digest, ciphertext length and plaintext length.
 4. **Publish.** The storage role builds the manifest. `cryptowire.MarshalServer` gives it the client manifest's shape, with every unit in suite 1 and the server format. Nobody signs it, and the client parser refuses it.
    - **Decisions:** the client-mode ones. `document.publish-create` or `-version` carries the plan, so a policy can require an approval. Explicit unit labels and reused units are decided in batches. There are no share or envelope checks.
+   - **Staged ciphertext:** before deciding, the storage role checks every staged unit and the original in the blob store by length and digest, as in client mode, so a version whose ciphertext was lost or altered while it waited, for instance for an approval, is refused (`409`) and never published (review v5 F08).
    - **Commit:** the same fenced transaction as client mode. The document version stores no signature or signer, units store no descriptor (migration 0018), and each unit version receives its sealed data key from its intent.
 
 **Answers**
@@ -91,6 +92,7 @@ So in server mode a member who may read every source reads the output with no sh
 | `internal/nativeapi` `TestServerDocumentsHTTP` | The routes and SDK end to end, including a multipart upload with an original and an export |
 | `TestServerDerived` | Lineage recorded unsigned; the label from the lineage; a member reads by their own path and loses it when a source is restricted; a lead reads by declassification, and her stream ends when a source changes; a retry; mode refusals |
 | `TestServerApprovals` | An approved publication finalized with its lineage; another lineage is not covered (objects too) |
+| `TestServerDocumentVerifiesStagedBlobs` | A document held for an approval whose staged unit, or original, is gone from the blob store is not published (review v5 F08) |
 | `TestExportSizeAfterAuthorization` | An export over 32 MiB is too large only to a caller who may export it; to anyone else not found, as a missing key (review v5 F07) |
 | `internal/datakeys` `TestReleaseDerived` | A path over another source, no path, or another output's declassification releases no key |
 | `internal/nativeapi` `TestServerDerivedHTTP` | A multi-segment output streamed with its lineage and read by another member; a repeated finalize by sources; malformed uploads |

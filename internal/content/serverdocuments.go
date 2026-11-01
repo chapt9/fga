@@ -251,6 +251,11 @@ func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in store
 			if st.state != "STAGED" || st.encryption != "server" {
 				return DocumentPublished{}, fmt.Errorf("%w: unit %d is %s", ErrConflict, i, st.state)
 			}
+			// The staged ciphertext must still be there, as in client
+			// mode: a wait for an approval can be long (review v5 F08).
+			if err := s.stagedBlob(st); err != nil {
+				return DocumentPublished{}, err
+			}
 			cu.staged, sum, length = st, st.ciphertextSHA256, st.ciphertextLength
 		}
 		cu.descriptor = cryptowire.UnitDescriptor{CiphertextSHA256: sum, CiphertextLength: uint64(length), Suite: payload.Suite, Format: payload.Format}
@@ -268,6 +273,9 @@ func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in store
 		}
 		if st.state != "STAGED" || st.encryption != "server" {
 			return DocumentPublished{}, fmt.Errorf("%w: the original is %s", ErrConflict, st.state)
+		}
+		if err := s.stagedBlob(st); err != nil {
+			return DocumentPublished{}, err
 		}
 		original = &checkedUnit{UnitIntent: *o, staged: st}
 		m.Original = &cryptowire.ManifestOriginal{ObjectID: o.Unit, VersionID: o.UnitVersion, CiphertextSHA256: st.ciphertextSHA256,

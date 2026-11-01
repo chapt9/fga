@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,5 +199,59 @@ func TestFinalizeVerifiesStagedBlob(t *testing.T) {
 	}
 	if _, err := alice.Finalize(u); !errors.Is(err, content.ErrConflict) {
 		t.Fatalf("finalize without the staged ciphertext: %v", err)
+	}
+}
+
+// TestServerDocumentVerifiesStagedBlobs covers review v5 F08: a staged
+// server-mode document whose unit or original ciphertext is gone from the
+// blob store while it waits for an approval is not published.
+func TestServerDocumentVerifiesStagedBlobs(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["buckets.json"] = `{"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
+	  {"id":"members-use-bucket","effect":"allow","actions":["list"],"roles":["member"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"members-create-with-approval","effect":"allow","actions":["create-object"],"roles":["member"],"requires":["approval"],
+	   "when":"resource.attributes.project in principal.attributes.projects"},
+	  {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
+	   "when":"resource.attributes.project in principal.attributes.projects"}]}`
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
+	st.ModeBucket("vault", "p1", "internal", "server")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	lena := st.User("lena", []string{"lead"}, "p1")
+	for _, kind := range []string{"unit", "original"} {
+		r := content.TextRequest{Bucket: "vault", Key: kind + ".md", IdempotencyKey: kind}
+		if kind == "original" {
+			r.Original = strings.NewReader("the original file")
+		}
+		_, err := st.Content.PutDocumentText(ctx, alice.Caller, r, []byte("Summary.\n\nDetails.\n"))
+		var staged *content.StagedApproval
+		if !errors.As(err, &staged) {
+			t.Fatalf("%s: publication without approval: %v", kind, err)
+		}
+		if _, err := st.Content.DecideApproval(ctx, lena, staged.ID, true); err != nil {
+			t.Fatal(err)
+		}
+		var blobID string
+		if err := st.Pool.QueryRow(ctx, `SELECT blob::text FROM upload_intents WHERE document_intent::text = $1 AND kind = $2 LIMIT 1`,
+			staged.Intent, kind).Scan(&blobID); err != nil {
+			t.Fatal(err)
+		}
+		removed := 0
+		_ = filepath.WalkDir(st.BlobDir, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.Contains(d.Name(), blobID) {
+				removed++
+				return os.Remove(path)
+			}
+			return nil
+		})
+		if removed != 1 {
+			t.Fatalf("%s: removed %d blob files", kind, removed)
+		}
+		if _, err := st.Content.FinalizeDocument(ctx, withApproval(alice.Caller, staged.ID), staged.Intent, content.DocumentFinalizeRequest{}); !errors.Is(err, content.ErrConflict) {
+			t.Errorf("%s: finalize without the staged ciphertext: %v", kind, err)
+		}
+	}
+	if n := st.Count(`SELECT count(*) FROM document_versions`); n != 0 {
+		t.Fatalf("%d document versions published without their ciphertext", n)
 	}
 }
