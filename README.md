@@ -80,7 +80,7 @@ Design records: [docs/design](docs/design). Owner rulings for R1: [docs/decision
 - **Content-signing keys** are provisioned by the administrator, or enrolled by their own principal with a possession proof and retired for rotation; compromise stays the administrator's, journaled.
 - **Approvals** cover publication, deletion and label changes of objects, documents, units and derived outputs, and sharing. Envelope retirement and the activation and revocation of recipient keys are approvable too; enrollment only records a PENDING key. Label proposals come only from registered classifiers, signed by their keys, and stay advisory until a principal applies them.
 - **Security journal:** it must be created once with `fga-admin journal init` before the keys and storage roles start. Restore and reconcile refuse a journal that cannot be shown complete, unless an operator passes `-accept-journal-loss`.
-- **No CI** runs the checks, the import allowlists or the vulnerability scan; they run locally ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)).
+- **CI is local by decision:** `make ci` runs the checks with PostgreSQL (import allowlists included), the specification check, the smoke run and the vulnerability scan ([vulnerability-scan.md](docs/dependencies/vulnerability-scan.md)). No hosted CI runs them.
 
 ## Checks
 
@@ -101,6 +101,7 @@ make spec
 - `make check` runs gofmt, `go vet` and `go test -race`.
 - `make check-pg` adds the PostgreSQL-backed tests, each in a throwaway schema, including the conformance cases.
 - `make spec` runs the specification consistency check in check-only mode and its tests.
+- `make ci` runs `check-pg`, `spec`, the smoke run (`make smoke`, in `.local/smoke` unless `SMOKE_DIR` names another directory) and the vulnerability scan (`make vuln`, which queries vuln.go.dev).
 
 ## Run the storage roles locally
 
