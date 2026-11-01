@@ -67,7 +67,7 @@ Range requests are rejected (`Range` header present: 400). Copy, multipart and p
 
 ## Conditional writes
 
-Preconditions are sent at begin (`if_match` with an ETag, or `if_none_match: "*"`) and evaluated only at commit inside the fence, after authorization (PUB-007). `If-None-Match: *` means "no current live version at commit"; a key whose head is a delete marker accepts a new version. An ETag is `"` + logical version ID + `"`: opaque, never an MD5 or plaintext hash.
+Preconditions are sent at begin (`if_match` with an ETag, or `if_none_match: "*"`) and evaluated only at commit inside the fence, after authorization (PUB-007). `If-None-Match: *` means "no current live version at commit"; a key whose head is a delete marker accepts a new version. A derived output's new version is held to them the same way, and a key another upload created since begin fails `If-None-Match` with `412` on every route (review v5 F05). An ETag is `"` + logical version ID + `"`: opaque, never an MD5 or plaintext hash.
 
 ## Errors
 

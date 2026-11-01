@@ -313,17 +313,23 @@ func (s *Service) publishDerived(ctx context.Context, c Caller, in storedIntent,
 		now := s.d.Now()
 		generation := uint64(1)
 		if in.newObject {
+			if in.ifMatch != "" {
+				return ErrPrecondition
+			}
 			if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.derived', $3, 1, 1, 1, $4)`, c.Tenant, in.Object.String(), in.scope, ab); err != nil {
 				return err
 			}
 			_, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key, kind) VALUES ($1, $2, $3, $4, 'derived')`, c.Tenant, in.Object, in.bucket, in.key)
 			if isUnique(err) {
-				return fmt.Errorf("%w: the key was created concurrently", ErrConflict)
+				return keyTaken(in.ifNoneMatch)
 			}
 			if err != nil {
 				return err
 			}
 		} else {
+			if err := s.headPreconditions(ctx, tx, c.Tenant, in.Object, in.ifMatch, in.ifNoneMatch); err != nil {
+				return err
+			}
 			// A raised label also advances the metadata revision (LAB-005).
 			err := tx.QueryRow(ctx, `
 				UPDATE resources SET generation = generation + 1, version = version + 1,

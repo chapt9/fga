@@ -768,10 +768,7 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO objects (tenant, id, bucket, key) VALUES ($1, $2, $3, $4)`, c.Tenant, in.Object, in.bucket, in.key)
 		if isUnique(err) {
-			if in.ifNoneMatch {
-				return Published{}, ErrPrecondition
-			}
-			return Published{}, fmt.Errorf("%w: the key was created concurrently", ErrConflict)
+			return Published{}, keyTaken(in.ifNoneMatch)
 		}
 		if err != nil {
 			return Published{}, err
@@ -781,11 +778,7 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		}
 		generation = 1
 	} else {
-		var current *cryptowire.UUID
-		if err := tx.QueryRow(ctx, `SELECT current_version FROM objects WHERE tenant = $1 AND id = $2 FOR UPDATE`, c.Tenant, in.Object).Scan(&current); err != nil {
-			return Published{}, err
-		}
-		if err := s.preconditions(ctx, tx, c.Tenant, current, in.ifMatch, in.ifNoneMatch); err != nil {
+		if err := s.headPreconditions(ctx, tx, c.Tenant, in.Object, in.ifMatch, in.ifNoneMatch); err != nil {
 			return Published{}, err
 		}
 		if err := tx.QueryRow(ctx, `UPDATE resources SET generation = generation + 1, version = version + 1
@@ -834,6 +827,26 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 		return Published{}, err
 	}
 	return result, nil
+}
+
+// keyTaken refuses a create whose key was created since begin: a failed
+// precondition under If-None-Match, a conflict otherwise.
+func keyTaken(ifNoneMatch bool) error {
+	if ifNoneMatch {
+		return ErrPrecondition
+	}
+	return fmt.Errorf("%w: the key was created concurrently", ErrConflict)
+}
+
+// headPreconditions locks an existing key's head and applies the write's
+// preconditions to it, in every publication of a new version (review v5
+// F05).
+func (s *Service) headPreconditions(ctx context.Context, tx pgx.Tx, tenant string, object cryptowire.UUID, ifMatch string, ifNoneMatch bool) error {
+	var current *cryptowire.UUID
+	if err := tx.QueryRow(ctx, `SELECT current_version FROM objects WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, object).Scan(&current); err != nil {
+		return err
+	}
+	return s.preconditions(ctx, tx, tenant, current, ifMatch, ifNoneMatch)
 }
 
 // preconditions applies If-Match and If-None-Match to the committed head

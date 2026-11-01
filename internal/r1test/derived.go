@@ -13,12 +13,23 @@ import (
 // signed lineage naming sources, encrypted for c itself; label is an
 // optional proposed label.
 func (c *Client) PutDerived(bucket, key string, plaintext []byte, sources []cryptowire.LineageSource, label string) (content.Published, error) {
-	ctx := context.Background()
-	in, err := c.st.Content.Begin(ctx, c.Caller, content.BeginRequest{Bucket: bucket, Key: key, IdempotencyKey: cryptowire.NewUUID().String(),
-		Derived: true, Label: label})
+	in, err := c.BeginDerived(content.BeginRequest{Bucket: bucket, Key: key, IdempotencyKey: cryptowire.NewUUID().String(), Label: label})
 	if err != nil {
 		return content.Published{}, err
 	}
+	return c.FinishDerived(in, plaintext, sources)
+}
+
+// BeginDerived begins a derived output upload of r.
+func (c *Client) BeginDerived(r content.BeginRequest) (content.Intent, error) {
+	r.Derived = true
+	return c.st.Content.Begin(context.Background(), c.Caller, r)
+}
+
+// FinishDerived stages plaintext encrypted for c itself under in and
+// publishes it with signed lineage naming sources.
+func (c *Client) FinishDerived(in content.Intent, plaintext []byte, sources []cryptowire.LineageSource) (content.Published, error) {
+	ctx := context.Background()
 	var ct bytes.Buffer
 	sealed, err := crypto.Encrypt(&ct, bytes.NewReader(plaintext), crypto.Params{Tenant: in.Tenant, Object: in.Object,
 		LogicalVersion: in.LogicalVersion, CryptoVersion: in.CryptoVersion, Blob: in.Blob, Attempt: in.Attempt},

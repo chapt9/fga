@@ -99,6 +99,48 @@ func TestDerivedLabelAndLineage(t *testing.T) {
 // TestDerivedDelivery covers DRV-002 and DRV-008: sharing a derived output
 // needs the recipient's read on every source, or a declassify for that
 // recipient; without either nothing is shared.
+// TestDerivedPreconditions covers review v5 F05: If-None-Match holds for a
+// derived output as for an object (PUB-007). A key created since begin, or
+// an output that already exists, fails the precondition and publishes
+// nothing; without it a new version is published.
+func TestDerivedPreconditions(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1")
+	up, err := alice.PrepareDocument("reports", "src.md", []string{"u1"}, nil, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinalizeDocument(up); err != nil {
+		t.Fatal(err)
+	}
+	sources := unitSources(up)
+	begin := func(idem string) content.Intent {
+		t.Helper()
+		in, err := alice.BeginDerived(content.BeginRequest{Bucket: "reports", Key: "out", IdempotencyKey: idem, IfNoneMatch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	first, second := begin("d1"), begin("d2")
+	if _, err := alice.FinishDerived(first, []byte("one"), sources); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.FinishDerived(second, []byte("two"), sources); !errors.Is(err, content.ErrPrecondition) {
+		t.Errorf("a key created since begin: %v", err)
+	}
+	if _, err := alice.FinishDerived(begin("d3"), []byte("three"), sources); !errors.Is(err, content.ErrPrecondition) {
+		t.Errorf("an existing output: %v", err)
+	}
+	if n := st.Count(`SELECT count(*) FROM derived_versions`); n != 1 {
+		t.Fatalf("%d derived versions published, want 1", n)
+	}
+	if _, err := alice.PutDerived("reports", "out", []byte("four"), sources, ""); err != nil {
+		t.Fatalf("a new version without If-None-Match: %v", err)
+	}
+}
+
 func TestDerivedDelivery(t *testing.T) {
 	st := r1test.New(t)
 	st.LabeledBucket("reports", "p1", "public")
