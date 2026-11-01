@@ -32,7 +32,7 @@ A refusal is logged with the console, tenant and subject; it changes nothing.
 Lists answer `{"items": [...], "next": "..."}`; pass `next` as `after` for the following page (at most 500 per page). Errors answer `{"error": "..."}`:
 - 400 for a request the directory does not take, with the reason. This includes a delegation the catalog refuses as given: its parent is missing, revoked, expired or narrower, or its ID is longer than 128 bytes (audit F3).
 - 404 for an unknown identity or delegation, and 409 for one that exists.
-- 503 when the security journal or the bundle cannot be used.
+- 503 when a change cannot be recorded as it must be: the security journal cannot record its entry, the catalog is bound to another journal, or the audit outbox is full. 503 also when the bundle cannot be used (audit F5).
 
 The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create` and `mcp enable` make the same changes through the same code, `internal/adminops`.
 

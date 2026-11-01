@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"fga/internal/adminops"
+	"fga/internal/audit"
 	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/delegation"
@@ -434,9 +435,12 @@ func (s *server) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "no such identity or delegation")
 	case errors.Is(err, catalog.ErrDelegationExists):
 		writeError(w, http.StatusConflict, "a delegation with this ID exists; delegations are revoked and replaced, never changed")
-	case errors.Is(err, catalog.ErrNoJournal):
+	case errors.Is(err, catalog.ErrNoJournal), errors.Is(err, catalog.ErrJournalMismatch):
 		s.Logger.Error("admin API: security journal", "error", err)
 		writeError(w, http.StatusServiceUnavailable, "the security journal is not available; changes it must record are refused")
+	case errors.Is(err, audit.ErrFull):
+		s.Logger.Error("admin API: audit outbox", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "the audit outbox is full; changes resume once its events are exported")
 	case errors.As(err, &pg) && pg.Code == "23505":
 		writeError(w, http.StatusConflict, "it exists already")
 	case errors.As(err, &pg) && pg.Code == "23503":

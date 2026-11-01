@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"fga/internal/adminapi"
 	"fga/internal/adminops"
 	"fga/internal/authn"
@@ -29,12 +31,14 @@ import (
 var ctx = context.Background()
 
 type fixture struct {
-	t       *testing.T
-	url     string
-	issuer  *authn.Issuer
-	journal *journal.Journal
-	ops     adminops.Ops
-	bundle  string
+	t          *testing.T
+	url        string
+	issuer     *authn.Issuer
+	journal    *journal.Journal
+	journalDir string
+	pool       *pgxpool.Pool
+	ops        adminops.Ops
+	bundle     string
 }
 
 // newFixture serves the admin API over a fresh catalog and journal, with
@@ -43,8 +47,15 @@ type fixture struct {
 // verified client certificate.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, 1000)
+}
+
+// newFixtureWith is newFixture with an audit outbox of capacity events.
+func newFixtureWith(t *testing.T, capacity int) *fixture {
+	t.Helper()
 	pool := pgtest.Pool(t, catalog.Migrate)
-	j, err := journal.Init(t.TempDir(), time.Now)
+	dir := t.TempDir()
+	j, err := journal.Init(dir, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +67,8 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{t: t, issuer: issuer, journal: j, bundle: signedBundle(t)}
-	f.ops = adminops.Ops{Store: catalog.New(pool, 1000), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now}
+	f := &fixture{t: t, issuer: issuer, journal: j, journalDir: dir, pool: pool, bundle: signedBundle(t)}
+	f.ops = adminops.Ops{Store: catalog.New(pool, capacity), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now}
 	srv := httptest.NewServer(adminapi.Handler(adminapi.Config{
 		Ops: f.ops, Tokens: authn.NewVerifier("test-issuer", map[string]ed25519.PublicKey{"k1": pub}, time.Now), Audience: "fga-admin",
 		Admins: map[string][]string{"t-acme": {"root"}}, Consoles: []string{"console-1"},
@@ -347,6 +358,45 @@ func TestDelegationRefusals(t *testing.T) {
 	}
 	if status, out := f.admin("POST", "/v1/admin/delegations", dlg("dlg-5", "dlg-p", "30m", "stat")); status != http.StatusCreated {
 		t.Fatalf("a narrowing child: %d %v", status, out)
+	}
+}
+
+// TestUnavailable covers audit F5: a security journal that cannot record
+// a change, a catalog bound to another journal, and a full audit outbox
+// refuse the change as unavailable (503), not as an internal error.
+func TestUnavailable(t *testing.T) {
+	disable := func(f *fixture) int {
+		t.Helper()
+		if status, out := f.admin("PUT", "/v1/admin/identities/lena", map[string]any{"roles": []string{"member"}}); status >= 300 {
+			t.Fatalf("lena: %d %v", status, out)
+		}
+		status, _ := f.admin("POST", "/v1/admin/identities/lena/disable", nil)
+		return status
+	}
+	f := newFixture(t)
+	dir := f.journalDir
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if status := disable(f); status != http.StatusServiceUnavailable {
+		t.Errorf("a journal that cannot be written: %d", status)
+	}
+
+	f = newFixture(t)
+	if _, err := f.pool.Exec(ctx, `UPDATE journal_state SET journal_id = 'another' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if status := disable(f); status != http.StatusServiceUnavailable {
+		t.Errorf("a catalog bound to another journal: %d", status)
+	}
+
+	f = newFixtureWith(t, 1)
+	if status, _ := f.admin("PUT", "/v1/admin/identities/carl", map[string]any{"roles": []string{"member"}}); status >= 300 {
+		t.Fatalf("the first change: %d", status)
+	}
+	if status, _ := f.admin("PUT", "/v1/admin/identities/dana", map[string]any{"roles": []string{"member"}}); status != http.StatusServiceUnavailable {
+		t.Errorf("a full audit outbox: %d", status)
 	}
 }
 

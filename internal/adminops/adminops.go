@@ -100,11 +100,16 @@ func (o Ops) journal() catalog.Journal {
 			if err != nil {
 				return "", nil, fmt.Errorf("%w: %v", catalog.ErrNoJournal, err)
 			}
+			// A journal that cannot record the change is unavailable to
+			// it, as a missing one is (audit F5).
 			if err := j.Append(kind, tenant, subject); err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("%w: %w", catalog.ErrNoJournal, err)
 			}
 			js, err := j.State()
-			return js.ID, js.Chains, err
+			if err != nil {
+				return "", nil, fmt.Errorf("%w: %w", catalog.ErrNoJournal, err)
+			}
+			return js.ID, js.Chains, nil
 		}}
 }
 
