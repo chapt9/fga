@@ -9,7 +9,8 @@
 // serve runs the admin API for an administration console (serve.go,
 // docs/design/admin-api.md). The directory commands below make the same
 // changes as the API, through package adminops: each is audited, and one
-// that takes access away (a role, an attribute value, a capability) is
+// a restore must not undo (a change to an existing identity's roles or
+// attributes, a capability revoke, a disable, a delegation revoke) is
 // journaled, so it needs -journal.
 //
 // Commands:

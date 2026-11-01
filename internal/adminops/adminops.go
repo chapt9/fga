@@ -2,8 +2,9 @@
 // directory (identities, their capabilities, delegations, buckets, MCP
 // registration) for fga-admin's commands and for its admin API alike, so
 // that each is made one way: checked, in one transaction with its audit
-// event (AUD-002), and journaled first when it takes access away, so that
-// a restore cannot bring the access back (ADM-002, AVL-008, review AMB-1).
+// event (AUD-002), and journaled first when a restore must not undo it,
+// so that a restore cannot bring access back or roll a change of roles
+// back (ADM-002, AVL-008, review AMB-1, review v5 F01).
 // Bootstrap and recovery operations stay with fga-admin's commands
 // (ADM-003).
 package adminops
@@ -76,8 +77,9 @@ type Who struct {
 // Ops makes administrative changes.
 type Ops struct {
 	Store *catalog.Store
-	// Journal opens the security journal. A change that takes access away
-	// is refused without it.
+	// Journal opens the security journal. A change it must record (a
+	// change to an existing identity, a revoke, a disable) is refused
+	// without it.
 	Journal func() (*journal.Journal, error)
 	Now     func() time.Time
 }
@@ -88,7 +90,8 @@ func (o Ops) event(tenant string, who Who, change, typ, id string) audit.Event {
 }
 
 func (o Ops) journal() catalog.Journal {
-	return catalog.Journal{RemovalKind: journal.AccessRemoved, DisabledKind: journal.IdentityDisabled, RevokedKind: journal.DelegationRevoked,
+	return catalog.Journal{StateKind: journal.IdentitySet, RemovalKind: journal.AccessRemoved, DisabledKind: journal.IdentityDisabled,
+		RevokedKind: journal.DelegationRevoked,
 		Append: func(kind, tenant, subject string) (string, []string, error) {
 			if o.Journal == nil {
 				return "", nil, catalog.ErrNoJournal

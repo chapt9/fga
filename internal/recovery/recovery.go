@@ -663,10 +663,24 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 		}
 	}
 	for _, e := range entries {
+		if e.Kind == journal.IdentitySet {
+			// An identity's roles and attributes become those of its
+			// last recorded change, in journal order (review v5 F01).
+			var st catalog.IdentityState
+			if err := json.Unmarshal([]byte(e.Subject), &st); err != nil || st.Identity == "" {
+				return rep, fmt.Errorf("recovery: replay %s: malformed identity state: %v", e.Kind, err)
+			}
+			if err := store.ApplyIdentityState(ctx, e.Tenant, st); err != nil {
+				return rep, fmt.Errorf("recovery: replay %s: %w", e.Kind, err)
+			}
+			rep.Replayed++
+			continue
+		}
 		if e.Kind == journal.AccessRemoved {
-			// Roles, attribute values or capabilities an administrator
-			// took away after the backup are taken away again; nothing is
-			// added back (review AMB-1).
+			// Capabilities an administrator took away after the backup
+			// are taken away again; nothing is added back (review AMB-1).
+			// Entries from before identity-set also name roles and
+			// attribute values.
 			var r catalog.Removal
 			if err := json.Unmarshal([]byte(e.Subject), &r); err != nil || r.Identity == "" {
 				return rep, fmt.Errorf("recovery: replay %s: malformed removal: %v", e.Kind, err)

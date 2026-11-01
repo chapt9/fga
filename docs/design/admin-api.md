@@ -37,12 +37,13 @@ The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, 
 
 Each change commits in one transaction with an `administration` audit event naming the administrator (`operator` at the command line), the console (`via console …` or `via cli`), the change (`identity.put`, `capabilities.revoke`, …) and its target, without attribute values (AUD-002, AUD-003).
 
-A change that takes access away is journaled before it is made, and the journal's state is recorded in its transaction:
+A change that a restore must not undo is journaled before it is made, and the journal's state is recorded in its transaction:
 
 - disabling an identity and revoking a delegation, as before (`identity-disabled`, `delegation-revoked`). The target is locked before the journal's state, the order every journaled change takes, so concurrent changes cannot deadlock (audit F1). An unknown target is refused (404) and one already disabled or revoked is left as it is, neither journaled, so a restore cannot disable an identity or revoke a delegation created under that ID later (audit F2);
-- replacing an identity's roles or attributes, or revoking capabilities, when something is taken away: an `access-removed` entry lists the roles, attribute values and capabilities removed.
+- replacing an existing identity's roles or attributes, whenever they change: an `identity-set` entry holds the roles and attributes the change leaves;
+- revoking capabilities an identity holds: an `access-removed` entry lists the capabilities removed.
 
-After a restore, reconcile re-applies each `access-removed` entry: it removes what the entry names that is still there, and adds nothing. Access granted after the backup is therefore lost by the restore, and access removed after it stays removed (owner decision of 1 November 2026, closing review item AMB-1 for directory changes). A list attribute loses the removed values; a scalar that was changed or dropped is removed if it still holds the old value, so rules that read it no longer match. Without a journal, such a change is refused; a change that only adds is made.
+After a restore, reconcile replays the entries in journal order. Each `identity-set` entry sets the identity's roles and attributes, so every identity ends with the state of its last recorded change, whether that change added or removed (owner decision of 1 November 2026, review v5 F01). Policies may deny by role or attribute, so adding a role such as `contractor` can take access away and removing it can give access; the effect of a change cannot be read from what it removed, which the earlier `access-removed` replay of roles and attributes assumed. An identity the restored catalog does not hold, created after the backup, stays unknown and has no access. Each `access-removed` entry takes away the capabilities it names that are still there and adds nothing, so capabilities granted after the backup are lost by the restore and those removed after it stay removed (AMB-1). Entries written before `identity-set` existed are replayed as before. Without a journal, a change to an existing identity is refused, and so is a revoke; creating an identity and granting capabilities are made.
 
 ## What it does not do
 

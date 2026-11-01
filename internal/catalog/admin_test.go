@@ -20,7 +20,7 @@ import (
 type recordingJournal struct{ kinds, subjects []string }
 
 func (j *recordingJournal) journal() Journal {
-	return Journal{RemovalKind: "access-removed", Append: func(kind, _, subject string) (string, []string, error) {
+	return Journal{StateKind: "identity-set", RemovalKind: "access-removed", Append: func(kind, _, subject string) (string, []string, error) {
 		j.kinds = append(j.kinds, kind)
 		j.subjects = append(j.subjects, subject)
 		chains := make([]string, len(j.subjects))
@@ -38,6 +38,15 @@ func (j *recordingJournal) removal(t *testing.T, i int) Removal {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func (j *recordingJournal) state(t *testing.T, i int) IdentityState {
+	t.Helper()
+	var st IdentityState
+	if err := json.Unmarshal([]byte(j.subjects[i]), &st); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 func adminEvent() audit.Event {
@@ -58,23 +67,13 @@ func countEvents(t *testing.T, s *Store) int {
 	return n
 }
 
-func TestRemovedValues(t *testing.T) {
-	old := map[string]any{"projects": []any{"p1", "p2"}, "dept": "sales", "level": 3.0, "tags": []any{"a"}, "gone": "x", "same": "y", "none": []any{}}
-	now := map[string]any{"projects": []any{"p2", "p3"}, "dept": "ops", "level": 3.0, "tags": "a", "same": "y"}
-	want := map[string][]any{"projects": {"p1"}, "dept": {"sales"}, "tags": {"a"}, "gone": {"x"}}
-	if got := removedValues(old, now); !reflect.DeepEqual(got, want) {
-		t.Fatalf("removed = %v, want %v", got, want)
-	}
-	if got := removedValues(map[string]any{"projects": []any{"p1"}}, map[string]any{"projects": []any{"p1", "p2"}, "dept": "new"}); got != nil {
-		t.Fatalf("an addition removed %v", got)
-	}
-}
-
-// TestAdministerJournalsRemovals covers review AMB-1: a replacement that
-// takes a role or an attribute value away is journaled before it is made,
-// with the journal's state recorded in its transaction, and every change
-// commits with its audit event; additions are not journaled.
-func TestAdministerJournalsRemovals(t *testing.T) {
+// TestAdministerJournalsIdentityState covers review v5 F01: a change to
+// an existing identity's roles or attributes, adding or removing, is
+// journaled before it is made with the state it leaves, the journal's
+// state recorded in its transaction; creating an identity and a change
+// that changes nothing are not journaled. Every change commits with its
+// audit event.
+func TestAdministerJournalsIdentityState(t *testing.T) {
 	s, ctx := adminStore(t), context.Background()
 	var j recordingJournal
 	put := func(roles []string, attrs map[string]any) {
@@ -86,32 +85,39 @@ func TestAdministerJournalsRemovals(t *testing.T) {
 		}
 	}
 	put([]string{"member"}, map[string]any{"projects": []any{"p1"}})
-	put([]string{"member", "lead"}, map[string]any{"projects": []any{"p1", "p2"}, "dept": "sales"})
+	put([]string{"member"}, map[string]any{"projects": []any{"p1"}})
 	if len(j.subjects) != 0 {
-		t.Fatalf("additions were journaled: %v", j.subjects)
+		t.Fatalf("a creation or an unchanged state was journaled: %v", j.subjects)
 	}
+	put([]string{"member", "contractor"}, map[string]any{"projects": []any{"p1", "p2"}, "dept": "sales"})
 	put([]string{"member"}, map[string]any{"projects": []any{"p2"}})
-	if len(j.subjects) != 1 || j.kinds[0] != "access-removed" {
+	if !slices.Equal(j.kinds, []string{"identity-set", "identity-set"}) {
 		t.Fatalf("journal = %v %v", j.kinds, j.subjects)
 	}
-	want := Removal{Identity: "lena", Roles: []string{"lead"}, Attributes: map[string][]any{"projects": {"p1"}, "dept": {"sales"}}}
-	if got := j.removal(t, 0); !reflect.DeepEqual(got, want) {
-		t.Fatalf("removal = %+v, want %+v", got, want)
+	want := []IdentityState{
+		{Identity: "lena", Roles: []string{"member", "contractor"}, Attributes: map[string]any{"projects": []any{"p1", "p2"}, "dept": "sales"}},
+		{Identity: "lena", Roles: []string{"member"}, Attributes: map[string]any{"projects": []any{"p2"}}},
+	}
+	for i, w := range want {
+		if got := j.state(t, i); !reflect.DeepEqual(got, w) {
+			t.Fatalf("entry %d = %+v, want %+v", i, got, w)
+		}
 	}
 	var bound string
 	var entries int
-	if err := s.pool.QueryRow(ctx, `SELECT journal_id, entries FROM journal_state`).Scan(&bound, &entries); err != nil || bound != "journal-1" || entries != 1 {
+	if err := s.pool.QueryRow(ctx, `SELECT journal_id, entries FROM journal_state`).Scan(&bound, &entries); err != nil || bound != "journal-1" || entries != 2 {
 		t.Fatalf("journal state = %q %d, %v", bound, entries, err)
 	}
-	if n := countEvents(t, s); n != 3 {
-		t.Fatalf("%d administration events, want 3", n)
+	if n := countEvents(t, s); n != 4 {
+		t.Fatalf("%d administration events, want 4", n)
 	}
 }
 
-// TestRemovalNeedsJournal: without a security journal, a change that
-// takes access away is refused and nothing of it commits, its audit event
-// included; one that only adds is made.
-func TestRemovalNeedsJournal(t *testing.T) {
+// TestIdentityChangeNeedsJournal: without a security journal, a change to
+// an existing identity is refused, an addition as much as a removal, and
+// nothing of it commits, its audit event included; a new identity is
+// created.
+func TestIdentityChangeNeedsJournal(t *testing.T) {
 	s, ctx := adminStore(t), context.Background()
 	put := func(roles []string) error {
 		return s.Administer(ctx, adminEvent(), Journal{}, func(a *Admin) error { return a.PutIdentity(ctx, "t-acme", "lena", roles, nil) })
@@ -119,15 +125,17 @@ func TestRemovalNeedsJournal(t *testing.T) {
 	if err := put([]string{"member", "lead"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := put([]string{"member"}); !errors.Is(err, ErrNoJournal) {
-		t.Fatalf("removal without a journal: %v", err)
+	for _, roles := range [][]string{{"member"}, {"member", "lead", "contractor"}} {
+		if err := put(roles); !errors.Is(err, ErrNoJournal) {
+			t.Fatalf("%v without a journal: %v", roles, err)
+		}
 	}
 	ids, err := s.ListIdentities(ctx, "t-acme", "", 10)
-	if err != nil || len(ids) != 1 || !slices.Contains(ids[0].Roles, "lead") {
+	if err != nil || len(ids) != 1 || !slices.Equal(ids[0].Roles, []string{"member", "lead"}) {
 		t.Fatalf("identities = %+v, %v", ids, err)
 	}
 	if n := countEvents(t, s); n != 1 {
-		t.Fatalf("%d administration events, want the addition's only", n)
+		t.Fatalf("%d administration events, want the creation's only", n)
 	}
 }
 

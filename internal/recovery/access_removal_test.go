@@ -16,67 +16,72 @@ import (
 	"fga/internal/recovery"
 )
 
-// TestRestoreKeepsAccessRemoval covers review AMB-1: roles, attribute
-// values and capabilities an administrator took away after a backup stay
-// taken away once the restored catalog is reconciled, and access granted
-// after the backup is not brought back by the replay.
-func TestRestoreKeepsAccessRemoval(t *testing.T) {
+// TestRestoreKeepsTheLastRecordedState covers review v5 F01: reconcile
+// gives each identity the roles and attributes its last journaled change
+// left, in journal order. Inferring the effect of a change from what it
+// removed was wrong under deny rules: adding contractor, which the example
+// policy denies reading, takes access away, and removing it gives access.
+// Capabilities taken away after the backup stay taken away.
+func TestRestoreKeepsTheLastRecordedState(t *testing.T) {
 	st := r1test.New(t)
 	ops := adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
 		Now: func() time.Time { return *st.Clock }}
 	who := adminops.Who{Actor: "root", Via: "test"}
-	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "lena", []string{"member", "lead"}, map[string]any{"projects": []any{"p1", "p2"}}); err != nil {
-		t.Fatal(err)
+	put := func(id string, roles []string, attrs map[string]any) {
+		t.Helper()
+		if err := ops.PutIdentity(ctx, who, r1test.Tenant, id, roles, attrs); err != nil {
+			t.Fatal(err)
+		}
 	}
+	put("lena", []string{"member", "lead"}, map[string]any{"projects": []any{"p1", "p2"}})
 	if err := ops.Grant(ctx, who, r1test.Tenant, "lena", adminops.Presets["approver"]); err != nil {
 		t.Fatal(err)
 	}
+	put("carl", []string{"member"}, nil)
+	// dana loses contractor and is given it back, both before the backup.
+	put("dana", []string{"member", "contractor"}, nil)
+	put("dana", []string{"member"}, nil)
+	put("dana", []string{"member", "contractor"}, nil)
 	dir := filepath.Join(t.TempDir(), "backup")
 	if _, err := recovery.Backup(ctx, st.Pool, st.Blobs, dir, backupKey(t), backupcrypt.Scheme); err != nil {
 		t.Fatal(err)
 	}
 
-	// After the backup: lead and project p2 are taken away and auditor is
-	// added; approving objects is revoked.
-	if err := ops.PutIdentity(ctx, who, r1test.Tenant, "lena", []string{"member", "auditor"}, map[string]any{"projects": []any{"p1"}}); err != nil {
-		t.Fatal(err)
-	}
+	// After the backup: lena loses lead and project p2 and becomes an
+	// auditor, and approving objects is revoked; carl becomes a contractor.
+	put("lena", []string{"member", "auditor"}, map[string]any{"projects": []any{"p1"}})
 	if held, err := ops.Revoke(ctx, who, r1test.Tenant, "lena", map[string][]string{"storage.object": {"approve"}}); err != nil || !held {
 		t.Fatalf("revoke = %v, %v", held, err)
 	}
+	put("carl", []string{"member", "contractor"}, nil)
+	// erin is created after the backup; the restore leaves erin unknown.
+	put("erin", []string{"member"}, nil)
+	put("erin", []string{"member", "lead"}, nil)
 
 	if _, err := recovery.Restore(ctx, st.Pool, st.Blobs, st.Journal, dir, backupKey(t)); err != nil {
 		t.Fatal(err)
 	}
-	lena := func() catalog.IdentityRecord {
-		ids, err := st.Catalog.ListIdentities(ctx, r1test.Tenant, "", 100)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, id := range ids {
-			if id.ID == "lena" {
-				return id
-			}
-		}
-		t.Fatal("lena is missing")
-		return catalog.IdentityRecord{}
-	}
-	if got := lena(); !slices.Contains(got.Roles, "lead") || !slices.Contains(got.Capabilities["storage.object"], "approve") {
+	if got := identityOf(t, st, "lena"); !slices.Contains(got.Roles, "lead") || !slices.Contains(got.Capabilities["storage.object"], "approve") {
 		t.Fatalf("after the restore %+v; the test needs the backup's state", got)
 	}
-	rep, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal)
-	if err != nil || rep.Replayed != 2 {
-		t.Fatalf("reconcile = %+v, %v", rep, err)
+	if _, err := recovery.Reconcile(ctx, st.Catalog, st.Blobs, st.Journal); err != nil {
+		t.Fatal(err)
 	}
-	got := lena()
-	if !reflect.DeepEqual(got.Roles, []string{"member"}) {
-		t.Fatalf("roles after reconcile = %v, want lead removed and auditor, added after the backup, not restored", got.Roles)
+	for id, want := range map[string][]string{"lena": {"member", "auditor"}, "carl": {"member", "contractor"}, "dana": {"member", "contractor"}} {
+		if got := identityOf(t, st, id).Roles; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s's roles after reconcile = %v, want %v, the last recorded", id, got, want)
+		}
 	}
+	ids, err := st.Catalog.ListIdentities(ctx, r1test.Tenant, "", 100)
+	if err != nil || slices.ContainsFunc(ids, func(r catalog.IdentityRecord) bool { return r.ID == "erin" }) {
+		t.Errorf("after reconcile erin, created after the backup, is known (%v)", err)
+	}
+	got := identityOf(t, st, "lena")
 	if !reflect.DeepEqual(got.Attributes["projects"], []any{"p1"}) {
-		t.Fatalf("projects after reconcile = %v", got.Attributes["projects"])
+		t.Errorf("projects after reconcile = %v", got.Attributes["projects"])
 	}
 	if slices.Contains(got.Capabilities["storage.object"], "approve") || !slices.Contains(got.Capabilities["storage.bucket"], "approve") {
-		t.Fatalf("capabilities after reconcile = %v", got.Capabilities)
+		t.Errorf("capabilities after reconcile = %v", got.Capabilities)
 	}
 }
 

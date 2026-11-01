@@ -436,7 +436,7 @@ func (s *server) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "a delegation with this ID exists; delegations are revoked and replaced, never changed")
 	case errors.Is(err, catalog.ErrNoJournal):
 		s.Logger.Error("admin API: security journal", "error", err)
-		writeError(w, http.StatusServiceUnavailable, "the security journal is not available; changes that take access away are refused")
+		writeError(w, http.StatusServiceUnavailable, "the security journal is not available; changes it must record are refused")
 	case errors.As(err, &pg) && pg.Code == "23505":
 		writeError(w, http.StatusConflict, "it exists already")
 	case errors.As(err, &pg) && pg.Code == "23503":

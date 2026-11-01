@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"time"
 
@@ -17,10 +18,14 @@ import (
 // Administrative changes to a tenant's directory: identities, their
 // capabilities, delegations, buckets and MCP registration (ADM-001,
 // ADM-002). Administer runs each with its audit event in one transaction
-// (AUD-002). A change that takes access away is journaled before it is
-// made and the journal's state recorded in the same transaction, so that a
-// restore from an older backup cannot bring the access back: reconcile
-// re-applies the Removal (AVL-008, review AMB-1).
+// (AUD-002). A change to an existing identity's roles or attributes, a
+// change that takes capabilities away, a disable and a revoke are
+// journaled before they are made and the journal's state recorded in the
+// same transaction, so that a restore from an older backup cannot undo
+// them: reconcile sets the IdentityState and re-applies the Removal
+// (AVL-008, review AMB-1). Roles and attributes are recorded whole, since
+// under deny rules adding a role can take access away and removing one can
+// give it (review v5 F01).
 
 // db is a connection pool or a transaction: a change written against it
 // runs alone or inside an administrative transaction.
@@ -29,14 +34,14 @@ type db interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-// ErrNoJournal refuses a change that would take access away without a
+// ErrNoJournal refuses a change that must be journaled when there is no
 // security journal to record it in.
-var ErrNoJournal = errors.New("catalog: a change that takes access away needs the security journal")
+var ErrNoJournal = errors.New("catalog: this change needs the security journal")
 
-// Removal is the access a directory change takes from one identity: roles,
-// attribute values and capabilities. Reconcile re-applies removals only,
-// never additions, so a restore loses access granted after the backup and
-// keeps access removed after it.
+// Removal is the capabilities a directory change takes from one identity.
+// Reconcile re-applies removals only, never additions, so a restore loses
+// capabilities granted after the backup and keeps those removed after it.
+// Entries from before IdentityState also name roles and attribute values.
 type Removal struct {
 	Identity     string              `json:"identity"`
 	Roles        []string            `json:"roles,omitempty"`
@@ -49,13 +54,24 @@ func (r Removal) Empty() bool {
 	return len(r.Roles) == 0 && len(r.Attributes) == 0 && len(r.Capabilities) == 0
 }
 
+// IdentityState is the roles and attributes a directory change leaves an
+// identity with. Reconcile sets them in journal order, so a restore keeps
+// the last recorded state, whatever the policy makes of it.
+type IdentityState struct {
+	Identity   string         `json:"identity"`
+	Roles      []string       `json:"roles"`
+	Attributes map[string]any `json:"attributes"`
+}
+
 // Journal is how an administrative change reaches the security journal,
 // which the catalog does not link: Append journals one entry and returns
-// the journal's ID and chain values. The kinds name the entries of a
-// Removal (journal.AccessRemoved), a disable (journal.IdentityDisabled)
-// and a delegation revoke (journal.DelegationRevoked).
+// the journal's ID and chain values. The kinds name the entries of an
+// IdentityState (journal.IdentitySet), a Removal (journal.AccessRemoved),
+// a disable (journal.IdentityDisabled) and a delegation revoke
+// (journal.DelegationRevoked).
 type Journal struct {
 	Append       func(kind, tenant, subject string) (journalID string, chains []string, err error)
+	StateKind    string
 	RemovalKind  string
 	DisabledKind string
 	RevokedKind  string
@@ -105,8 +121,9 @@ func (a *Admin) remove(ctx context.Context, tenant string, r Removal) error {
 }
 
 // PutIdentity creates an identity or replaces its roles and attributes,
-// advancing its revision. What a replacement takes away is journaled
-// first.
+// advancing its revision. A replacement that changes them is journaled
+// first with the state it leaves; a new identity is not, since a restore
+// without it leaves the ID unknown, which has no access at all.
 func (a *Admin) PutIdentity(ctx context.Context, tenant, id string, roles []string, attrs map[string]any) error {
 	if roles == nil {
 		roles = []string{}
@@ -141,9 +158,14 @@ func (a *Admin) PutIdentity(ctx context.Context, tenant, id string, roles []stri
 	if err := json.Unmarshal(raw, &now); err != nil {
 		return err
 	}
-	r := Removal{Identity: id, Roles: without(oldRoles, roles), Attributes: removedValues(old, now)}
-	if err := a.remove(ctx, tenant, r); err != nil {
-		return err
+	if !slices.Equal(oldRoles, roles) || !reflect.DeepEqual(old, now) {
+		state, err := json.Marshal(IdentityState{Identity: id, Roles: roles, Attributes: now})
+		if err != nil {
+			return err
+		}
+		if err := a.Journal(ctx, a.journal.StateKind, tenant, string(state)); err != nil {
+			return err
+		}
 	}
 	_, err = a.tx.Exec(ctx, `UPDATE identities SET roles = $3, attributes = $4, revision = revision + 1 WHERE tenant = $1 AND id = $2`,
 		tenant, id, roles, raw)
@@ -240,6 +262,43 @@ func (a *Admin) EnableMCP(ctx context.Context, tenant string) error {
 	return enableMCP(ctx, a.tx, tenant)
 }
 
+// ApplyIdentityState sets a journaled IdentityState: the identity's roles
+// and attributes become st's, advancing its revision if they change. An
+// identity the catalog does not hold is left unknown. Reconcile calls it
+// after a restore, in journal order.
+func (s *Store) ApplyIdentityState(ctx context.Context, tenant string, st IdentityState) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var roles []string
+		var raw []byte
+		err := tx.QueryRow(ctx, `SELECT roles, attributes FROM identities WHERE tenant = $1 AND id = $2 FOR UPDATE`, tenant, st.Identity).Scan(&roles, &raw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal(raw, &attrs); err != nil {
+			return err
+		}
+		if st.Roles == nil {
+			st.Roles = []string{}
+		}
+		if st.Attributes == nil {
+			st.Attributes = map[string]any{}
+		}
+		if slices.Equal(roles, st.Roles) && reflect.DeepEqual(attrs, st.Attributes) {
+			return nil
+		}
+		if raw, err = json.Marshal(st.Attributes); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE identities SET roles = $3, attributes = $4, revision = revision + 1 WHERE tenant = $1 AND id = $2`,
+			tenant, st.Identity, st.Roles, raw)
+		return err
+	})
+}
+
 // ApplyRemoval re-applies a journaled Removal: it takes away what r names
 // and nothing else, and leaves alone what is already gone. Reconcile
 // calls it after a restore.
@@ -306,40 +365,6 @@ func without(a, b []string) []string {
 		if !slices.Contains(b, x) {
 			out = append(out, x)
 		}
-	}
-	return out
-}
-
-// removedValues lists, per attribute, the values that new no longer has:
-// elements gone from a list, a list replaced by a scalar, a scalar changed
-// or dropped.
-func removedValues(old, new map[string]any) map[string][]any {
-	out := map[string][]any{}
-	for name, ov := range old {
-		nv, kept := new[name]
-		oldList, isList := ov.([]any)
-		newList, newIsList := nv.([]any)
-		switch {
-		case isList && kept && newIsList:
-			var gone []any
-			for _, v := range oldList {
-				if !containsJSON(newList, v) {
-					gone = append(gone, v)
-				}
-			}
-			if len(gone) > 0 {
-				out[name] = gone
-			}
-		case isList:
-			if len(oldList) > 0 {
-				out[name] = oldList
-			}
-		case !kept || !equalJSON(ov, nv):
-			out[name] = []any{ov}
-		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

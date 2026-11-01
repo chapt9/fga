@@ -473,7 +473,7 @@ expect "$(api PUT "$ROOT" /v1/admin/identities/dana '{"roles":["member","lead"],
 expect "$(api POST "$ROOT" /v1/admin/identities/dana/capabilities/grant '{"preset":"storage"}')" 204 "grant"
 expect "$(api GET "$ROOT" '/v1/admin/identities?after=carl&limit=1')" 200 "list"; check grep -q '"id":"dana"' api.out
 expect "$(api PUT "$ROOT" /v1/admin/identities/dana '{"roles":["member"],"attributes":{"projects":["p1"]}}')" 204 "remove a role"
-grep -rq '"kind":"access-removed"' journal || { echo "SMOKE FAILED: the role removal was not journaled"; exit 1; }
+grep -rq '"kind":"identity-set"' journal || { echo "SMOKE FAILED: the role change was not journaled with the state it leaves"; exit 1; }
 expect "$(api PUT "$(tok bob fga-admin)" /v1/admin/identities/bob '{"roles":["member","lead"]}')" 403 "bob's own token"
 expect "$(api GET "$ROOT" /v1/admin/policy)" 200 "policy"; check grep -q '"key_id":"publisher-1"' api.out
 ADMIN_EVENTS=$(psql "$URL" -tAc "SELECT count(*) FROM audit_outbox WHERE kind = 'administration' AND event->>'actor' = 'root'")
