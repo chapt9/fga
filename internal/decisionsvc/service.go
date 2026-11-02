@@ -441,7 +441,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	}
 	var used *approval.Approval
 	if d.Outcome == decision.OutcomeNeedsApproval {
-		a, reason, err := s.settleApproval(ctx, req, snap.Epoch, bound, &d)
+		a, reason, err := s.settleApproval(ctx, req, snap.Epoch, bound, &d, adapter != PublicAdapter)
 		switch {
 		case err != nil:
 			return fail(ReasonCatalogUnavailable)
@@ -792,8 +792,12 @@ func operationFacts(p *opplan.Summary) map[string]any {
 // and requested under the current policy epoch and resource revisions
 // satisfies the approval prerequisite: d becomes ALLOW (or
 // NEEDS_RESERVATION) and the approval is returned for binding. A pending
-// approval is returned unchanged; anything else is a reason to deny.
-func (s *Service) settleApproval(ctx context.Context, req Request, epoch uint64, bound []registry.Resource, d *decision.Decision) (approval.Approval, decision.Reason, error) {
+// approval is returned unchanged; anything else is a reason to deny. open
+// says whether a plan without an approval may open a pending one: the
+// public facade answers NEEDS_APPROVAL without opening any, so no token
+// holder fills the approvers' inboxes from it (DEC-010).
+func (s *Service) settleApproval(ctx context.Context, req Request, epoch uint64, bound []registry.Resource, d *decision.Decision,
+	open bool) (approval.Approval, decision.Reason, error) {
 	if s.d.Approvals == nil {
 		return approval.Approval{}, "", nil
 	}
@@ -803,7 +807,7 @@ func (s *Service) settleApproval(ctx context.Context, req Request, epoch uint64,
 	}
 	bindings := approvalBindings(bound)
 	if req.Approval == "" {
-		if req.Plan == nil {
+		if req.Plan == nil || !open {
 			return approval.Approval{}, "", nil
 		}
 		target, ok := planTarget(*req.Plan, bound)

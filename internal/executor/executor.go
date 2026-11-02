@@ -218,6 +218,19 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 	if err != nil {
 		return Result{}, err
 	}
+	// A retry of a call that already went past its dispatch is answered
+	// from the record, as Get answers the call's actor: its decision and
+	// any approval were consumed by the dispatch, so deciding again would
+	// ask for an approval the call no longer needs (INV-004). A key used
+	// for another call, or by another actor, is decided and then refused as
+	// a conflict below, so an unauthorized caller learns nothing here.
+	if prior, err := s.d.Invocations.Find(ctx, c.Tenant, r.IdempotencyKey); err == nil {
+		if sameCall(prior, c, p) && prior.State != invocation.StatePrepared && prior.State != invocation.StateReserved {
+			return result(prior), nil
+		}
+	} else if !errors.Is(err, invocation.ErrNotFound) {
+		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
 	// A caller the decision refuses leaves nothing behind: no invocation,
 	// and no idempotency key taken from another (review v4 F07).
 	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, p.op, Audience, true, p.checks,
@@ -275,6 +288,11 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		}
 		return s.d.Catalog.AppendTx(ctx, tx, event(rec, inv.ID, "DISPATCHING", p))
 	})
+	if err != nil {
+		// The lease was taken for a dispatch that did not happen; it is
+		// given back so that a retry is not refused until it expires.
+		s.release(ctx, c.Tenant, inv.ID, leased.FencingToken)
+	}
 	switch {
 	case errors.Is(err, reservation.ErrInsufficient), errors.Is(err, reservation.ErrCurrency), errors.Is(err, reservation.ErrUnknownBudget):
 		return Result{}, ErrBudget
@@ -301,6 +319,22 @@ func (s *Service) Invoke(ctx context.Context, c enforce.Caller, r Request) (Resu
 		return Result{Invocation: inv.ID, State: string(invocation.StateDispatching)}, nil
 	}
 	return Result{Invocation: inv.ID, State: string(outcome), Receipt: res.Receipt}, nil
+}
+
+// sameCall reports whether inv is the call c makes with plan p: the same
+// operation digest, actor, subject and delegation (INV-004).
+func sameCall(inv invocation.Invocation, c enforce.Caller, p planned) bool {
+	return inv.OperationDigest == p.digest && inv.Actor == c.Principal && inv.Subject == c.Subject && inv.Delegation == c.Delegation
+}
+
+// release gives back the lease of an invocation whose dispatch did not
+// happen. It runs even when the request's context has ended.
+func (s *Service) release(ctx context.Context, tenant, id string, token int64) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.d.Invocations.Release(ctx, tenant, id, token); err != nil {
+		s.d.Logger.Error("executor: releasing a lease", "invocation", id, "error", err)
+	}
 }
 
 // errTransportChanged is a destination whose transport is not the one its

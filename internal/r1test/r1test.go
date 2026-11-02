@@ -48,6 +48,9 @@ const StorageAdapter = "storage-1"
 const (
 	MCPAdapter  = "mcp-1"
 	MCPAudience = "fga-mcp"
+	// PublicAudience is the audience of tokens presented to the decision
+	// role's public facade.
+	PublicAudience = "fga-decision"
 	// ToolsAdapter is the tools role's workload, and ToolsAudience its
 	// users' token audience and decision audience (executor.Audience).
 	ToolsAdapter  = "tools-1"
@@ -357,7 +360,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		Approvals: approval.New(pool, now),
 		Audiences: []string{content.Audience, content.KeysAudience, ToolsAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
 		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience},
-			MCPAdapter: {MCPAudience}, ToolsAdapter: {ToolsAudience}}, ToolOperations: st.Catalog, Lineage: st.Catalog,
+			MCPAdapter: {MCPAudience}, ToolsAdapter: {ToolsAudience}}, PublicAudience: PublicAudience, ToolOperations: st.Catalog, Lineage: st.Catalog,
 		Gateways: map[string][]string{MCPAdapter: {content.Audience, ToolsAudience}}, SelfVerifier: st.Verifier(content.Audience)})
 	if err != nil {
 		t.Fatal(err)

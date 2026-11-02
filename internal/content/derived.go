@@ -729,8 +729,11 @@ func (s *Service) ShareDerived(ctx context.Context, c Caller, bucketName, key, v
 			return envelope.EnvelopeRef{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 	}
+	// The envelope is registered in the output's scope, as the output's
+	// initial envelopes are, so that scoped envelope rules apply to it too.
+	var scope string
 	var attrs map[string]any
-	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT attributes FROM resources WHERE tenant = $1 AND id = $2`, c.Tenant, output.String()).Scan(&attrs); err != nil {
+	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT scope, attributes FROM resources WHERE tenant = $1 AND id = $2`, c.Tenant, output.String()).Scan(&scope, &attrs); err != nil {
 		return envelope.EnvelopeRef{}, err
 	}
 	out := envelope.EnvelopeRef{ID: id.String(), Generation: ctxv.Generation, Status: "ACTIVE"}
@@ -749,7 +752,7 @@ func (s *Service) ShareDerived(ctx context.Context, c Caller, bucketName, key, v
 		if err := envelope.RetireTx(ctx, tx, c.Tenant, `version = $2 AND recipient = $3 AND document_version IS NULL`, v.ID, fp); err != nil {
 			return err
 		}
-		if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, "", attrs, id, output, v.ID, ctxv, keyVersion, e,
+		if err := envelope.InsertEnvelope(ctx, tx, c.Tenant, scope, attrs, id, output, v.ID, ctxv, keyVersion, e,
 			cryptowire.EnvelopeDigest(e.Context, e.Ciphertext), s.d.Now()); err != nil {
 			return err
 		}

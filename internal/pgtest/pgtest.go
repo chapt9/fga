@@ -1,5 +1,7 @@
 // Package pgtest gives tests a migrated PostgreSQL schema of their own in the
 // database named by FGA_TEST_DATABASE_URL, and skips them when it is unset.
+// With FGA_TEST_REQUIRE_DB set they fail instead, so a run that must cover
+// the database cannot pass silently without it.
 package pgtest
 
 import (
@@ -20,6 +22,9 @@ func Pool(t testing.TB, migrate func(context.Context, *pgxpool.Pool) error) *pgx
 	t.Helper()
 	url := os.Getenv("FGA_TEST_DATABASE_URL")
 	if url == "" {
+		if os.Getenv("FGA_TEST_REQUIRE_DB") != "" {
+			t.Fatal("FGA_TEST_DATABASE_URL is not set, and FGA_TEST_REQUIRE_DB requires it")
+		}
 		t.Skip("FGA_TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()

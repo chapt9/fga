@@ -793,15 +793,22 @@ func (s *Service) publish(ctx context.Context, tx pgx.Tx, c Caller, in storedInt
 	if in.encryption == "server" {
 		// The sealed data key moves from the intent to the version; the
 		// version has no client signature or descriptor (SSE-002).
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,
 			                             created_at, published_at, encryption, sealed_key, kek_version, plaintext_length)
 			SELECT $1, $2, $3, $4, $5, 'LIVE', i.ciphertext_length, i.ciphertext_sha256, $6, $7, $8, $8, 'server', i.sealed_key, i.kek_version,
 			       i.plaintext_length
 			  FROM upload_intents i WHERE i.tenant = $1 AND i.id = $9 AND i.sealed_key IS NOT NULL AND i.plaintext_length IS NOT NULL`,
 			c.Tenant, in.LogicalVersion, in.Object, in.CryptoVersion, in.Blob, int(payload.Suite), int(payload.Format), now,
-			in.IntentID); err != nil {
+			in.IntentID)
+		if err != nil {
 			return Published{}, err
+		}
+		if tag.RowsAffected() != 1 {
+			// The intent holds no sealed data key or plaintext length: the
+			// server-mode path never staged it, so there is no version to
+			// publish and no head to move.
+			return Published{}, fmt.Errorf("%w: the staged upload has no sealed data key", ErrConflict)
 		}
 	} else if _, err := tx.Exec(ctx, `
 		INSERT INTO object_versions (tenant, id, object, crypto_version, blob, state, ciphertext_length, ciphertext_sha256, suite, format,

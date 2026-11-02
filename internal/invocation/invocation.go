@@ -132,8 +132,7 @@ func (s *Store) Create(ctx context.Context, inv Invocation) (Invocation, error) 
 	if tag.RowsAffected() == 1 {
 		return s.Get(ctx, inv.Tenant, inv.ID)
 	}
-	existing, err := scan(s.pool.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND idempotency_key = $2`,
-		inv.Tenant, inv.IdempotencyKey))
+	existing, err := s.Find(ctx, inv.Tenant, inv.IdempotencyKey)
 	if err != nil {
 		return Invocation{}, err
 	}
@@ -142,6 +141,22 @@ func (s *Store) Create(ctx context.Context, inv Invocation) (Invocation, error) 
 		return Invocation{}, ErrIdempotencyConflict
 	}
 	return existing, nil
+}
+
+// Find returns the invocation made under an idempotency key, or
+// ErrNotFound.
+func (s *Store) Find(ctx context.Context, tenant, idempotencyKey string) (Invocation, error) {
+	return scan(s.pool.QueryRow(ctx, `SELECT `+columns+` FROM invocations WHERE tenant = $1 AND idempotency_key = $2`, tenant, idempotencyKey))
+}
+
+// Release gives back the lease of an invocation that was not dispatched
+// under it: the owner's fencing token must be current and the invocation
+// still PREPARED or RESERVED. The lease of a DISPATCHING invocation is
+// never released this way; its outcome is recorded or reconciled under it.
+func (s *Store) Release(ctx context.Context, tenant, id string, token int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE invocations SET lease_owner = '', lease_expires_at = NULL, updated_at = $4
+		 WHERE tenant = $1 AND id = $2 AND fencing_token = $3 AND state IN ('PREPARED', 'RESERVED')`, tenant, id, token, s.now())
+	return err
 }
 
 // Get returns an invocation.

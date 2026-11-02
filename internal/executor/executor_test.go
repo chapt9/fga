@@ -156,6 +156,19 @@ func TestInvokeApproval(t *testing.T) {
 	if _, err := f.Svc.Invoke(ctx, approved, payment("large-again", 9000)); err == nil || f.Dest.Count() != 2 {
 		t.Fatalf("a consumed approval was used again: %v, %d dispatches", err, f.Dest.Count())
 	}
+	// A retry of the dispatched call, with or without its consumed
+	// approval, is answered from the record: it is not decided again, so
+	// it neither needs nor opens an approval (audit finding F-EXE-1).
+	approvals := f.St.Count(`SELECT count(*) FROM approvals`)
+	for name, caller := range map[string]enforce.Caller{"without the approval": alice, "with the consumed approval": approved} {
+		again, err := f.Svc.Invoke(ctx, caller, payment("large", 9000))
+		if err != nil || again.Invocation != res.Invocation || again.State != string(invocation.StateSucceeded) {
+			t.Fatalf("a retry %s: %+v %v", name, again, err)
+		}
+	}
+	if f.Dest.Count() != 2 || f.St.Count(`SELECT count(*) FROM approvals`) != approvals {
+		t.Fatalf("a retry dispatched again or opened an approval: %d dispatches", f.Dest.Count())
+	}
 }
 
 // TestInvokeReservation covers APR-004, INV-002 and INV-007: with a
