@@ -474,3 +474,53 @@ func TestVectors(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckDeclared covers ING-010: a client-mode declaration is what Split
+// would give for some reading, key rule and fields per group alike.
+func TestCheckDeclared(t *testing.T) {
+	r := mustSplit(t, climate(), fullReading, "")
+	s, err := climate().Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckDeclared(r.Key, "", r.Fields); err != nil {
+		t.Fatalf("Split's own declaration: %v", err)
+	}
+	for name, c := range map[string]struct {
+		key    string
+		fields [][]string
+	}{
+		"a key outside the pattern": {"sensor/GH North", r.Fields},
+		"a key without the prefix":  {"gh-north-1", r.Fields},
+		"a group missing":           {r.Key, r.Fields[:1]},
+		"a field of another group":  {r.Key, [][]string{{"/sensor"}, {"/gps", "/sensor"}}},
+		"a field of no group":       {r.Key, [][]string{{"/pin"}, {}}},
+		"fields out of order":       {r.Key, [][]string{{"/temperature", "/sensor"}, {}}},
+		"a field declared twice":    {r.Key, [][]string{{"/sensor", "/sensor"}, {}}},
+	} {
+		if err := s.CheckDeclared(c.key, "", c.fields); !errors.Is(err, ErrReading) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	principal, err := Layout{Key: Key{Mode: KeyPrincipal, Pattern: "[a-z0-9-]{1,32}", Prefix: "device/"},
+		Groups: []Group{{Name: "all", Fields: []string{"/t"}}}}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := principal.CheckDeclared("device/sensor-7", "sensor-7", [][]string{{"/t"}}); err != nil {
+		t.Fatalf("the principal's own key: %v", err)
+	}
+	if err := principal.CheckDeclared("device/sensor-8", "sensor-7", [][]string{{"/t"}}); !errors.Is(err, ErrReading) {
+		t.Fatalf("another principal's key: %v", err)
+	}
+	fixed, err := one("/t").Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixed.CheckDeclared("station", "", [][]string{{}}); err != nil {
+		t.Fatalf("the fixed key: %v", err)
+	}
+	if err := fixed.CheckDeclared("station/2", "", [][]string{{}}); !errors.Is(err, ErrReading) {
+		t.Fatalf("another key in fixed mode: %v", err)
+	}
+}

@@ -127,16 +127,47 @@ type SealedDocument struct {
 // (DOC-001, DOC-007). Every recipient must be pinned in trust. A reused
 // unit is passed as the SealedUnit its client kept or recovered.
 func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient, signer SigningKey, trust TrustStore, now time.Time) (SealedDocument, error) {
-	if len(units) == 0 || len(units) > cryptowire.MaxUnits || len(recipients) == 0 {
+	if len(recipients) == 0 {
 		return SealedDocument{}, errors.New("crypto: a document needs units and recipients")
 	}
-	pubs := make([][]byte, len(recipients))
-	for i, r := range recipients {
-		pub, ok := trust.Recipient(r.Fingerprint)
-		if !ok || cryptowire.RecipientFingerprint(cryptowire.Suite1, pub) != r.Fingerprint {
-			return SealedDocument{}, fmt.Errorf("%w: recipient %s", ErrUntrusted, r.Fingerprint)
+	perUnit := make([][]Recipient, len(units))
+	for i := range perUnit {
+		perUnit[i] = recipients
+	}
+	return sealDocument(p, units, perUnit, recipients, signer, trust, now)
+}
+
+// SealReading is SealDocument for a client-mode reading of a source
+// (ING-011): unit i's key is wrapped to perUnit[i], the recipients of its
+// own group, each pinned in trust. A reading has no original file.
+func SealReading(p DocumentParams, units []*SealedUnit, perUnit [][]Recipient, signer SigningKey, trust TrustStore, now time.Time) (SealedDocument, error) {
+	if p.Original != nil || len(perUnit) != len(units) {
+		return SealedDocument{}, errors.New("crypto: a reading has recipients per unit and no original")
+	}
+	for _, r := range perUnit {
+		if len(r) == 0 {
+			return SealedDocument{}, errors.New("crypto: every unit of a reading needs a recipient")
 		}
-		pubs[i] = pub
+	}
+	return sealDocument(p, units, perUnit, nil, signer, trust, now)
+}
+
+// sealDocument seals units, unit i for perUnit[i], and the original for
+// originalTo. Every recipient is checked before anything is signed.
+func sealDocument(p DocumentParams, units []*SealedUnit, perUnit [][]Recipient, originalTo []Recipient, signer SigningKey, trust TrustStore,
+	now time.Time) (SealedDocument, error) {
+	if len(units) == 0 || len(units) > cryptowire.MaxUnits {
+		return SealedDocument{}, errors.New("crypto: a document needs units and recipients")
+	}
+	pubs := map[cryptowire.Digest][]byte{}
+	for _, list := range append(perUnit, originalTo) {
+		for _, r := range list {
+			pub, ok := trust.Recipient(r.Fingerprint)
+			if !ok || cryptowire.RecipientFingerprint(cryptowire.Suite1, pub) != r.Fingerprint {
+				return SealedDocument{}, fmt.Errorf("%w: recipient %s", ErrUntrusted, r.Fingerprint)
+			}
+			pubs[r.Fingerprint] = pub
+		}
 	}
 	m := cryptowire.Manifest{TenantID: p.Tenant.String(), DocumentID: p.Document.String(), DocumentVersionID: p.DocumentVersion.String(),
 		ExtractionVersion: p.ExtractionVersion, NormalizationVersion: p.NormalizationVersion}
@@ -161,7 +192,7 @@ func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient,
 		return SealedDocument{}, err
 	}
 	out.ManifestDigest = cryptowire.ManifestDigest(out.Manifest)
-	for _, u := range units {
+	for k, u := range units {
 		d := cryptowire.UnitDescriptor{TenantID: p.Tenant.String(), DocumentID: p.Document.String(), DocumentVersionID: p.DocumentVersion.String(),
 			ManifestDigest: out.ManifestDigest.String(), UnitID: u.Params.Unit.String(), UnitVersionID: u.Params.UnitVersion.String(),
 			CryptoVersionID: u.Params.CryptoVersion.String(), BlobID: u.Params.Blob.String(), CiphertextSHA256: u.CiphertextSHA256.String(),
@@ -173,13 +204,13 @@ func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient,
 		if f.DescriptorSignature, err = signer.Sign(cryptowire.TypeUnitDescriptor, f.Descriptor); err != nil {
 			return SealedDocument{}, err
 		}
-		for i, r := range recipients {
+		for _, r := range perUnit[k] {
 			ctx := cryptowire.EnvelopeContext{Tenant: p.Tenant, Object: u.Params.Unit, LogicalVersion: u.Params.UnitVersion,
 				CryptoVersion: u.Params.CryptoVersion, Suite: cryptowire.Suite1, Format: cryptowire.Format1,
 				CiphertextSHA256: u.CiphertextSHA256, CiphertextLength: u.CiphertextLength, Recipient: r.Fingerprint,
 				RecipientKeyVersion: r.KeyVersion, Generation: 1, Sharer: signer.Fingerprint, CreatedAt: now,
 				Document: p.Document, DocumentVersion: p.DocumentVersion, ManifestDigest: out.ManifestDigest}
-			env, err := wrap(ctx, pubs[i], u.pkg, signer)
+			env, err := wrap(ctx, pubs[r.Fingerprint], u.pkg, signer)
 			if err != nil {
 				return SealedDocument{}, err
 			}
@@ -199,13 +230,13 @@ func SealDocument(p DocumentParams, units []*SealedUnit, recipients []Recipient,
 		if f.DescriptorSignature, err = signer.Sign(cryptowire.TypeDescriptor, f.Descriptor); err != nil {
 			return SealedDocument{}, err
 		}
-		for i, r := range recipients {
+		for _, r := range originalTo {
 			ctx := cryptowire.EnvelopeContext{Tenant: p.Tenant, Object: o.Params.Object, LogicalVersion: o.Params.Version,
 				CryptoVersion: o.Params.CryptoVersion, Suite: cryptowire.Suite1, Format: cryptowire.Format1,
 				CiphertextSHA256: o.CiphertextSHA256, CiphertextLength: o.CiphertextLength, Recipient: r.Fingerprint,
 				RecipientKeyVersion: r.KeyVersion, Generation: 1, Sharer: signer.Fingerprint, CreatedAt: now,
 				Document: p.Document, DocumentVersion: p.DocumentVersion, ManifestDigest: out.ManifestDigest}
-			env, err := wrap(ctx, pubs[i], o.pkg, signer)
+			env, err := wrap(ctx, pubs[r.Fingerprint], o.pkg, signer)
 			if err != nil {
 				return SealedDocument{}, err
 			}

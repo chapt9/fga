@@ -15,7 +15,6 @@ import (
 	"fga/internal/jsonunits"
 	"fga/internal/payload"
 	"fga/internal/registry"
-	"fga/internal/sources"
 	"fga/internal/textunits"
 )
 
@@ -250,9 +249,8 @@ func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in store
 		NormalizationVersion: textunits.NormalizationVersion}
 	// A reading's manifest names the JSON profile and the source version
 	// it was split under, from the version's planned attributes.
-	if src, _ := in.attributes["source"].(string); src != "" {
-		version, _ := in.attributes["source_version"].(float64)
-		m.NormalizationVersion, m.ExtractionVersion = jsonunits.Profile, fmt.Sprintf("%s:%s:%d", sources.Format, src, int(version))
+	if in.post {
+		m.NormalizationVersion, m.ExtractionVersion = jsonunits.Profile, in.extractionVersion()
 	}
 	units := make([]checkedUnit, len(in.Units))
 	for i, u := range in.Units {

@@ -411,6 +411,36 @@ func (s *Splitter) Split(payload []byte, principal string) (Reading, error) {
 	return r, nil
 }
 
+// CheckDeclared checks a client-mode reading's declaration against the
+// layout (ING-010): its key follows the key rule for principal, and it has
+// one field list per group, each sorted and without repeats, naming only
+// fields of that group, as Split's Reading.Fields does. The values stay
+// encrypted, so the posting client is trusted to have split the reading
+// as it declares.
+func (s *Splitter) CheckDeclared(key, principal string, fields [][]string) error {
+	k := s.layout.Key
+	switch value, ok := strings.CutPrefix(key, k.Prefix); {
+	case k.Mode == KeyFixed && key != k.Prefix,
+		k.Mode == KeyPrincipal && (principal == "" || value != principal || !s.pattern.MatchString(principal)),
+		k.Mode == KeyPointer && (!ok || !s.pattern.MatchString(value)):
+		return refuse("the key does not follow the key rule", "", nil)
+	}
+	if len(fields) != len(s.layout.Groups) {
+		return refuse(fmt.Sprintf("a reading declares %d groups", len(s.layout.Groups)), "", nil)
+	}
+	for i, g := range s.layout.Groups {
+		for j, f := range fields[i] {
+			if !slices.Contains(g.Fields, f) {
+				return refuse("a declared field is not in its group", f, nil)
+			}
+			if j > 0 && fields[i][j-1] >= f {
+				return refuse("a group's declared fields are not sorted and unique", f, nil)
+			}
+		}
+	}
+	return nil
+}
+
 // shallow reports whether JSON text nests objects and arrays at most
 // MaxDepth deep, skipping strings and their escapes. For valid JSON it
 // counts what a parser would.

@@ -572,6 +572,11 @@ func (s *Service) FinalizeDocument(ctx context.Context, c Caller, intentID strin
 	if err != nil {
 		return DocumentPublished{}, err
 	}
+	if in.post {
+		if err := s.readingEnvelopes(ctx, c.Tenant, in, manifest, units); err != nil {
+			return DocumentPublished{}, err
+		}
+	}
 	original, err := s.checkOriginal(ctx, c, in, r, digest, signer)
 	if err != nil {
 		return DocumentPublished{}, err

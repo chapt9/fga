@@ -20,8 +20,8 @@
 //	identity put       -tenant T -id ID [-roles a,b] [-attrs JSON]   (removals journaled)
 //	identity disable   -tenant T -id ID [-confirm-unreadable] (journaled; refused while the identity is the last
 //	                   reader of client-mode files, with their number per bucket, unless confirmed)
-//	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source]
-//	revoke             -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source]   (journaled)
+//	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source|source-client]
+//	revoke             -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source|source-client]   (journaled)
 //	signing-key add    -tenant T -principal ID -public-key B64
 //	classifier add     -tenant T -id NAME -signer FP          register a label classifier with its ACTIVE signing key (LAB-002, D-06)
 //	classifier revoke  -tenant T -id NAME
@@ -182,7 +182,7 @@ func run(args []string) error {
 	actor := fs.String("actor", "", "actor identity")
 	typ := fs.String("type", "", "resource type")
 	actions := fs.String("actions", "", "comma-separated actions")
-	preset := fs.String("preset", "", "capability preset: storage, approver or source")
+	preset := fs.String("preset", "", "capability preset: storage, approver, source or source-client")
 	subject := fs.String("subject", "", "delegation add: the identity the actor acts for")
 	audience := fs.String("audience", "", "delegation add: the workload that presents the delegation, such as the MCP role's")
 	grantList := fs.String("grants", "", "delegation add: resource types and actions, as 'type:a,b;type:c' (* for every action)")
@@ -332,7 +332,7 @@ func run(args []string) error {
 		}
 		set, err := adminops.Capabilities(*preset, explicit)
 		if err != nil {
-			return fmt.Errorf("%s needs -preset storage|approver|source or -type and -actions: %w", cmd, err)
+			return fmt.Errorf("%s needs -preset storage|approver|source|source-client or -type and -actions: %w", cmd, err)
 		}
 		if cmd == "grant" {
 			return ops.Grant(ctx, operator, *tenant, *actor, set)

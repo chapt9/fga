@@ -346,6 +346,40 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 		}
 		httpapi.WriteJSON(w, http.StatusOK, p)
 	}))
+	// A source's active layout and a client-mode reading's begin (ING-010):
+	// the client splits and encrypts the reading itself, then stages and
+	// finalizes it through the document routes.
+	mux.HandleFunc("GET /v1/sources/{source}", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		l, err := svc.SourceLayout(r.Context(), c, r.PathValue("source"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, l)
+	}))
+	mux.HandleFunc("POST /v1/sources/{source}/readings/begin", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var b struct {
+			SourceVersion  int    `json:"source_version"`
+			Key            string `json:"key"`
+			IdempotencyKey string `json:"idempotency_key"`
+			Units          []struct {
+				Fields []string `json:"fields"`
+			} `json:"units"`
+		}
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		req := content.ReadingBeginRequest{Source: r.PathValue("source"), Key: b.Key, IdempotencyKey: b.IdempotencyKey, SourceVersion: b.SourceVersion}
+		for _, u := range b.Units {
+			req.Fields = append(req.Fields, u.Fields)
+		}
+		in, err := svc.BeginReading(r.Context(), c, req)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusCreated, in)
+	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/object", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		h := r.Header

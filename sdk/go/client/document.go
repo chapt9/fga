@@ -139,14 +139,7 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 	for range paragraphs {
 		specs = append(specs, map[string]string{})
 	}
-	var in struct {
-		IntentID        string           `json:"intent_id"`
-		Tenant          string           `json:"tenant_id"`
-		Document        string           `json:"document_id"`
-		DocumentVersion string           `json:"document_version_id"`
-		Units           []unitIntentJSON `json:"units"`
-		Original        *unitIntentJSON  `json:"original"`
-	}
+	var in documentIntentJSON
 	begin := map[string]any{"key": key, "idempotency_key": cryptowire.NewUUID().String(), "units": specs}
 	if original != nil {
 		begin["original"] = true
@@ -165,15 +158,9 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 	if len(in.Units) != len(specs) {
 		return DocumentPublished{}, &Error{Status: http.StatusBadGateway, Code: "UNEXPECTED_RESPONSE"}
 	}
-	var p crypto.DocumentParams
-	ids := []struct {
-		dst *cryptowire.UUID
-		s   string
-	}{{&p.Tenant, in.Tenant}, {&p.Document, in.Document}, {&p.DocumentVersion, in.DocumentVersion}}
-	for _, f := range ids {
-		if *f.dst, err = cryptowire.ParseUUID(f.s); err != nil {
-			return DocumentPublished{}, err
-		}
+	p, err := in.params()
+	if err != nil {
+		return DocumentPublished{}, err
 	}
 	p.NormalizationVersion = crypto.NormalizationVersion
 	var units, fresh []*crypto.SealedUnit
@@ -190,26 +177,11 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 			units = append(units, kept[i])
 			continue
 		}
-		var up crypto.UnitParams
-		for _, f := range []struct {
-			dst *cryptowire.UUID
-			s   string
-		}{{&up.Unit, u.Unit}, {&up.UnitVersion, u.UnitVersion}, {&up.CryptoVersion, u.CryptoVersion}, {&up.Blob, u.Blob}} {
-			if *f.dst, err = cryptowire.ParseUUID(f.s); err != nil {
-				return DocumentPublished{}, err
-			}
-		}
-		var ct bytes.Buffer
-		sealed, err := crypto.EncryptUnit(&ct, bytes.NewReader([]byte(paragraphs[i-len(kept)])), p.Tenant, up)
+		sealed, err := c.stageUnit(ctx, p.Tenant, u, []byte(paragraphs[i-len(kept)]))
 		if err != nil {
 			return DocumentPublished{}, err
 		}
 		units, fresh = append(units, sealed), append(fresh, sealed)
-		if _, err := c.do(ctx, http.MethodPut, c.StorageURL+"/v1/uploads/"+url.PathEscape(u.IntentID)+"/ciphertext", c.StorageToken,
-			bytes.NewReader(ct.Bytes()), int64(ct.Len()), map[string]string{"Content-Type": "application/octet-stream",
-				"Fga-Ciphertext-Sha256": sealed.CiphertextSHA256.String()}, &map[string]any{}); err != nil {
-			return DocumentPublished{}, err
-		}
 	}
 	if o := in.Original; o != nil && original != nil {
 		var op crypto.OriginalParams
@@ -246,6 +218,63 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 	if err != nil {
 		return DocumentPublished{}, err
 	}
+	return c.finalizeDocument(ctx, in.IntentID, sealed)
+}
+
+// documentIntentJSON is a document begin's answer.
+type documentIntentJSON struct {
+	IntentID        string           `json:"intent_id"`
+	Tenant          string           `json:"tenant_id"`
+	Document        string           `json:"document_id"`
+	DocumentVersion string           `json:"document_version_id"`
+	Units           []unitIntentJSON `json:"units"`
+	Original        *unitIntentJSON  `json:"original"`
+}
+
+// params are the document version's identifiers for sealing.
+func (in documentIntentJSON) params() (crypto.DocumentParams, error) {
+	var p crypto.DocumentParams
+	var err error
+	for _, f := range []struct {
+		dst *cryptowire.UUID
+		s   string
+	}{{&p.Tenant, in.Tenant}, {&p.Document, in.Document}, {&p.DocumentVersion, in.DocumentVersion}} {
+		if *f.dst, err = cryptowire.ParseUUID(f.s); err != nil {
+			return p, err
+		}
+	}
+	return p, nil
+}
+
+// stageUnit encrypts plaintext as the unit of intent u under a fresh key
+// and stages its ciphertext.
+func (c *Client) stageUnit(ctx context.Context, tenant cryptowire.UUID, u unitIntentJSON, plaintext []byte) (*crypto.SealedUnit, error) {
+	var up crypto.UnitParams
+	var err error
+	for _, f := range []struct {
+		dst *cryptowire.UUID
+		s   string
+	}{{&up.Unit, u.Unit}, {&up.UnitVersion, u.UnitVersion}, {&up.CryptoVersion, u.CryptoVersion}, {&up.Blob, u.Blob}} {
+		if *f.dst, err = cryptowire.ParseUUID(f.s); err != nil {
+			return nil, err
+		}
+	}
+	var ct bytes.Buffer
+	sealed, err := crypto.EncryptUnit(&ct, bytes.NewReader(plaintext), tenant, up)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.do(ctx, http.MethodPut, c.StorageURL+"/v1/uploads/"+url.PathEscape(u.IntentID)+"/ciphertext", c.StorageToken,
+		bytes.NewReader(ct.Bytes()), int64(ct.Len()), map[string]string{"Content-Type": "application/octet-stream",
+			"Fga-Ciphertext-Sha256": sealed.CiphertextSHA256.String()}, &map[string]any{}); err != nil {
+		sealed.Close()
+		return nil, err
+	}
+	return sealed, nil
+}
+
+// finalizeDocument publishes a sealed document version through its intent.
+func (c *Client) finalizeDocument(ctx context.Context, intentID string, sealed crypto.SealedDocument) (DocumentPublished, error) {
 	type unitFinal struct {
 		Descriptor          []byte         `json:"descriptor"`
 		DescriptorSignature string         `json:"descriptor_signature"`
@@ -272,8 +301,8 @@ func (c *Client) putDocument(ctx context.Context, bucket, key string, kept []*cr
 		fin.Units = append(fin.Units, f)
 	}
 	var out DocumentPublished
-	body, n = jsonBody(fin)
-	_, err = c.do(ctx, http.MethodPost, c.StorageURL+"/v1/document-uploads/"+url.PathEscape(in.IntentID)+"/finalize", c.StorageToken, body, n,
+	body, n := jsonBody(fin)
+	_, err := c.do(ctx, http.MethodPost, c.StorageURL+"/v1/document-uploads/"+url.PathEscape(intentID)+"/finalize", c.StorageToken, body, n,
 		map[string]string{"Content-Type": "application/json"}, &out)
 	return out, err
 }

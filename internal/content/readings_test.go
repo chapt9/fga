@@ -15,6 +15,7 @@ import (
 	"fga/internal/journal"
 	"fga/internal/r1test"
 	"fga/internal/sources"
+	"fga/sdk/go/crypto"
 )
 
 // readingPolicies are the fixture's policies with the example bundle's
@@ -329,5 +330,79 @@ func TestSourceRefusals(t *testing.T) {
 	}
 	if _, err := r.post(r.sensor, "greenhouse-climate", "after", northReading); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a reading of a disabled source: %v", err)
+	}
+}
+
+// TestClientReadingBegin covers ING-010 at the begin of a client-mode
+// reading: the layout answers each group's recipient keys to a caller who
+// may post; the declaration follows the active version's key rule and
+// groups, and names that version; a server-mode source refuses the route
+// after authorization; and a caller who may not post learns nothing.
+func TestClientReadingBegin(t *testing.T) {
+	r := newReadings(t)
+	st := r.st
+	owner, err := crypto.NewRecipientKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, _, err := st.Catalog.AddRecipientKey(ctx, r1test.Tenant, "team-greenhouse", owner.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := sources.Parse([]byte(`{"format":"fga.source/v1","id":"vault","owner":"team-greenhouse",
+	 "key":{"mode":"pointer","pointer":"/sensor","pattern":"[a-z0-9-]{1,48}","prefix":"sensor/"},
+	 "groups":[{"name":"climate","label":"internal","fields":["/temperature","/sensor"],"recipients":["team-greenhouse"]},
+	           {"name":"location","label":"restricted","fields":["/gps"],"recipients":["team-greenhouse","mia"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mia := st.User("mia", []string{"member"}, "greenhouse")
+	v, err := r.ops.AddSource(ctx, adminops.Who{Actor: "root", Via: "test"}, r1test.Tenant,
+		catalog.Bucket{Name: "vault", Project: "greenhouse", Label: "internal", Encryption: "client"}, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ops.ReviewSource(ctx, adminops.Who{Actor: "rita", Via: "test"}, r1test.Tenant, "vault", v.Version, v.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "sensor-7", []string{"source"},
+		map[string]any{"sources": []string{"greenhouse-climate", "vault"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	sensor := st.Caller("sensor-7")
+	l, err := st.Content.SourceLayout(ctx, sensor, "vault")
+	if err != nil || l.Version != 1 || l.Encryption != "client" || len(l.Recipients) != 2 || len(l.Recipients[0]) != 1 ||
+		l.Recipients[0][0].Fingerprint != fp || len(l.Recipients[1]) != 1 {
+		t.Fatalf("the layout %+v, %v", l, err)
+	}
+	if _, err := st.Content.SourceLayout(ctx, mia, "vault"); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a member who may not post reads the layout: %v", err)
+	}
+	ok := content.ReadingBeginRequest{Source: "vault", SourceVersion: 1, Key: "sensor/gh-1", IdempotencyKey: "b-1",
+		Fields: [][]string{{"/sensor", "/temperature"}, {}}}
+	in, err := st.Content.BeginReading(ctx, sensor, ok)
+	if err != nil || len(in.Units) != 2 {
+		t.Fatalf("a client-mode begin: %+v, %v", in, err)
+	}
+	for name, c := range map[string]struct {
+		caller content.Caller
+		change func(*content.ReadingBeginRequest)
+		want   error
+	}{
+		"another version":          {sensor, func(r *content.ReadingBeginRequest) { r.SourceVersion = 2 }, content.ErrConflict},
+		"a key outside the rule":   {sensor, func(r *content.ReadingBeginRequest) { r.Key = "gh-1" }, content.ErrInvalid},
+		"a field of another group": {sensor, func(r *content.ReadingBeginRequest) { r.Fields = [][]string{{"/gps"}, {}} }, content.ErrInvalid},
+		"a group missing":          {sensor, func(r *content.ReadingBeginRequest) { r.Fields = r.Fields[:1] }, content.ErrInvalid},
+		"a server-mode source": {sensor, func(r *content.ReadingBeginRequest) {
+			r.Source, r.Fields = "greenhouse-climate", [][]string{{"/sensor"}, {}}
+		}, content.ErrEncryptionMode},
+		"a member who may not post": {mia, func(*content.ReadingBeginRequest) {}, content.ErrNotFound},
+	} {
+		req := ok
+		req.IdempotencyKey = "b-" + name
+		c.change(&req)
+		if _, err := st.Content.BeginReading(ctx, c.caller, req); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
 	}
 }

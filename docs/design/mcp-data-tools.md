@@ -5,6 +5,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
 - Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
+- Stop 3, client-mode ingestion, is built, with the owner's two choices D-M and D-N.
 - Stop 4, document history, is built, with two fixes the owner asked for the same day: a history read holds across a newer version, and a rule can bound history to a window such as the last day (evaluator `fga.evaluator/2`). The specification erratum for the window waits for the next specification version.
 - Order, 3 November 2026: the owner chose data tools first, so stop 4, document history, comes next. Both encryption modes stay required for sources and data tools, as the owner restated the same day. Whether client-mode ingestion, stop 3, comes before or after the server-mode data tools is settled after stop 4.
 
@@ -211,18 +212,21 @@ The body must be sent as `Content-Type: application/json`; anything else is `400
 
 The posting client holds the fga SDK, a content-signing key enrolled for its identity, and no reader's private key. For each reading:
 
-1. **Layout.** It reads the active source version: `GET /v1/sources/{source}`, decided as `post-reading` on the source's bucket, answers the layout and each group's recipients. It looks up their active recipient keys as clients do today (`crypto.recipient.discover`), and may keep both until the source version changes.
+1. **Layout.** It reads the active source version: `GET /v1/sources/{source}`, decided as `post-reading` on the source's bucket (`reading.layout`), answers the record and, per group, the active keys of the recipients it names, by fingerprint (D-N). The client seals only for keys it pinned itself with `fga trust add`: the server is no trust anchor.
 2. **Split.** It splits the payload with `jsonunits`, the same code and vectors as the storage role.
-3. **Begin.** `POST /v1/sources/{source}/readings/begin` with `{"key", "units": [{"fields": […]}, …], "idempotency_key"}`. The storage role checks:
+3. **Begin.** `POST /v1/sources/{source}/readings/begin` with `{"source_version", "key", "units": [{"fields": […]}, …], "idempotency_key"}`. After deciding `post-reading` on the source's bucket, the storage role checks:
+   - the version is the active one, otherwise `409 CONFLICT`, and the client reads the layout again;
    - the bucket is in client mode, otherwise `409 ENCRYPTION_MODE`;
    - the key follows the source's key rule: prefix and pattern in `pointer` mode, prefix plus the caller's ID in `principal` mode, the prefix alone in `fixed` mode;
    - there is one unit per group, and each unit's fields are sorted, unique and fields of that unit's group.
 
-   It then assigns the attributes and labels as in server mode and decides the reading twins of a client-mode document begin's checks, with `post-reading` (ING-012). The answer is the document intent with its unit intents. `jsonunits` gains the shared check of a declaration (`Splitter.CheckDeclared`) in stop 3.
+   It then assigns the attributes and labels as in server mode and decides the reading twins of a client-mode document begin's checks, with `post-reading` (ING-012). The answer is the document intent with its unit intents. The declaration is checked with `Splitter.CheckDeclared` and not stored, as in server mode.
 4. **Encrypt, stage, finalize.** As for client-mode documents ([documents.md](documents.md)):
    - each unit is encrypted under a fresh keyset and staged through its unit intent;
    - the client signs the manifest, with `normalization_version` and `extraction_version` as in server mode, and the unit descriptors;
-   - it makes one envelope per unit for each recipient its group names, and finalizes through `POST /v1/document-uploads/{intent}/finalize`.
+   - it makes one envelope per unit for each active key of the recipients its group names (`crypto.SealReading`), and finalizes through `POST /v1/document-uploads/{intent}/finalize`.
+
+   Finalize refuses a reading whose manifest does not name the profile and its source version, or whose envelopes are not for exactly the active keys of each group's recipients, none missing and none extra (`409 CONFLICT`). A recipient without an active key gets nothing; a group needs at least one such key. A named recipient whom policy refuses refuses the whole post (D-M), so nobody silently misses readings.
 
    Finalize decides the reading twin of the document's check, `share` on the version and the units, `create` on each planned envelope, and each recipient's `read-units`, `read` and `receive-key` (ING-011).
 5. **Answer.** As in server mode.
@@ -238,7 +242,7 @@ Readers in client mode:
 - Naming a new recipient applies to new readings. Older readings need the owner's client to share them, as for any client-mode document.
 - Removing a recipient stops new envelopes. Envelopes already made stay, but fga still decides every delivery, so a refused reader gets nothing more.
 
-New code for client mode: the two source routes, `sdk/go` `PostReading`, and `fga post-reading -source S -file reading.json` on top of the SDK's client-mode document code.
+New code for client mode: the two source routes, `sdk/go` `SourceLayout` and `PostReading`, which posts a server-mode reading as it is, and `fga post-reading -source S -in reading.json [-principal P]`, on top of the SDK's client-mode document code.
 
 ### Protected attributes (ING-006, ING-007)
 
@@ -436,7 +440,7 @@ Both use the same code in `internal/adminops`, as today.
 
 A posting system is an ordinary identity: its ID is its token's `sub`, with role `source`, the attribute `sources` listing its source IDs, and one of two new presets in `adminops.Presets`:
 - `source`: `post-reading` on `storage.bucket` and `storage.object`, and nothing to upload with (ING-012);
-- `source-client`: those, plus `share` on `document.version` and `document.text_unit`, `create` on `crypto.envelope`, `discover` on `crypto.recipient`, and `discover`, `enroll`, `activate` and `retire` on `crypto.signing-key`.
+- `source-client`: those, plus `share` on `document.version` and `document.text_unit`, `create` on `crypto.envelope`, and `discover`, `enroll`, `activate` and `retire` on `crypto.signing-key`. It needs no recipient lookup: the layout names the keys (D-N).
 
 The admin API never reads readings. Administrators gain no content access through the builder.
 
@@ -640,18 +644,19 @@ Points from the check:
 | `datakeys` `TestSealDocumentKeepsReadingsApart` | A reading's keys are sealed only under a reading's seal, another document's only under the document's |
 | `nativeapi` `TestReadingsHTTP` | The route, its retry, JSON only, 1 MiB, `409 SOURCE_BUCKET`, and no MCP decision opens it |
 
-### Stop 3: client-mode ingestion
+### Stop 3: client-mode ingestion (built)
 
-Build `GET /v1/sources/{source}`, `POST /v1/sources/{source}/readings/begin`, `Splitter.CheckDeclared`, the `source-client` preset, `sdk/go` `PostReading` and `fga post-reading`, on the SDK's client-mode document code.
+Built on the local branch `data-tools` on 3 November 2026: `GET /v1/sources/{source}` and `POST /v1/sources/{source}/readings/begin` (operation `reading.layout`), `Splitter.CheckDeclared`, the finalize check of a reading's envelopes, the `source-client` preset, the example bundle's rules letting a posting system share its own source's readings, `crypto.SealReading`, `sdk/go` `SourceLayout` and `PostReading`, and `fga post-reading`. The SDK's document code shares its unit staging and finalize with readings.
 
 Done when a posting client with a real token posts client-mode readings to the running demo, each group's recipients open exactly their groups, fga holds no value, and a member who is no recipient gets nothing.
 
 | Test | Covers |
 |---|---|
-| `TestClientReadingBegin` | Key rule per mode, one declaration per group, fields outside a group refused, mode refusal |
-| `TestClientReadingRecipients` | Envelopes per group recipient decided at finalize; a recipient policy refuses gets none |
-| `TestClientReadingOpaque` | The catalog and blobs hold no value of a posted reading |
-| `TestClientReadingVectors` | The SDK splits like the vectors |
+| `jsonunits` `TestCheckDeclared` | Key rule per mode, one declaration per group, fields outside a group, order and repeats |
+| `content` `TestClientReadingBegin` | The layout's recipient keys, only to a caller who may post; version, key and field refusals; a server-mode source; a caller who may not post |
+| `nativeapi` `TestClientReadingsHTTP` | With the SDK over HTTP: each group's recipients open exactly their groups, a member who is no recipient gets nothing, the catalog, blobs and journal hold no value; a key added after the layout, a key not pinned, a revoked key, a recipient policy refuses |
+
+The SDK splits with `jsonunits` itself, so its vectors (`TestVectors`) hold for the client too.
 
 ### Stop 4: document history (built)
 
@@ -758,6 +763,8 @@ Client mode, added on 3 November 2026 at the owner's request; the owner accepted
 | D-J | What fga sees of a client-mode reading | Its key, its groups by position, their labels, and the fields present in each unit at the layout's pointers. Values and member names nested inside a field stay encrypted | Every member name, nested ones included |
 | D-K | Who gets envelopes | The recipients the source version names per group, reviewed like the rest of the source | Each posting client chooses: who can read would then depend on each device's configuration |
 | D-L | How a client-mode reading begins | A source route that checks the key and the declared fields, then today's client-mode document routes for staging and finalize | The generic document begin with a source field: every document begin would carry source rules |
+| D-M | A named recipient whom policy refuses | The post is refused, as a document's finalize is all or nothing | The recipient's envelopes are dropped and the reading posts: posting goes on while someone silently misses readings |
+| D-N | How a posting client finds recipients' keys | The layout answers each group's recipients' active key fingerprints; the client seals only for keys it pinned | The client looks keys up itself, which needs `discover` on `crypto.recipient` for every device |
 
 Left open, outside these stops: bulk relabel of a group across stored readings; a batch key release in the keys role; automatic retention; tool arguments visible to policy as `request.operation`, as the executor does; more than one token issuer per role, for devices on a separate issuer; aggregations through derived outputs; opening client-mode readings and previews in the browser.
 

@@ -231,6 +231,7 @@ func clientCommand(cmd string, args []string) error {
 	keyVersion := fs.Uint64("key-version", 1, "target recipient key version")
 	generation := fs.Uint64("generation", 1, "envelope generation")
 	prefix := fs.String("prefix", "", "key prefix")
+	source := fs.String("source", "", "source of readings (post-reading)")
 	ifNoneMatch := fs.Bool("if-none-match", false, "fail if the key has a current version")
 	tenant := fs.String("tenant", "", "tenant")
 	principal := fs.String("principal", "", "principal")
@@ -439,6 +440,19 @@ func clientCommand(cmd string, args []string) error {
 		}
 		fmt.Printf("read derived version %s\n", id)
 		return os.Rename(tmp, *out)
+	case "post-reading":
+		// A JSON reading of a source, in its source's mode (ING-002, ING-010):
+		// -principal names the caller for a source keyed by it.
+		payload, err := os.ReadFile(*in)
+		if err != nil {
+			return err
+		}
+		p, err := c.PostReading(ctx, *source, payload, *principal, "")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("published reading version %s of document %s\n", p.DocumentVersion, p.Document)
+		return nil
 	case "put-document", "append":
 		text, err := os.ReadFile(*in)
 		if err != nil {

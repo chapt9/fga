@@ -129,6 +129,39 @@ paths:
         "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/ReadingPublished" } } } }
         "202": { $ref: "#/components/responses/ApprovalRequired" }
         default: { $ref: "#/components/responses/Error" }
+  /v1/sources/{source}:
+    get:
+      operationId: getSourceLayout
+      description: A source's active version for a posting client (ING-010), decided as post-reading on the source's bucket. Per group, the active keys of the recipients it names, by fingerprint; a client seals only for keys it pinned itself.
+      parameters:
+        - { name: source, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,39}$" } }
+      responses:
+        "200": { description: The active layout, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/sources/{source}/readings/begin:
+    post:
+      operationId: beginClientReading
+      description: Begins a client-mode reading (ING-010) with its key, the source version it was split under and per group the fields present. The client then encrypts and stages each unit and finalizes through finalizeDocument, with envelopes for exactly the active keys of each group's recipients (ING-011). A version that is not the active one answers 409; a server-mode source 409 ENCRYPTION_MODE.
+      parameters:
+        - { name: source, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,39}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_version, key, idempotency_key, units]
+              properties:
+                source_version: { type: integer, minimum: 1 }
+                key: { type: string }
+                idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+                units:
+                  type: array
+                  items: { type: object, additionalProperties: false, properties: { fields: { type: array, items: { type: string } } } }
+      responses:
+        "201": { description: Document intent, as beginDocument answers it, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/buckets/{bucket}/derived/content:
     post:
       operationId: putServerDerived

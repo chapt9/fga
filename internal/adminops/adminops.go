@@ -58,6 +58,17 @@ var Presets = map[string]map[string][]string{
 		"storage.bucket": {"post-reading"},
 		"storage.object": {"post-reading"},
 	},
+	// source-client adds what a client-mode posting system needs: sharing
+	// its readings with the recipients its source names (ING-011) and its
+	// own content-signing key for the manifests it signs.
+	"source-client": {
+		"storage.bucket":     {"post-reading"},
+		"storage.object":     {"post-reading"},
+		"document.version":   {"share"},
+		"document.text_unit": {"share"},
+		"crypto.envelope":    {"create"},
+		"crypto.signing-key": {"discover", "enroll", "activate", "retire"},
+	},
 	// approver lets an actor decide approvals (ruling 6); policies still
 	// say on which resources.
 	"approver": {

@@ -122,6 +122,9 @@ const (
 	OpReadingPublishVersion = "reading.publish-version"
 	OpKeySealReadingCreate  = "storage.key.seal-reading-create"
 	OpKeySealReadingVersion = "storage.key.seal-reading-version"
+	// OpReadingLayout answers a source's active layout to a posting client,
+	// under the same right as a post (ING-010).
+	OpReadingLayout = "reading.layout"
 
 	// Disclosure (DOC-006, DOC-007, DSC-001): selecting units, reading a
 	// unit's ciphertext, the full manifest, and a unit's envelope from the
@@ -579,6 +582,7 @@ func baseOperations() []Operation {
 		one(OpDocBeginVersion, RoleDocument, "storage.object", "new-version"),
 		one(OpDocPublishCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpDocPublishVersion, RoleDocument, "storage.object", "new-version"),
+		one(OpReadingLayout, RoleBucket, "storage.bucket", "post-reading"),
 		{Name: OpDocLabelUnits, Checks: []CheckSpec{{Role: RoleLabel, ResourceType: "document.text_unit", Action: "label", Repeated: true}}},
 		{Name: OpDocReuseUnits, Checks: []CheckSpec{{Role: RoleUnit, ResourceType: "document.text_unit", Action: "read", Repeated: true}}},
 		{Name: OpDocShareVersion, Checks: []CheckSpec{

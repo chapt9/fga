@@ -1,4 +1,6 @@
 {"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
+  {"id":"sources-share-readings","effect":"allow","actions":["share"],"roles":["source"],
+   "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"},
   {"id":"owner-versions","effect":"allow","actions":["read-units","raw-read","discover","share","export"],"roles":["*"],
    "when":"resource.attributes.owner == principal.id"},
   {"id":"members-read-versions","effect":"allow","actions":["read-units","discover"],"roles":["member"],
