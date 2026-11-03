@@ -4,7 +4,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
-- Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2's check against the running demo waits for the owner's OK, since it migrates the demo's catalog.
+- Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two open points for the owner, listed under stop 2.
 
 ## Summary
 
@@ -201,7 +201,7 @@ Reading rules (`ErrReading`; a `*ReadingError` names at most a field's pointer, 
    - no original file is stored, because it would put every group under one key.
 5. **Answer.** `200` with `{"key", "document_version_id"}`. When a policy requires an approval, `202` with its ID, as for text uploads.
 
-A retry under the same idempotency key returns that attempt's outcome, so devices should send one, for example the sensor and its own timestamp. Without one, a retry publishes a second version. A retry must be the same reading's: another key, source or source version under the same idempotency key is `409 CONFLICT`. The poster may not read its readings, so a retry of a published one is answered while the same post would still be allowed, by deciding the begin's check again, as a begin's retry is (ruling 7). "Current" means last published, not latest observed: payload times are data, never order.
+A retry under the same idempotency key returns that attempt's outcome, so devices should send one, for example the sensor and its own timestamp. Without one, a retry publishes a second version. A retry is matched by its key, source and source version: another of these under the same idempotency key is `409 CONFLICT`. Values are not compared, as for text, so a different reading under a used idempotency key gets the first reading's outcome and is not stored (open point 2 of stop 2). The poster may not read its readings, so a retry of a published one is answered while the same post would still be allowed, by deciding the begin's check again, as a begin's retry is (ruling 7). "Current" means last published, not latest observed: payload times are data, never order.
 
 The body must be sent as `Content-Type: application/json`; anything else is `400`, and a body above 1 MiB is `413`. A document keeps the owner it was created with; a changed owner in a later source version applies to new keys.
 
@@ -605,7 +605,20 @@ Built in two commits on the local branch `data-tools`:
 - **2a, sources:** migration `0030` (`sources`, `source_versions`, `buckets.source`, all backed up); package `sources` for the record; adminops, fga-admin commands and admin API routes, with the second-administrator review; journal kinds `source-set` and `source-disabled`, the restate after a failed review, and their reconcile; the `source` preset.
 - **2b, ingestion:** `POST /v1/sources/{source}/readings`; the unit, version and document attributes; the `SOURCE_BUCKET` refusal in the object and document begins; the manifest's profile and extraction versions; `fga/internal/jsonunits` and `fga/internal/sources` in fga-storage's allowed imports; the example bundle's rules and two sentinels; admin-api.md, native-api.md and its OpenAPI file, server-documents.md and server-visible-metadata.md.
 
-Still to do: the check against the running demo, which migrates its catalog, re-signs its bundle with the new rules, adds a second administrator to its admin API and a test posting identity. It waits for the owner's OK.
+Checked against the running demo on 3 November 2026, with the binaries of `1c2ce8e`:
+- Migration `0030` applied to the demo's catalog. The example bundle, re-signed at epoch 3, loaded, and decisions name epoch 3.
+- An administrator added a source with its bucket and tried samples. The author's own review was refused (`403`), and so were a wrong digest and a wrong version (`409`). A second administrator's review activated the source, journaled as `source-set`.
+- A posting identity with the `source` preset posted readings with a development token. A retry under the same idempotency key answered the same version. Malformed posts were refused without quoting a value.
+- On every read route of the native API, members of the bucket's project read `temperature` only. The owner read both groups, and a member of another project and the poster read nothing. A `select` of both groups was refused whole, and no original exists. Text and object writes into the bucket answered `409 SOURCE_BUCKET`.
+- MCP is not enabled in the demo, so no MCP route was tried there. `TestReadingsHTTP` covers it.
+
+Open points from the check, for the owner:
+1. **Members can post readings.** A post is decided as `create-object` on the source's bucket. The example bundle's `members-use-bucket` rule allows `create-object` on every bucket of a member's project. In the demo, a member of the bucket's project posted a reading under a new key. It is stored like the device's readings, and only the audit event names the member. New versions of existing keys stay refused, since `new-version` is the owner's. A project of its own per source bucket narrows this to that project's members but does not stop it. Options:
+   - guard the example bundle's rule with `!has(resource.attributes.source)`, a policy-only change that every tenant's bundle must repeat;
+   - decide posts as an action of their own that no existing rule allows, at the cost of a new operation and re-signed bundles. Recommended, since fga is default deny.
+2. **A used idempotency key with another reading.** A retry is matched by key, source and source version, not by values, as for text. So a different reading under a used idempotency key gets the first reading's outcome and is not stored. Comparing values needs a keyed digest in the intent, because a plain hash of a small reading lets a database reader confirm guessed values. Options:
+   - keep it and say so in the posting docs;
+   - add the keyed digest and answer `409 CONFLICT`.
 
 | Test | Covers |
 |---|---|
