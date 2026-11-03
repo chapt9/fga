@@ -28,6 +28,10 @@ func TestSharedNames(t *testing.T) {
 	if !slices.Equal(Tools, registry.MCPTools) {
 		t.Errorf("tools %v, want %v", Tools, registry.MCPTools)
 	}
+	if dataToolName.String() != registry.DataToolNamePattern || "POST "+dataToolsPath+"/{name}/call" != registry.DataToolRoute ||
+		!slices.Contains(registry.MCPToolRoutes[ToolDataList], "GET "+dataToolsPath) {
+		t.Errorf("data tools: %s, %s", dataToolName, dataToolsPath)
+	}
 }
 
 // TestWireFormat pins the role's copy of the DecideBatch format: the

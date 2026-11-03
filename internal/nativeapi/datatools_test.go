@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"fga/internal/adminops"
 	"fga/internal/cryptowire"
 	"fga/internal/datatools"
+	"fga/internal/httpapi"
 	"fga/internal/r1test"
+	"fga/internal/registry"
 	"fga/sdk/go/client"
 )
 
@@ -96,7 +99,8 @@ func TestDataToolsHTTP(t *testing.T) {
 		} `json:"packages"`
 	}
 	if err := json.Unmarshal(body, &a); err != nil || resp.StatusCode != http.StatusOK || !a.Encrypted || len(a.Packages) != 1 ||
-		resp.Header.Get("Cache-Control") != "no-store" || strings.Contains(string(body), "21.7351") {
+		resp.Header.Get("Cache-Control") != "no-store" || strings.Contains(string(body), "21.7351") ||
+		!strings.Contains(string(body), `"envelope_id"`) || !strings.Contains(string(body), `"receipt_signature"`) {
 		t.Fatalf("the raw answer %d %s: %s", resp.StatusCode, resp.Header.Get("Cache-Control"), body)
 	}
 	if ec, err := cryptowire.ParseEnvelopeContext(a.Packages[0].Envelope.Context); err != nil || ec.Recipient != alice.Recipient.Fingerprint() {
@@ -104,5 +108,54 @@ func TestDataToolsHTTP(t *testing.T) {
 	}
 	if resp, _ := raw(alice, lena.Recipient.Fingerprint()); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("a call naming another person's key: %d", resp.StatusCode)
+	}
+
+	// MCP-009: a gateway decision on a data tool opens that tool's call
+	// route only, and data.list the listing only.
+	if err := d.st.Catalog.EnableMCP(ctx, r1test.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	mcpToken, err := d.st.Issuer.Issue("alice", r1test.Tenant, r1test.MCPAudience, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := func(tool string) string {
+		signed, ok := mcpDecision(t, d, r1test.MCPAdapter, "alice", tool, mcpToken, registry.OpMCPInvoke)
+		if !ok {
+			t.Fatalf("no decision for %s", tool)
+		}
+		return signed.Evidence()
+	}
+	gateway := func(evidence, method, path string) int {
+		body := `{"arguments":{"sensor":"gh-p1"},"recipient":"` + alice.Recipient.Fingerprint().String() + `"}`
+		req, _ := http.NewRequestWithContext(ctx, method, d.storage.URL+path, strings.NewReader(body))
+		req.Header.Set("X-Test-Workload", r1test.MCPAdapter)
+		req.Header.Set(httpapi.DecisionHeader, evidence)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	tool, list, read := decision("private_climate"), decision("data.list"), decision("documents.read")
+	for name, c := range map[string]struct {
+		evidence, method, path string
+		want                   int
+	}{
+		"the tool's call":                   {tool, http.MethodPost, "/v1/data-tools/private_climate/call", http.StatusOK},
+		"the listing under data.list":       {list, http.MethodGet, "/v1/data-tools", http.StatusOK},
+		"another data tool's call":          {tool, http.MethodPost, "/v1/data-tools/other_climate/call", http.StatusUnauthorized},
+		"the listing under a data tool":     {tool, http.MethodGet, "/v1/data-tools", http.StatusUnauthorized},
+		"a call under data.list":            {list, http.MethodPost, "/v1/data-tools/private_climate/call", http.StatusUnauthorized},
+		"a call under documents.read":       {read, http.MethodPost, "/v1/data-tools/private_climate/call", http.StatusUnauthorized},
+		"a preview":                         {tool, http.MethodPost, "/v1/data-tools/preview", http.StatusUnauthorized},
+		"ingestion":                         {tool, http.MethodPost, "/v1/sources/greenhouse-private/readings/begin", http.StatusUnauthorized},
+		"a document read under a data tool": {tool, http.MethodGet, "/v1/buckets/greenhouse-private/document/units?key=sensor/gh-p1", http.StatusUnauthorized},
+	} {
+		if got := gateway(c.evidence, c.method, c.path); got != c.want {
+			t.Errorf("%s: %d, want %d", name, got, c.want)
+		}
 	}
 }

@@ -28,6 +28,7 @@ import (
 
 	"fga/internal/cryptowire"
 	"fga/internal/guard"
+	"fga/internal/jsonunits"
 	"fga/internal/mcpwire"
 	"fga/sdk/go/crypto"
 )
@@ -179,9 +180,16 @@ func (b *Bridge) openTool(ctx context.Context, args json.RawMessage, res *mcp.Ca
 		return res
 	}
 	var out struct {
-		Package *mcpwire.Package `json:"package"`
+		Package    *mcpwire.Package      `json:"package"`
+		Projection *jsonunits.Projection `json:"projection"`
 	}
-	if json.Unmarshal(raw, &out) != nil || out.Package == nil || out.Package.Recipient != b.d.Key.Fingerprint().String() {
+	if json.Unmarshal(raw, &out) != nil {
+		return res
+	}
+	if out.Projection != nil {
+		return b.openData(ctx, raw, *out.Projection)
+	}
+	if out.Package == nil || out.Package.Recipient != b.d.Key.Fingerprint().String() {
 		return res
 	}
 	var in struct {
@@ -195,6 +203,99 @@ func (b *Bridge) openTool(ctx context.Context, args json.RawMessage, res *mcp.Ca
 	}
 	text := o.text()
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}, StructuredContent: o}
+}
+
+// dataEntry is a projected reading of a data tool's answer.
+type dataEntry struct {
+	Reading json.RawMessage `json:"reading"`
+	Origin  json.RawMessage `json:"origin"`
+}
+
+// openData turns a data tool's client-mode answer into the answer a
+// server-mode tool gives (DTL-009): each reading's package is opened with
+// the user's key as Open opens it, its units' groups are read from the
+// opened units, and the tool's projection is applied. A package that does
+// not open fails the whole answer.
+func (b *Bridge) openData(ctx context.Context, raw []byte, p jsonunits.Projection) *mcp.CallToolResult {
+	fail := func(err error) *mcp.CallToolResult {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
+	}
+	type packed struct {
+		Origin  json.RawMessage  `json:"origin"`
+		Package *mcpwire.Package `json:"package"`
+	}
+	var ans struct {
+		Tool    string `json:"tool"`
+		Version int    `json:"version"`
+		packed
+		Readings *[]packed `json:"readings"`
+	}
+	if err := json.Unmarshal(raw, &ans); err != nil {
+		return fail(fmt.Errorf("%w: %v", ErrVerify, err))
+	}
+	open := func(r packed) (dataEntry, bool, error) {
+		var origin struct {
+			DocumentVersion string `json:"document_version_id"`
+		}
+		if r.Package == nil || json.Unmarshal(r.Origin, &origin) != nil || origin.DocumentVersion == "" {
+			return dataEntry{}, false, fmt.Errorf("%w: a reading without its package or version", ErrVerify)
+		}
+		o, err := b.Open(ctx, r.Package, origin.DocumentVersion)
+		if err != nil {
+			return dataEntry{}, false, err
+		}
+		units := map[string][]byte{}
+		for _, u := range o.Units {
+			group, _, err := jsonunits.ParseUnit([]byte(u.Text))
+			if err != nil {
+				return dataEntry{}, false, fmt.Errorf("%w: unit %s is not a reading's unit", ErrVerify, u.Unit)
+			}
+			units[group] = []byte(u.Text)
+		}
+		reading, ok, err := p.Apply(units)
+		if err != nil || !ok {
+			return dataEntry{}, false, err
+		}
+		e := dataEntry{Origin: r.Origin}
+		e.Reading, err = json.Marshal(reading)
+		return e, true, err
+	}
+	var result any
+	if ans.Readings == nil {
+		e, ok, err := open(ans.packed)
+		if err == nil && !ok {
+			err = errors.New("not found")
+		}
+		if err != nil {
+			return fail(err)
+		}
+		result = struct {
+			Tool    string `json:"tool"`
+			Version int    `json:"version"`
+			dataEntry
+		}{ans.Tool, ans.Version, e}
+	} else {
+		readings := []dataEntry{}
+		for _, r := range *ans.Readings {
+			e, ok, err := open(r)
+			if err != nil {
+				return fail(err)
+			}
+			if ok {
+				readings = append(readings, e)
+			}
+		}
+		result = struct {
+			Tool     string      `json:"tool"`
+			Version  int         `json:"version"`
+			Readings []dataEntry `json:"readings"`
+		}{ans.Tool, ans.Version, readings}
+	}
+	text, err := json.Marshal(result)
+	if err != nil {
+		return fail(err)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(text)}}, StructuredContent: result}
 }
 
 // openResource replaces each package content of a resources/read result

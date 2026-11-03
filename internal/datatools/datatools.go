@@ -16,13 +16,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
 	"slices"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"fga/internal/jsonunits"
+	"fga/internal/registry"
 	"fga/internal/sources"
 	"fga/internal/strictjson"
 )
@@ -58,14 +58,12 @@ var (
 	ErrArguments = errors.New("datatools: invalid arguments")
 )
 
-var name = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-
 // reserved are the arguments every history tool takes.
 var reserved = []string{"since", "until", "limit"}
 
 // ValidName reports whether s is a data tool name. Every built-in MCP tool
 // name holds a dot, which no data tool name does (DTL-007, D-I).
-func ValidName(s string) bool { return name.MatchString(s) }
+func ValidName(s string) bool { return registry.IsDataToolName(s) }
 
 // Definition is a data tool record as submitted and stored.
 type Definition struct {

@@ -339,3 +339,37 @@ func clone(p *mcpwire.Package) *mcpwire.Package {
 	_ = json.Unmarshal(b, &c)
 	return &c
 }
+
+// TestBridgeDataTool covers DTL-009 through the bridge: a client-mode data
+// tool's packages are opened with the user's own key and projected, which
+// gives each recipient exactly the groups it receives, in the answer a
+// server-mode tool gives; a server-mode tool's answer passes through.
+func TestBridgeDataTool(t *testing.T) {
+	d := mcptest.DeployWith(t, mcptest.Options{Limits: mcpsvc.DefaultLimits, Stack: r1test.Options{Policies: mcptest.ReadingPolicies()}})
+	alice := d.St.Client("alice", []string{"member"}, "p1")
+	bob := d.St.Client("bob", []string{"member"}, "p1")
+	mcptest.Readings(t, d, alice, bob)
+	reading := func(c *r1test.Client, user, tool string) map[string]any {
+		t.Helper()
+		_, app := bridgeFor(t, d, user, c, "ACTIVE")
+		res, err := app.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"sensor": "gh-1"}})
+		var out struct {
+			Tool    string         `json:"tool"`
+			Reading map[string]any `json:"reading"`
+			Origin  map[string]any `json:"origin"`
+		}
+		if err := json.Unmarshal([]byte(text(t, res, err)), &out); err != nil || out.Tool != tool || out.Origin["document_version_id"] == nil {
+			t.Fatalf("%s through %s's bridge: %+v, %v", tool, user, out, err)
+		}
+		return out.Reading
+	}
+	if got := reading(alice, "alice", "private_climate"); got["temperature"] != 21.75 || got["humidity"] != 58.5 {
+		t.Fatalf("a recipient of both groups: %v", got)
+	}
+	if got := reading(bob, "bob", "private_climate"); got["temperature"] != 21.75 || len(got) != 1 {
+		t.Fatalf("a recipient of one group: %v", got)
+	}
+	if got := reading(bob, "bob", "read_climate"); got["temperature"] != 21.75 || len(got) != 1 {
+		t.Fatalf("a server-mode tool through the bridge: %v", got)
+	}
+}

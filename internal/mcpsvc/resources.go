@@ -39,19 +39,23 @@ func (s *Service) filter(next mcp.MethodHandler) mcp.MethodHandler {
 					kept = append(kept, t)
 				}
 			}
-			list.Tools = append(kept, s.registeredTools(ctx, c)...)
+			list.Tools = append(append(kept, s.registeredTools(ctx, c)...), s.dataTools(ctx, c)...)
 			return list, nil
 		case "tools/call":
-			// A registered tool is not one of the SDK's: the tools role
-			// validates and decides it.
-			if call, ok := req.(*mcp.CallToolRequest); ok && strings.HasPrefix(call.Params.Name, RegisteredPrefix) {
-				c, err := callerOf(req.GetExtra())
-				if err != nil {
-					return nil, err
-				}
-				return s.callRegistered(ctx, c, call.Params.Name, call.Params.Arguments), nil
+			// Registered tools and data tools are not the SDK's: the tools
+			// role and the storage role validate and decide them.
+			call, ok := req.(*mcp.CallToolRequest)
+			if !ok || !strings.HasPrefix(call.Params.Name, RegisteredPrefix) && !dataToolName.MatchString(call.Params.Name) {
+				return next(ctx, method, req)
 			}
-			return next(ctx, method, req)
+			c, err := callerOf(req.GetExtra())
+			if err != nil {
+				return nil, err
+			}
+			if dataToolName.MatchString(call.Params.Name) {
+				return s.callData(ctx, c, call.Params.Name, call.Params.Arguments, recipientOf(call.ClientCapabilities())), nil
+			}
+			return s.callRegistered(ctx, c, call.Params.Name, call.Params.Arguments), nil
 		case "resources/list":
 			lr, ok := req.(*mcp.ListResourcesRequest)
 			if !ok {

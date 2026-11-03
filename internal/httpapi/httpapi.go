@@ -142,16 +142,24 @@ func (g *Gateway) authenticate(r *http.Request) (enforce.Caller, bool) {
 		len(rec.Checks) != 1 || rec.Checks[0].ResourceType != "agent.tool" {
 		return enforce.Caller{}, false
 	}
+	// A decision on a data tool, which MCPToolRoutes does not list, opens
+	// that tool's call route only (MCP-009).
 	tool, ok := strings.CutPrefix(rec.Checks[0].ResourceID, registry.MCPToolNamespace+":")
-	if !ok || !slices.Contains(registry.MCPToolRoutes[tool], r.Pattern) {
+	routes, builtIn := registry.MCPToolRoutes[tool]
+	data := !builtIn && registry.IsDataToolName(tool)
+	if !ok || builtIn && !slices.Contains(routes, r.Pattern) || !builtIn && (!data || r.Pattern != registry.DataToolRoute || r.PathValue("name") != tool) {
 		return enforce.Caller{}, false
 	}
 	approval := r.Header.Get(ApprovalHeader)
 	if len(approval) > 64 {
 		return enforce.Caller{}, false
 	}
-	return enforce.Caller{Tenant: rec.Tenant, Principal: rec.Actor.ID, Subject: rec.Subject.ID, Delegation: rec.Delegation,
-		Token: signed.Evidence(), Approval: approval}, true
+	c := enforce.Caller{Tenant: rec.Tenant, Principal: rec.Actor.ID, Subject: rec.Subject.ID, Delegation: rec.Delegation,
+		Token: signed.Evidence(), Approval: approval}
+	if data {
+		c.Tool = tool
+	}
+	return c, true
 }
 
 // AuthedVia is Authed that also accepts gateway calls: a request without a

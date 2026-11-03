@@ -1,6 +1,9 @@
 package registry
 
-import "slices"
+import (
+	"regexp"
+	"slices"
+)
 
 // R1 operation names. Each maps to the exact checks it needs (RES-001,
 // RES-006, Table "Compound operations for encrypted content"); an adapter
@@ -267,8 +270,24 @@ const (
 )
 
 // MCPTools are the operations the MCP service offers, each an agent.tool
-// resource of every tenant that enables MCP.
-var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export", "tools.list", "tools.call"}
+// resource of every tenant that enables MCP. data.list gates the listing of
+// data tools; each data tool is an agent.tool of its own, registered by its
+// review (docs/design/mcp-data-tools.md).
+var MCPTools = []string{"resources.list", "resources.read", "documents.search", "documents.read", "text.read", "documents.export", "tools.list", "tools.call",
+	"data.list"}
+
+// DataToolNamePattern is the pattern of a data tool's name. No name in
+// MCPTools matches it, since each holds a dot (DTL-007, D-I).
+const DataToolNamePattern = `^[a-z][a-z0-9_]{0,63}$`
+
+var dataToolName = regexp.MustCompile(DataToolNamePattern)
+
+// IsDataToolName reports whether s is a data tool's name.
+func IsDataToolName(s string) bool { return dataToolName.MatchString(s) }
+
+// DataToolRoute is the one route a gateway's decision on a data tool opens:
+// that tool's call, with its own name in the path (MCP-009).
+const DataToolRoute = "POST /v1/data-tools/{name}/call"
 
 // mcpReadRoutes are the native API routes an MCP read uses: plaintext of
 // server-mode content, and packages and ciphertext of client-mode content.
@@ -293,6 +312,7 @@ var MCPToolRoutes = map[string][]string{
 		"POST /v1/buckets/{bucket}/document/export", "POST /v1/buckets/{bucket}/document/export/content"},
 	"tools.list": {"GET /v1/tools"},
 	"tools.call": {"POST /v1/invocations"},
+	"data.list":  {"GET /v1/data-tools"},
 }
 
 // CoreOperations returns the registered operations of the core types: R1's

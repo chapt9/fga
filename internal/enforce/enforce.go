@@ -79,6 +79,10 @@ type Caller struct {
 	// Approval is the approval the caller presents with this request. Only
 	// operations with a plan send it to the decision role.
 	Approval string
+	// Tool is the data tool whose invoke a gateway's decision is, set only
+	// for a gateway call of that tool's call route (MCP-009): the invoke
+	// is decided already (DTL-004).
+	Tool string
 }
 
 // Represented is the identity the caller acts for: the subject under a

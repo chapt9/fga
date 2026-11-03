@@ -92,12 +92,22 @@ type ReadingOrigin struct {
 	Label           string `json:"label"`
 }
 
-// ToolPackage is one unit of a client-mode reading for the caller's key:
-// its signed descriptor, the caller's envelope and the ciphertext.
+// ToolPackage is one unit of a client-mode reading for the caller's key,
+// as GET .../document/unit/package answers it, with the ciphertext.
 type ToolPackage struct {
-	Unit       UnitEntry `json:"unit"`
-	Envelope   Delivered `json:"envelope"`
-	Ciphertext []byte    `json:"ciphertext"`
+	Unit             UnitEntry    `json:"unit"`
+	EnvelopeID       string       `json:"envelope_id"`
+	Envelope         ToolEnvelope `json:"envelope"`
+	Receipt          []byte       `json:"receipt"`
+	ReceiptSignature string       `json:"receipt_signature"`
+	Ciphertext       []byte       `json:"ciphertext"`
+}
+
+// ToolEnvelope is the caller's envelope of a ToolPackage.
+type ToolEnvelope struct {
+	Context    []byte `json:"context"`
+	Ciphertext []byte `json:"ciphertext"`
+	Signature  string `json:"signature"`
 }
 
 // ListDataTools lists the enabled data tools the caller may discover, in
@@ -175,7 +185,8 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 
 // CallDataTool calls data tool name: its active version, which a pinned
 // version must be. A disabled or unknown tool is not found before any
-// decision; the caller then needs invoke on the tool (DTL-004), and the
+// decision; the caller then needs invoke on the tool (DTL-004), which a
+// gateway's decision for exactly this tool already is (MCP-009), and the
 // tool must fit its source's active version.
 func (s *Service) CallDataTool(ctx context.Context, c Caller, name string, r DataToolCall) (DataToolAnswer, error) {
 	if !datatools.ValidName(name) {
@@ -188,9 +199,17 @@ func (s *Service) CallDataTool(ctx context.Context, c Caller, name string, r Dat
 	if err != nil {
 		return DataToolAnswer{}, err
 	}
-	_, rec, err := s.decide(ctx, c, registry.OpMCPInvoke, Audience, false,
-		[]check{{id: "tool", role: registry.RoleTool, action: "invoke", ref: canonical("agent.tool", registry.MCPToolNamespace+":"+name)}})
-	if err != nil {
+	var rec signing.Record
+	if c.Tool != "" {
+		signed, ok := signing.ParseEvidence(c.Token)
+		if c.Tool != name || !ok {
+			return DataToolAnswer{}, ErrNotFound
+		}
+		if rec, err = s.d.Verifier.Check(signed); err != nil {
+			return DataToolAnswer{}, ErrNotFound
+		}
+	} else if _, rec, err = s.decide(ctx, c, registry.OpMCPInvoke, Audience, false,
+		[]check{{id: "tool", role: registry.RoleTool, action: "invoke", ref: canonical("agent.tool", registry.MCPToolNamespace+":"+name)}}); err != nil {
 		return DataToolAnswer{}, err
 	}
 	if err := s.checked(ctx, rec); err != nil {
@@ -287,8 +306,13 @@ func (s *Service) runTool(ctx context.Context, c Caller, rec signing.Record, def
 	if err != nil {
 		return DataToolAnswer{}, errors.Join(ErrInvalid, err)
 	}
+	// A client-mode answer is the caller's packages for its own key; a
+	// caller who names none is told the mode (ENC-002).
 	if _, err := cryptowire.ParseDigest(r.Recipient); src.Encryption == "client" && err != nil {
-		return DataToolAnswer{}, fmt.Errorf("%w: a tool over client-mode readings needs the caller's recipient key", ErrInvalid)
+		if r.Recipient == "" {
+			return DataToolAnswer{}, ErrEncryptionMode
+		}
+		return DataToolAnswer{}, fmt.Errorf("%w: the recipient is a key fingerprint", ErrInvalid)
 	}
 	_, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
 	if err != nil {
@@ -480,7 +504,10 @@ func (t *toolRun) reading(ctx context.Context, d docVersion) (ToolReading, bool,
 			return ToolReading{}, false, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 		if t.src.Encryption == "client" {
-			out.Packages = append(out.Packages, ToolPackage{Unit: pkg.Unit, Envelope: pkg.Envelope, Ciphertext: b})
+			e := pkg.Envelope
+			out.Packages = append(out.Packages, ToolPackage{Unit: pkg.Unit, EnvelopeID: e.EnvelopeID,
+				Envelope: ToolEnvelope{Context: e.Context, Ciphertext: e.Ciphertext, Signature: e.Signature}, Receipt: e.Receipt,
+				ReceiptSignature: e.ReceiptSignature, Ciphertext: b})
 		} else {
 			units[group[m.entry.Unit]] = b
 		}

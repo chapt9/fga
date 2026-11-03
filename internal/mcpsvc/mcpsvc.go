@@ -61,7 +61,8 @@ const (
 )
 
 // Tools lists every MCP tool, in the registry's order.
-var Tools = []string{ToolResourcesList, ToolResourcesRead, ToolSearch, ToolReadDocument, ToolReadText, ToolExport, ToolToolsList, ToolToolsCall}
+var Tools = []string{ToolResourcesList, ToolResourcesRead, ToolSearch, ToolReadDocument, ToolReadText, ToolExport, ToolToolsList, ToolToolsCall,
+	ToolDataList}
 
 // TokenVerifier verifies a user's access token for an audience.
 // authn.Verifier implements it.

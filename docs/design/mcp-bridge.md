@@ -14,6 +14,7 @@ The user configures the application to start `fga mcp-bridge` as its MCP server 
   - It forwards only each request's own fields (cursor, tool name and arguments, URI), never the application's `_meta`. Under protocol 2026-07-28 that `_meta` carries the client's own protocol version and capabilities.
   - It drops the MCP role's tool output schemas, since its results hold plaintext where the MCP role's held packages.
 - **opens** every package addressed to the user's key, and passes everything else through unchanged: server-mode plaintext, errors, and an export made for another recipient.
+- **projects** a data tool's client-mode answer, which carries the tool's projection: it opens each reading's package as below, takes each unit's group from the opened unit, and applies the projection (`jsonunits.Projection`, shared with the storage role), so the application gets the answer a server-mode tool gives ([mcp-data-tools.md](mcp-data-tools.md), DTL-009). A package that does not open fails the whole answer.
 
 Every authorization is still the MCP role's and the storage role's. The bridge decides nothing, and it cannot read anything the user could not read with `fga get`.
 
@@ -54,6 +55,7 @@ Stdout carries MCP only; diagnostics go to stderr.
 |---|---|
 | `internal/mcpbridge` `TestBridge` | T-10 MCP client interoperability: the application reads a client-mode object and document as plaintext; server-mode content passes through; an export made for another recipient passes through unopened; a user without an envelope gets nothing; the MCP role's output schemas are dropped |
 | `TestOpenRefusesBadPackages` | Altered, truncated or swapped ciphertext, a unit claimed as another, another version claimed or asked for, another recipient, a compromised signer and an untrusted signer each fail with no plaintext; so do a unit not asked for, a unit asked for and missing, a unit twice, and units asked of an object |
+| `TestBridgeDataTool` | DTL-009: each recipient's bridge opens and projects exactly the groups it receives, in the server-mode answer; a server-mode tool passes through |
 | `TestBridgeBindsRequestedUnits` | An upstream that answers a request for unit A with unit B's package, or for units A and B with B alone, gets an error and no plaintext, by resource and by tool; B asked for and given opens (review v5 F09) |
 | `cmd/fga` `TestNoServerCode` | The CLI and bridge link no server-side catalog, content, payload, key-encryption, envelope, fence, decision-service or MCP-role code |
 | `scripts/smoke.sh` | A Python application starts `fga mcp-bridge` and reads bob's client-mode object and document over stdio, equal to the originals |
