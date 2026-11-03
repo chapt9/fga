@@ -51,6 +51,13 @@ var Presets = map[string]map[string][]string{
 		"crypto.signing-key": {"discover", "enroll", "activate", "retire"},
 		"agent.tool":         {"discover", "invoke"},
 	},
+	// source is the capability set of a system posting server-mode
+	// readings to a source (docs/design/mcp-data-tools.md); policies say
+	// to which sources.
+	"source": {
+		"storage.bucket": {"create-object"},
+		"storage.object": {"new-version"},
+	},
 	// approver lets an actor decide approvals (ruling 6); policies still
 	// say on which resources.
 	"approver": {
@@ -82,6 +89,10 @@ type Ops struct {
 	// without it.
 	Journal func() (*journal.Journal, error)
 	Now     func() time.Time
+	// AllowSelfReview lets the author of a source's draft review it. Only
+	// the local administrator's tool sets it (ADM-003); through the admin
+	// API another administrator reviews (D-G).
+	AllowSelfReview bool
 }
 
 func (o Ops) event(tenant string, who Who, change, typ, id string) audit.Event {
@@ -91,7 +102,7 @@ func (o Ops) event(tenant string, who Who, change, typ, id string) audit.Event {
 
 func (o Ops) journal() catalog.Journal {
 	return catalog.Journal{StateKind: journal.IdentitySet, RemovalKind: journal.AccessRemoved, DisabledKind: journal.IdentityDisabled,
-		RevokedKind: journal.DelegationRevoked,
+		RevokedKind: journal.DelegationRevoked, SourceSetKind: journal.SourceSet, SourceDisabledKind: journal.SourceDisabled,
 		Append: func(kind, tenant, subject string) (string, []string, error) {
 			if o.Journal == nil {
 				return "", nil, catalog.ErrNoJournal

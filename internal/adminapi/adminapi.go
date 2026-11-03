@@ -27,7 +27,9 @@ import (
 	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/delegation"
+	"fga/internal/jsonunits"
 	"fga/internal/release"
+	"fga/internal/sources"
 	"fga/internal/strictjson"
 )
 
@@ -93,6 +95,12 @@ func Handler(c Config) http.Handler {
 	route("GET /v1/admin/buckets", s.listBuckets)
 	route("POST /v1/admin/buckets", s.createBucket)
 	route("POST /v1/admin/mcp/enable", s.enableMCP)
+	route("GET /v1/admin/sources", s.listSources)
+	route("POST /v1/admin/sources", s.addSource)
+	route("PUT /v1/admin/sources/{id}", s.putSource)
+	route("POST /v1/admin/sources/{id}/try", s.trySource)
+	route("POST /v1/admin/sources/{id}/review", s.reviewSource)
+	route("POST /v1/admin/sources/{id}/disable", s.disableSource)
 	route("GET /v1/admin/policy", s.policy)
 	route("GET /v1/admin/events", s.events)
 	return mux
@@ -298,13 +306,15 @@ func (s *server) revokeDelegation(w http.ResponseWriter, r *http.Request, c call
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// bucketJSON is a bucket's protected defaults on the wire.
+// bucketJSON is a bucket's protected defaults on the wire. Source names
+// the source that owns the bucket; only adding a source sets it.
 type bucketJSON struct {
 	Name       string `json:"name"`
 	Project    string `json:"project"`
 	Label      string `json:"label"`
 	Scope      string `json:"scope"`
 	Encryption string `json:"encryption"`
+	Source     string `json:"source,omitempty"`
 }
 
 func (s *server) listBuckets(w http.ResponseWriter, r *http.Request, c caller) {
@@ -320,7 +330,7 @@ func (s *server) listBuckets(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	items := make([]bucketJSON, len(buckets))
 	for i, b := range buckets {
-		items[i] = bucketJSON{Name: b.Name, Project: b.Project, Label: b.Label, Scope: b.Scope, Encryption: b.Encryption}
+		items[i] = bucketJSON{Name: b.Name, Project: b.Project, Label: b.Label, Scope: b.Scope, Encryption: b.Encryption, Source: b.Source}
 	}
 	list(w, items, limit, func(b bucketJSON) string { return b.Name })
 }
@@ -331,6 +341,10 @@ func (s *server) createBucket(w http.ResponseWriter, r *http.Request, c caller) 
 	if !s.decode(w, r, &body) {
 		return
 	}
+	if body.Source != "" {
+		s.fail(w, adminops.ErrInvalid)
+		return
+	}
 	id, err := s.Ops.CreateBucket(r.Context(), c.who(), c.tenant, catalog.Bucket{Name: body.Name, Project: body.Project, Label: body.Label,
 		Scope: body.Scope, Encryption: body.Encryption})
 	if err != nil {
@@ -338,6 +352,128 @@ func (s *server) createBucket(w http.ResponseWriter, r *http.Request, c caller) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id.String(), "name": body.Name, "encryption": body.Encryption})
+}
+
+func (s *server) listSources(w http.ResponseWriter, r *http.Request, c caller) {
+	after, limit, err := page(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	items, err := s.Ops.Store.ListSources(r.Context(), c.tenant, after, limit)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	list(w, items, limit, func(src catalog.Source) string { return src.ID })
+}
+
+// sourceVersionJSON answers a stored version.
+func sourceVersionJSON(id string, v catalog.SourceVersion) map[string]any {
+	return map[string]any{"id": id, "version": v.Version, "state": v.State, "digest": v.Digest}
+}
+
+func (s *server) addSource(w http.ResponseWriter, r *http.Request, c caller) {
+	body := struct {
+		Bucket bucketJSON      `json:"bucket"`
+		Source json.RawMessage `json:"source"`
+	}{Bucket: bucketJSON{Label: "internal", Encryption: "server"}}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	def, err := sources.Parse(body.Source)
+	if err != nil || body.Bucket.Source != "" {
+		s.fail(w, errors.Join(adminops.ErrInvalid, err))
+		return
+	}
+	v, err := s.Ops.AddSource(r.Context(), c.who(), c.tenant, catalog.Bucket{Name: body.Bucket.Name, Project: body.Bucket.Project,
+		Label: body.Bucket.Label, Scope: body.Bucket.Scope, Encryption: body.Bucket.Encryption}, def)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sourceVersionJSON(def.ID, v))
+}
+
+func (s *server) putSource(w http.ResponseWriter, r *http.Request, c caller) {
+	var raw json.RawMessage
+	if !s.decode(w, r, &raw) {
+		return
+	}
+	def, err := sources.Parse(raw)
+	if err == nil && def.ID != r.PathValue("id") {
+		err = errors.New("the record's id is not the source's")
+	}
+	if err != nil {
+		s.fail(w, errors.Join(adminops.ErrInvalid, err))
+		return
+	}
+	v, err := s.Ops.PutSource(r.Context(), c.who(), c.tenant, def)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sourceVersionJSON(def.ID, v))
+}
+
+// trySource splits a sample payload the administrator sends. A refusal
+// answers the profile's reason and the parser's own words, which may quote
+// the sample: it is the administrator's.
+func (s *server) trySource(w http.ResponseWriter, r *http.Request, c caller) {
+	var body struct {
+		Version   int             `json:"version,omitempty"`
+		Principal string          `json:"principal,omitempty"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	reading, err := s.Ops.TrySource(r.Context(), c.tenant, r.PathValue("id"), body.Version, body.Payload, body.Principal)
+	var refused *jsonunits.ReadingError
+	if errors.As(err, &refused) {
+		out := map[string]any{"refused": refused.Reason}
+		if refused.Pointer != "" {
+			out["pointer"] = refused.Pointer
+		}
+		if cause := errors.Unwrap(refused); cause != nil {
+			out["detail"] = cause.Error()
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	units := make([]string, len(reading.Units))
+	for i, u := range reading.Units {
+		units[i] = string(u)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": reading.Key, "units": units, "fields": reading.Fields})
+}
+
+func (s *server) reviewSource(w http.ResponseWriter, r *http.Request, c caller) {
+	var body struct {
+		Version int    `json:"version"`
+		Digest  string `json:"digest"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	v, err := s.Ops.ReviewSource(r.Context(), c.who(), c.tenant, r.PathValue("id"), body.Version, body.Digest)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sourceVersionJSON(r.PathValue("id"), v))
+}
+
+func (s *server) disableSource(w http.ResponseWriter, r *http.Request, c caller) {
+	if err := s.Ops.DisableSource(r.Context(), c.who(), c.tenant, r.PathValue("id")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) enableMCP(w http.ResponseWriter, r *http.Request, c caller) {
@@ -453,7 +589,11 @@ func (s *server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, adminops.ErrInvalid), errors.Is(err, catalog.ErrBadDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, catalog.ErrNoRow):
-		writeError(w, http.StatusNotFound, "no such identity or delegation")
+		writeError(w, http.StatusNotFound, "no such identity, delegation or source")
+	case errors.Is(err, catalog.ErrSelfReview):
+		writeError(w, http.StatusForbidden, "the author of a draft cannot review it; another administrator does")
+	case errors.Is(err, catalog.ErrSourceConflict), errors.Is(err, catalog.ErrSourceDisabled):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, catalog.ErrDelegationExists):
 		writeError(w, http.StatusConflict, "a delegation with this ID exists; delegations are revoked and replaced, never changed")
 	case errors.Is(err, catalog.ErrNoJournal), errors.Is(err, catalog.ErrJournalMismatch):

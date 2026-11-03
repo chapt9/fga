@@ -52,7 +52,8 @@ import (
 // export directory holds past it.
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases", "share_grants",
-	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "objects", "object_versions", "document_versions", "document_units",
+	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "sources", "source_versions", "objects", "object_versions",
+	"document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox", "audit_export_state",
 	"label_orders", "label_order_active", "label_proposals", "journal_state",
@@ -709,6 +710,19 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 			rep.Replayed++
 			continue
 		}
+		if e.Kind == journal.SourceSet {
+			// A source's active version becomes that of its last
+			// recorded review (ING-008).
+			var st catalog.SourceState
+			if err := json.Unmarshal([]byte(e.Subject), &st); err != nil || st.Source == "" {
+				return rep, fmt.Errorf("recovery: replay %s: malformed source state: %v", e.Kind, err)
+			}
+			if err := store.ApplySourceState(ctx, e.Tenant, st); err != nil {
+				return rep, fmt.Errorf("recovery: replay %s: %w", e.Kind, err)
+			}
+			rep.Replayed++
+			continue
+		}
 		if e.Kind == journal.AccessRemoved {
 			// Capabilities an administrator took away after the backup
 			// are taken away again; nothing is added back (review AMB-1).
@@ -731,6 +745,8 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 			sql = `UPDATE identities SET disabled = true, revision = revision + 1 WHERE tenant = $1 AND id = $2 AND NOT disabled`
 		case journal.DelegationRevoked:
 			sql = `UPDATE delegations SET revoked = true, revision = revision + 1 WHERE tenant = $1 AND id = $2 AND NOT revoked`
+		case journal.SourceDisabled:
+			sql = `UPDATE sources SET disabled = true WHERE tenant = $1 AND id = $2 AND NOT disabled`
 		case journal.RecipientRevoked:
 			sql = `WITH k AS (UPDATE recipient_keys SET status = 'REVOKED', revision = revision + 1
 			                   WHERE tenant = $1 AND fingerprint = $2 AND status <> 'REVOKED' RETURNING fingerprint)

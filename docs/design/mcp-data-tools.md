@@ -104,32 +104,33 @@ console -- administrator's pass --> fga-admin serve   sources and data tools: dr
 
 ### The record
 
-A source is administered, versioned and reviewed. It owns exactly one bucket, created with it (ING-001, D-H).
+A source is administered, versioned and reviewed. It owns exactly one bucket, created with it (ING-001, D-H). Adding a source sends the bucket beside the record (`internal/sources`, package `sources`):
 
 ```json
 {
-  "format": "fga.source/v1",
-  "id": "greenhouse-climate",
-  "version": 2,
   "bucket": {"name": "greenhouse-climate", "project": "greenhouse", "label": "internal", "encryption": "server"},
-  "owner": "team-greenhouse",
-  "key": {"mode": "pointer", "pointer": "/sensor", "pattern": "[a-z0-9-]{1,48}", "prefix": "sensor/"},
-  "groups": [
-    {"name": "climate", "label": "internal", "fields": ["/temperature", "/humidity", "/observed_at", "/sensor"]},
-    {"name": "location", "label": "restricted", "fields": ["/gps"]}
-  ],
-  "unlisted": "refuse",
-  "max_payload": 65536
+  "source": {
+    "format": "fga.source/v1",
+    "id": "greenhouse-climate",
+    "owner": "team-greenhouse",
+    "key": {"mode": "pointer", "pointer": "/sensor", "pattern": "[a-z0-9-]{1,48}", "prefix": "sensor/"},
+    "groups": [
+      {"name": "climate", "label": "internal", "fields": ["/temperature", "/humidity", "/observed_at", "/sensor"]},
+      {"name": "location", "label": "restricted", "fields": ["/gps"]}
+    ],
+    "unlisted": "refuse",
+    "max_payload": 65536
+  }
 }
 ```
 
 | Field | Rule |
 |---|---|
+| `bucket` | Not part of the record: given once, when the source is added. The bucket is created with the protected attribute `source` and never changes source. `encryption` is `server` (default) or `client`. Refused when a bucket of that name exists |
 | `id` | `^[a-z0-9][a-z0-9-]{0,39}$`, unique per tenant, never reused |
-| `version` | Starts at 1. Each new draft takes the next number. At most one version is active |
-| `bucket` | Created with the source, with the protected attribute `source`. `encryption` is `server` (default) or `client`. Refused when a bucket of that name exists |
-| `owner` | An active identity of the tenant. It becomes the `owner` attribute of the readings' documents, versions and units (D-C) |
-| `key` | How the key is derived; see the profile. In `principal` mode each device writes only its own stream. Every key must also be a valid key (`content.ValidKey`), and the prefix is checked as one at review |
+| versions | Not part of the record: fga numbers them, from 1. Each put stores the next one as the draft, superseding an unreviewed one; a review makes the draft active. The digest is SHA-256 of `fga.source/v1`, a zero byte and the stored record, and a review names it |
+| `owner` | An enabled identity of the tenant. It becomes the `owner` attribute of the readings' documents, versions and units (D-C) |
+| `key` | How the key is derived; see the profile. In `principal` mode each device writes only its own stream. Every key must also be a valid key (`content.ValidKey`), which the storage role checks for every reading |
 | `groups` | 1 to 16 groups. Names match `^[a-z][a-z0-9_]{0,31}$` and are unique. Each group has 1 to 64 fields |
 | `groups[].label` | A label of the active bundle's label order, at least the bucket's default label. Checked at review and again for every reading |
 | `groups[].fields` | Pointers as the profile defines them. No field overlaps another, in any group, so each value lands in exactly one unit |
@@ -421,8 +422,8 @@ Both use the same code in `internal/adminops`, as today.
 | `GET /v1/admin/sources` | `source list` | Sources with their active and draft versions |
 | `POST /v1/admin/sources` | `source add -file F` | A source, its bucket and its draft version 1, in one transaction |
 | `PUT /v1/admin/sources/{id}` | `source put -file F` | A new draft version |
-| `POST /v1/admin/sources/{id}/try` | `source try -payload F` | Splits a pasted sample payload with the draft's layout. Nothing is stored and nothing is read |
-| `POST /v1/admin/sources/{id}/review` | `source review` | The draft becomes active |
+| `POST /v1/admin/sources/{id}/try` | `source try -payload F` | Splits a pasted sample payload with the draft's layout, or a named version's. A refusal answers `refused`, the field's `pointer` and the parser's `detail`. Nothing is stored and nothing is read |
+| `POST /v1/admin/sources/{id}/review` | `source review -version N -digest D` | The draft becomes active. The body names the version and digest the reviewer saw (409 otherwise); the draft's author is refused (403) |
 | `POST /v1/admin/sources/{id}/disable` | `source disable` | Ingestion stops; readings stay |
 | `GET /v1/admin/data-tools` | `data-tool list` | Tools with their active and draft versions |
 | `POST /v1/admin/data-tools`, `PUT /v1/admin/data-tools/{name}` | `data-tool add`, `data-tool put` | Drafts |

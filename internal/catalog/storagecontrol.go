@@ -48,6 +48,10 @@ type Bucket struct {
 	// Encryption is the bucket's encryption mode, "server" or "client"
 	// (ENC-001); there is no default here, the caller chooses.
 	Encryption string
+	// Source names the source of JSON readings that owns the bucket, or
+	// is empty; it is set only when the source is created with the
+	// bucket (ING-001), and policy sees it as the attribute source.
+	Source string
 }
 
 // EncryptionMode reports whether mode is an encryption mode (ENC-001).
@@ -71,11 +75,16 @@ func createBucket(ctx context.Context, q db, tenant string, b Bucket) (cryptowir
 		return cryptowire.UUID{}, err
 	}
 	id := cryptowire.NewUUID()
-	attrs, _ := json.Marshal(map[string]any{"name": b.Name, "project": b.Project, "label": b.Label, "encryption": b.Encryption})
+	a := map[string]any{"name": b.Name, "project": b.Project, "label": b.Label, "encryption": b.Encryption}
+	var source *string
+	if b.Source != "" {
+		a["source"], source = b.Source, &b.Source
+	}
+	attrs, _ := json.Marshal(a)
 	err := pgx.BeginFunc(ctx, q, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO buckets (tenant, id, name, scope, default_project, default_label, encryption)
-		                           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			tenant, id, b.Name, b.Scope, b.Project, b.Label, b.Encryption); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO buckets (tenant, id, name, scope, default_project, default_label, encryption, source)
+		                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			tenant, id, b.Name, b.Scope, b.Project, b.Label, b.Encryption, source); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'storage.bucket', $3, 1, 1, 1, $4)`, tenant, id.String(), b.Scope, attrs); err != nil {

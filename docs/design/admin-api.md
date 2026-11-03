@@ -26,6 +26,12 @@ A refusal is logged with the console, tenant and subject; it changes nothing.
 | `POST /v1/admin/delegations/{id}/revoke` | revoke a delegation |
 | `GET /v1/admin/buckets`, `POST /v1/admin/buckets` | list; create one (`name`, `project`, `label`, `scope`, `encryption`, defaults `internal` and `server`) |
 | `POST /v1/admin/mcp/enable` | register the MCP tools for the tenant |
+| `GET /v1/admin/sources?after=&limit=` | sources of JSON readings ([mcp-data-tools.md](mcp-data-tools.md)) with their bucket and their active and draft versions, each with its record, digest, author and reviewer |
+| `POST /v1/admin/sources` | add a source: `{"bucket": {...}, "source": {...}}` creates the bucket, which names the source in its `source` attribute, and draft version 1 of the record (defaults: label `internal`, encryption `server`) |
+| `PUT /v1/admin/sources/{id}` | store the record as the source's next draft; an unreviewed earlier draft is superseded. Refused with 409 for a disabled source |
+| `POST /v1/admin/sources/{id}/try` | split a sample payload, `{"payload": ..., "version": N, "principal": P}` (the draft's layout by default), and answer the key, the units and their fields, or `refused` with the field's `pointer` and the parser's `detail`. Nothing is stored or read |
+| `POST /v1/admin/sources/{id}/review` | make the draft active: `{"version": N, "digest": D}` names the draft the reviewer saw (409 otherwise). Its author cannot review it (403): another administrator does (D-G). Journaled |
+| `POST /v1/admin/sources/{id}/disable` | disable a source (final); it accepts no reading after. Journaled |
 | `GET /v1/admin/policy` | the signed bundle in `bundle_dir`, after its signature verifies with `publisher_keys` |
 | `GET /v1/admin/events?limit=` | the tenant's latest audit events still in the outbox |
 
@@ -34,7 +40,7 @@ Lists answer `{"items": [...], "next": "..."}`; pass `next` as `after` for the f
 - 404 for an unknown identity or delegation, and 409 for one that exists.
 - 503 when a change cannot be recorded as it must be: the security journal cannot record its entry, the catalog is bound to another journal, or the audit outbox is full. 503 also when the bundle cannot be used (audit F5).
 
-The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create` and `mcp enable` make the same changes through the same code, `internal/adminops`.
+The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create`, `mcp enable` and `source add|put|try|review|disable|list` make the same changes through the same code, `internal/adminops`.
 
 ## Audit and journal
 
@@ -45,6 +51,10 @@ A change that a restore must not undo is journaled before it is made, and the jo
 - disabling an identity and revoking a delegation, as before (`identity-disabled`, `delegation-revoked`). The target is locked before the journal's state, the order every journaled change takes, so concurrent changes cannot deadlock (audit F1). An unknown target is refused (404) and one already disabled or revoked is left as it is, neither journaled, so a restore cannot disable an identity or revoke a delegation created under that ID later (audit F2);
 - replacing an existing identity's roles or attributes, whenever they change: an `identity-set` entry holds the roles and attributes the change leaves. When the change then fails to commit (a full audit outbox, a canceled request, a failed commit), the identity's committed state is read under its row lock and journaled as a further `identity-set` entry, so a restore never sets roles or attributes the live catalog did not have (review F1 of 2 November 2026). Only a crash between the entry and the commit leaves an uncommitted state as the identity's last entry;
 - revoking capabilities an identity holds: an `access-removed` entry lists the capabilities removed.
+- reviewing a source: a `source-set` entry holds the version, its digest and record, author and reviewer. When the review then fails to commit, the source's committed active version is journaled after it, as for `identity-set`, so a restore never activates a version no review made active. Reconcile makes each source's last recorded version active, written from the entry when the restored catalog lacks it; a source the restored catalog does not hold stays unknown;
+- disabling a source: a `source-disabled` entry, replayed as identity disables are.
+
+A source record is checked when it is added or put and again at review: its own rules for the bucket's mode (package `sources`), its owner and client-mode recipients as enabled identities, and every group's label against the active label order and the bucket's label. `fga-admin source review` may review a draft its operator wrote, as the local administrator's tool (ADM-003).
 
 After a restore, reconcile replays the entries in journal order. Each `identity-set` entry sets the identity's roles and attributes, so every identity ends with the state of its last recorded change, whether that change added or removed (owner decision of 1 November 2026, review v5 F01). Policies may deny by role or attribute, so adding a role such as `contractor` can take access away and removing it can give access; the effect of a change cannot be read from what it removed, which the earlier `access-removed` replay of roles and attributes assumed. An identity the restored catalog does not hold, created after the backup, stays unknown and has no access. Each `access-removed` entry takes away the capabilities it names that are still there and adds nothing, so capabilities granted after the backup are lost by the restore and those removed after it stay removed (AMB-1). Entries written before `identity-set` existed are replayed as before. Without a journal, a change to an existing identity is refused, and so is a revoke; creating an identity and granting capabilities are made.
 

@@ -31,6 +31,14 @@
 //	delegation add     -tenant T -id ID -actor A -subject S -audience ADAPTER -grants 'type:a,b;type:c' -expires 24h [-parent ID]
 //	                   lets agent A act for S, presented through ADAPTER (the MCP role's workload, say), within the grants
 //	delegation revoke  -tenant T -id ID                      (journaled)
+//	source add         -tenant T -file F   a source of JSON readings with its bucket and draft version 1; F holds
+//	                   {"bucket": {...}, "source": {...}} as the admin API takes it (docs/design/mcp-data-tools.md)
+//	source put         -tenant T -file F   the source's next version as its draft; F holds the record
+//	source try         -tenant T -id S -payload F [-version N] [-principal P]   split a sample reading; stores nothing
+//	source review      -tenant T -id S -version N -digest D   make the draft active (journaled); here the
+//	                   author may review, as the local administrator's tool (ADM-003)
+//	source disable     -tenant T -id S                       (journaled; final)
+//	source list        -tenant T
 //	epoch raise        -tenant T -epoch N                    (journaled)
 //	backup-key generate -out FILE [-encrypt]        create a backup key (keep it apart from catalog and backups)
 //	key protect|unprotect -file FILE                encrypt a backup key file with a passphrase, or decrypt it
@@ -91,11 +99,14 @@ import (
 	"fga/internal/catalog"
 	"fga/internal/delegation"
 	"fga/internal/journal"
+	"fga/internal/jsonunits"
 	"fga/internal/kek"
 	"fga/internal/keyfile"
 	"fga/internal/recovery"
 	"fga/internal/registry"
 	"fga/internal/roleconfig"
+	"fga/internal/sources"
+	"fga/internal/strictjson"
 )
 
 func main() {
@@ -160,7 +171,7 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	tenant := fs.String("tenant", "", "tenant")
-	id := fs.String("id", "", "identity or delegation ID")
+	id := fs.String("id", "", "identity, delegation or source ID")
 	name := fs.String("name", "", "bucket name")
 	project := fs.String("project", "", "bucket default project")
 	label := fs.String("label", "internal", "bucket default label")
@@ -185,7 +196,10 @@ func run(args []string) error {
 	out := fs.String("out", "", "backup directory or key file to create")
 	backupKeyFile := fs.String("backup-key", "", "backup key file")
 	encrypt := fs.Bool("encrypt", false, "protect the new key file with a passphrase")
-	keyFile := fs.String("file", "", "key file to protect or unprotect")
+	keyFile := fs.String("file", "", "key protect|unprotect: the key file; kek: the ring file; source add|put: the source file")
+	payloadFile := fs.String("payload", "", "source try: the sample reading's file")
+	version := fs.Int("version", 0, "source try|review: the source version")
+	digest := fs.String("digest", "", "source review: the digest of the draft reviewed")
 	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_BACKUP_KEY_PASSPHRASE)")
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
@@ -249,8 +263,9 @@ func run(args []string) error {
 		}
 		return change()
 	}
-	// The directory commands make their changes as the admin API does.
-	ops := adminops.Ops{Store: e.store, Journal: e.journal, Now: time.Now}
+	// The directory commands make their changes as the admin API does. The
+	// operator may review a source draft it wrote (ADM-003).
+	ops := adminops.Ops{Store: e.store, Journal: e.journal, Now: time.Now, AllowSelfReview: true}
 	operator := adminops.Who{Actor: "operator", Via: "cli"}
 
 	switch cmd {
@@ -391,6 +406,100 @@ func run(args []string) error {
 			return err
 		}
 		return ops.RevokeDelegation(ctx, operator, *tenant, *id)
+	case "source add", "source put":
+		if err := need(*tenant, *keyFile); err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return err
+		}
+		var v catalog.SourceVersion
+		var def sources.Definition
+		if cmd == "source add" {
+			body := struct {
+				Bucket struct {
+					Name       string `json:"name"`
+					Project    string `json:"project"`
+					Label      string `json:"label"`
+					Scope      string `json:"scope"`
+					Encryption string `json:"encryption"`
+				} `json:"bucket"`
+				Source json.RawMessage `json:"source"`
+			}{}
+			body.Bucket.Label, body.Bucket.Encryption = "internal", "server"
+			if err := strictjson.Decode(raw, &body); err != nil {
+				return fmt.Errorf("%s: %w", *keyFile, err)
+			}
+			if def, err = sources.Parse(body.Source); err != nil {
+				return err
+			}
+			b := body.Bucket
+			v, err = ops.AddSource(ctx, operator, *tenant, catalog.Bucket{Name: b.Name, Project: b.Project, Label: b.Label, Scope: b.Scope,
+				Encryption: b.Encryption}, def)
+		} else {
+			if def, err = sources.Parse(raw); err != nil {
+				return err
+			}
+			v, err = ops.PutSource(ctx, operator, *tenant, def)
+		}
+		if err == nil {
+			fmt.Printf("source %s version %d %s digest %s\n", def.ID, v.Version, v.State, v.Digest)
+		}
+		return err
+	case "source try":
+		if err := need(*tenant, *id, *payloadFile); err != nil {
+			return err
+		}
+		payload, err := os.ReadFile(*payloadFile)
+		if err != nil {
+			return err
+		}
+		reading, err := ops.TrySource(ctx, *tenant, *id, *version, payload, *principal)
+		if err != nil {
+			if cause := errors.Unwrap(err); cause != nil && errors.Is(err, jsonunits.ErrReading) {
+				return fmt.Errorf("%w (%v)", err, cause)
+			}
+			return err
+		}
+		fmt.Println("key", reading.Key)
+		for i, u := range reading.Units {
+			fmt.Printf("unit %d %s fields %v\n", i, u, reading.Fields[i])
+		}
+		return nil
+	case "source review":
+		if err := need(*tenant, *id, *digest); err != nil || *version < 1 {
+			return errors.New("source review needs -tenant, -id, -version and -digest")
+		}
+		v, err := ops.ReviewSource(ctx, operator, *tenant, *id, *version, *digest)
+		if err == nil {
+			fmt.Printf("source %s version %d %s\n", *id, v.Version, v.State)
+		}
+		return err
+	case "source disable":
+		if err := need(*tenant, *id); err != nil {
+			return err
+		}
+		return ops.DisableSource(ctx, operator, *tenant, *id)
+	case "source list":
+		if err := need(*tenant); err != nil {
+			return err
+		}
+		after := ""
+		for {
+			list, err := e.store.ListSources(ctx, *tenant, after, 100)
+			if err != nil {
+				return err
+			}
+			for _, src := range list {
+				line, _ := json.Marshal(src)
+				fmt.Println(string(line))
+			}
+			if len(list) < 100 {
+				return nil
+			}
+			after = list[len(list)-1].ID
+		}
 	case "epoch raise":
 		if err := need(*tenant); err != nil || *epoch == 0 {
 			return errors.New("epoch raise needs -tenant and -epoch")

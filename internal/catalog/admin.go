@@ -69,14 +69,17 @@ type IdentityState struct {
 // which the catalog does not link: Append journals one entry and returns
 // the journal's ID and chain values. The kinds name the entries of an
 // IdentityState (journal.IdentitySet), a Removal (journal.AccessRemoved),
-// a disable (journal.IdentityDisabled) and a delegation revoke
-// (journal.DelegationRevoked).
+// a disable (journal.IdentityDisabled), a delegation revoke
+// (journal.DelegationRevoked), a SourceState (journal.SourceSet) and a
+// source's disable (journal.SourceDisabled).
 type Journal struct {
-	Append       func(kind, tenant, subject string) (journalID string, chains []string, err error)
-	StateKind    string
-	RemovalKind  string
-	DisabledKind string
-	RevokedKind  string
+	Append             func(kind, tenant, subject string) (journalID string, chains []string, err error)
+	StateKind          string
+	RemovalKind        string
+	DisabledKind       string
+	RevokedKind        string
+	SourceSetKind      string
+	SourceDisabledKind string
 }
 
 // Admin makes administrative changes inside one transaction.
@@ -84,8 +87,9 @@ type Admin struct {
 	tx      pgx.Tx
 	s       *Store
 	journal Journal
-	// stated names the identities whose state the transaction journaled.
-	stated []identityRef
+	// stated names the identities whose state the transaction journaled,
+	// and sourced the sources.
+	stated, sourced []identityRef
 }
 
 type identityRef struct{ tenant, id string }
@@ -98,7 +102,9 @@ const restateTimeout = 30 * time.Second
 // commits only together with its audit event. An IdentityState is
 // journaled before its change commits; when the transaction then fails,
 // the identity's committed state is journaled after it, so a restore does
-// not set a state that never committed (review F1 of 2 November 2026).
+// not set a state that never committed (review F1 of 2 November 2026). A
+// SourceState is handled the same way, so a restore does not activate a
+// version whose review never committed.
 func (s *Store) Administer(ctx context.Context, e audit.Event, j Journal, change func(*Admin) error) error {
 	a := &Admin{s: s, journal: j}
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -116,6 +122,11 @@ func (s *Store) Administer(ctx context.Context, e audit.Event, j Journal, change
 	for _, r := range a.stated {
 		if rerr := s.restate(rctx, j, r.tenant, r.id); rerr != nil {
 			err = errors.Join(err, fmt.Errorf("catalog: journal the committed state of %s: %w", r.id, rerr))
+		}
+	}
+	for _, r := range a.sourced {
+		if rerr := s.restateSource(rctx, j, r.tenant, r.id); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("catalog: journal the committed state of source %s: %w", r.id, rerr))
 		}
 	}
 	return err
@@ -574,7 +585,7 @@ func (s *Store) ListDelegations(ctx context.Context, tenant, after string, limit
 // ListBuckets lists up to limit of a tenant's buckets whose names sort
 // after after, in name order.
 func (s *Store) ListBuckets(ctx context.Context, tenant, after string, limit int) ([]Bucket, error) {
-	rows, err := s.pool.Query(ctx, `SELECT name, scope, default_project, default_label, encryption FROM buckets
+	rows, err := s.pool.Query(ctx, `SELECT name, scope, default_project, default_label, encryption, coalesce(source, '') FROM buckets
 	                                 WHERE tenant = $1 AND name > $2 ORDER BY name LIMIT $3`, tenant, after, limit)
 	if err != nil {
 		return nil, err
@@ -583,7 +594,7 @@ func (s *Store) ListBuckets(ctx context.Context, tenant, after string, limit int
 	out := []Bucket{}
 	for rows.Next() {
 		var b Bucket
-		if err := rows.Scan(&b.Name, &b.Scope, &b.Project, &b.Label, &b.Encryption); err != nil {
+		if err := rows.Scan(&b.Name, &b.Scope, &b.Project, &b.Label, &b.Encryption, &b.Source); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

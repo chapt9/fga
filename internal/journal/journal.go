@@ -54,10 +54,17 @@ const (
 	// catalog.IdentityState as JSON. Reconcile sets them, so a restore
 	// keeps the last recorded state (review v5 F01).
 	IdentitySet = "identity-set"
+	// SourceSet records the version a review made a source's active one;
+	// its subject is the catalog.SourceState as JSON. Reconcile makes it
+	// active again, so a restore does not bring an older one back
+	// (ING-008).
+	SourceSet = "source-set"
+	// SourceDisabled names a disabled source of JSON readings.
+	SourceDisabled = "source-disabled"
 )
 
 var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved, AccessRemoved,
-	IdentitySet}
+	IdentitySet, SourceSet, SourceDisabled}
 
 // Entry is one journaled change. Subject names what changed: an identity,
 // delegation or key, an epoch or an incarnation number. Seq is its

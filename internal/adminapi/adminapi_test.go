@@ -44,7 +44,7 @@ type fixture struct {
 }
 
 // newFixture serves the admin API over a fresh catalog and journal, with
-// root the administrator of t-acme and console-1 the console. A request's
+// root and rita the administrators of t-acme and console-1 the console. A request's
 // console is its X-Console header here; fga-admin serve takes it from the
 // verified client certificate.
 func newFixture(t *testing.T) *fixture {
@@ -79,7 +79,7 @@ func serve(t *testing.T, pool *pgxpool.Pool, store *catalog.Store, j *journal.Jo
 	f.ops = adminops.Ops{Store: store, Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now}
 	srv := httptest.NewServer(adminapi.Handler(adminapi.Config{
 		Ops: f.ops, Tokens: authn.NewVerifier("test-issuer", map[string]ed25519.PublicKey{"k1": pub}, time.Now), Audience: "fga-admin",
-		Admins: map[string][]string{"t-acme": {"root"}}, Consoles: []string{"console-1"},
+		Admins: map[string][]string{"t-acme": {"root", "rita"}}, Consoles: []string{"console-1"},
 		ConsoleOf: func(r *http.Request) (string, error) {
 			if c := r.Header.Get("X-Console"); c != "" {
 				return c, nil
