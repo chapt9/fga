@@ -21,6 +21,12 @@ fga/internal/payload
 # Reviewed 2026-10-31 (D-12, S4a, DOC-004): the text ingestion profile the
 # storage role applies to server-mode text; Unicode normalization only.
 fga/internal/textunits
+# Reviewed 2026-11-03 (docs/design/mcp-data-tools.md, ING-004, ING-005):
+# the JSON readings profile the storage role applies to server-mode
+# readings, and the source record it reads them under; parsing only, no
+# cryptography.
+fga/internal/jsonunits
+fga/internal/sources
 # Reviewed 2026-10-31 (S4b): decision checks for key releases, linked
 # through the envelope package; verification only, no key material.
 fga/internal/keycheck

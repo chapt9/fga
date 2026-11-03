@@ -50,7 +50,11 @@ var (
 	// the route serves (ENC-002). It is returned only after the caller's
 	// authorization, so it reveals nothing to a caller without it.
 	ErrEncryptionMode = errors.New("content: wrong encryption mode")
-	ErrUnavailable    = enforce.ErrUnavailable
+	// ErrSourceBucket: the bucket belongs to a source of JSON readings,
+	// and content is begun in it only through the source's routes
+	// (ING-002). It is returned after authorization, as ErrEncryptionMode.
+	ErrSourceBucket = errors.New("content: the bucket belongs to a source of readings; post readings to the source")
+	ErrUnavailable  = enforce.ErrUnavailable
 	// ErrApprovalNotUsable: the presented approval does not cover the
 	// operation.
 	ErrApprovalNotUsable = enforce.ErrApprovalNotUsable
@@ -247,7 +251,7 @@ func mapFence(err error) error {
 		errors.Is(err, fence.ErrExpired), errors.Is(err, fence.ErrReplayed), errors.Is(err, fence.ErrApproval):
 		return fmt.Errorf("%w: %w", ErrConflict, err)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrPrecondition), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalid),
-		errors.Is(err, ErrEncryptionMode), errors.Is(err, audit.ErrFull):
+		errors.Is(err, ErrEncryptionMode), errors.Is(err, ErrSourceBucket), errors.Is(err, audit.ErrFull):
 		return err
 	default:
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)

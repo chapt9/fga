@@ -23,6 +23,26 @@ type bucket struct {
 	Project    string
 	Label      string
 	Encryption string
+	// Source names the source of JSON readings that owns the bucket, or
+	// is empty (ING-001).
+	Source string
+}
+
+// sourceBound lets content begin in a source's bucket only through the
+// source's routes (ING-002): reading is the begin of a reading, nil for
+// any other begin, and attrs the document's attributes, nil for an
+// object. Callers check it after authorization, as the mode.
+func sourceBound(b bucket, attrs map[string]any, reading *readingSpec) error {
+	switch {
+	case reading == nil && b.Source != "":
+		return ErrSourceBucket
+	case reading == nil:
+		return nil
+	}
+	if src, _ := attrs["source"].(string); b.Source != reading.source || src != reading.source {
+		return fmt.Errorf("%w: the bucket or the document belongs to another source", ErrConflict)
+	}
+	return nil
 }
 
 type object struct {
@@ -91,8 +111,9 @@ func modeHolds(ctx context.Context, tx pgx.Tx, tenant string, b bucket) error {
 func (s *Service) bucketByName(ctx context.Context, tenant, name string) (bucket, error) {
 	var b bucket
 	err := s.d.Catalog.Pool().QueryRow(ctx,
-		`SELECT id, name, scope, default_project, default_label, encryption FROM buckets WHERE tenant = $1 AND name = $2`, tenant, name).
-		Scan(&b.ID, &b.Name, &b.Scope, &b.Project, &b.Label, &b.Encryption)
+		`SELECT id, name, scope, default_project, default_label, encryption, coalesce(source, '') FROM buckets WHERE tenant = $1 AND name = $2`,
+		tenant, name).
+		Scan(&b.ID, &b.Name, &b.Scope, &b.Project, &b.Label, &b.Encryption, &b.Source)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return b, ErrNotFound
 	}

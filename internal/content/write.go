@@ -237,9 +237,13 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 	if err != nil {
 		return storedIntent{}, err
 	}
-	// Each route uploads in its own mode only (ENC-002).
+	// Each route uploads in its own mode only (ENC-002), and no object is
+	// begun in a source's bucket (ING-002).
 	if b.Encryption != mode {
 		return storedIntent{}, ErrEncryptionMode
+	}
+	if err := sourceBound(b, nil, nil); err != nil {
+		return storedIntent{}, err
 	}
 	attrs, _ := json.Marshal(in.attributes)
 	err = s.fenced(ctx, rec, nil, func(ctx context.Context, tx pgx.Tx) error {

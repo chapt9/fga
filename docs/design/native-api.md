@@ -36,6 +36,7 @@ Object keys travel in the `key` query parameter, never in the path, so Go's `Ser
 | Server-mode upload | `PUT /v1/buckets/{bucket}/object?key=` (plaintext body) | Begin, data-key seal, staging and publication (`storage.object.publish-server-*`), as in server-objects.md; `202` names the approval and the intent |
 | Server-mode read | `GET /v1/buckets/{bucket}/object/content?key=&version=` | Object `read` (plus `read-history` for an older version), then data-key release (`storage.key.release*`); plaintext body |
 | Server-mode text | `POST /v1/buckets/{bucket}/documents/text?key=[&collection=1\|&append=1]` (UTF-8 body) | Document begin, document data-key seal (`storage.key.seal-document-*`), staging and the document publication decisions, as in server-documents.md; `202` names the approval and the intent |
+| Server-mode reading | `POST /v1/sources/{source}/readings` (JSON body, `Content-Type: application/json`, at most 1 MiB) | The source's active version derives the key and one unit per field group with the group's label ([mcp-data-tools.md](mcp-data-tools.md)); then the server-mode text steps with the document's checks (`document.begin-*`, `storage.key.seal-document-*`, staging, `document.publish-*`). A retry of a published reading under its `Idempotency-Key` decides the begin's check again, since the poster may not discover its readings. `202` names the approval and the intent |
 | Server-mode original | `GET /v1/buckets/{bucket}/document/original/content?key=&version=` | Complete-content decisions for the storage role, then for the keys role with `storage.key.release-original`, admitted in the release fence (V-163); plaintext body |
 | Server-mode unit export | `POST /v1/buckets/{bucket}/document/export/content?key=&version=` `{"units": [...]}` | `document.export`, then each unit's release; plaintext units as JSON |
 | Server-mode unit | `GET /v1/buckets/{bucket}/document/unit/content?key=&unit=&version=` | The unit read's checks, then the unit's data-key release (`storage.key.release-unit` or `-entry`); plaintext body |
@@ -81,6 +82,7 @@ Every error body is `{"error": CODE}` with no protected identifiers.
 | 404 | `NOT_FOUND` | Absent target, **and** any policy denial of an object, version or bucket operation (DEC-010, CNT-004): absent and denied look the same |
 | 409 | `CONFLICT` | Idempotency mismatch, intent in the wrong state, different bytes for a blob, stale authority after a bounded retry |
 | 409 | `ENCRYPTION_MODE` | The bucket or version is in the other encryption mode than the route serves (ENC-002); only the routes above marked server-mode serve server-mode objects, documents, collections and derived outputs. Only an authorized caller gets it; anyone else gets `NOT_FOUND` |
+| 409 | `SOURCE_BUCKET` | A route other than its source's readings route begins content in a source's bucket (ING-002). Only an authorized caller gets it |
 | 412 | `PRECONDITION_FAILED` | `If-Match` or `If-None-Match` failed at commit (only after the operation was authorized) |
 | 413 | `TOO_LARGE` | Body above the bound |
 | 429 | `OVERLOADED` | Admission limits (AVL-006) |

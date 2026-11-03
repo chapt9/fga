@@ -17,6 +17,7 @@ import (
 	"fga/internal/content"
 	"fga/internal/cryptowire"
 	"fga/internal/httpapi"
+	"fga/internal/jsonunits"
 	"fga/internal/textunits"
 )
 
@@ -38,6 +39,8 @@ func classify(err error) (int, string, bool) {
 		return http.StatusRequestEntityTooLarge, httpapi.CodeTooLarge, true
 	case errors.Is(err, content.ErrEncryptionMode):
 		return http.StatusConflict, httpapi.CodeEncryptionMode, true
+	case errors.Is(err, content.ErrSourceBucket):
+		return http.StatusConflict, httpapi.CodeSourceBucket, true
 	}
 	return 0, "", false
 }
@@ -300,6 +303,37 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 			return
 		}
 		p, err := svc.PutDocumentText(r.Context(), c, req, text)
+		var staged *content.StagedApproval
+		if errors.As(err, &staged) {
+			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,
+				IntentID: staged.Intent})
+			return
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, p)
+	}))
+	// A JSON reading of a source (docs/design/mcp-data-tools.md, ING-002):
+	// the body is the payload; the source's active version decides its
+	// key, units and labels. No gateway decision opens this route.
+	mux.HandleFunc("POST /v1/sources/{source}/readings", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		h := r.Header
+		if !strings.HasPrefix(h.Get("Content-Type"), "application/json") || len(h.Get("Idempotency-Key")) > 128 {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, jsonunits.MaxPayloadLimit))
+		if err != nil {
+			httpapi.WriteError(w, http.StatusRequestEntityTooLarge, httpapi.CodeTooLarge)
+			return
+		}
+		req := content.ReadingRequest{Source: r.PathValue("source"), IdempotencyKey: h.Get("Idempotency-Key")}
+		if req.IdempotencyKey == "" {
+			req.IdempotencyKey = cryptowire.NewUUID().String()
+		}
+		p, err := svc.PutReading(r.Context(), c, req, payload)
 		var staged *content.StagedApproval
 		if errors.As(err, &staged) {
 			httpapi.WriteJSON(w, http.StatusAccepted, approvalRequiredBody{Status: httpapi.CodeApprovalRequired, ApprovalID: staged.ID,

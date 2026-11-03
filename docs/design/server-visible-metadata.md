@@ -15,6 +15,8 @@ Status: design record, 31 October 2026. Specification 2.5 says the server may re
 | Envelope | IDs, recipient fingerprint, key version, generation, status, signer, context bytes, opaque HPKE ciphertext, origin signature | Delivery |
 | Audit outbox | IDs, tenant, kinds, outcomes, resource identities, digests | Evidence (AUD-001) |
 
+Readings of sources ([mcp-data-tools.md](mcp-data-tools.md)) add protected attributes, all for policy: `source` on the source's bucket and on each reading's document, versions and units, `group` on units, and `source_version` on document versions. The source record itself (owner, key rule, groups with their fields, labels and client-mode recipients) is catalog metadata, as a bucket's defaults are.
+
 Not visible to the server: plaintext, plaintext digests, payload keysets, private keys, titles and any descriptive text. Object keys are visible routing metadata, so clients should use opaque keys for sensitive names (Part 3, "Catalog records and ownership"). No log line contains an object key, token, envelope bytes or descriptor; logs carry IDs only.
 
 Hidden fields cannot become server-evaluated policy attributes or search predicates: the policy engine sees only the attributes above.

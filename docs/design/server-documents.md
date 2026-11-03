@@ -10,6 +10,8 @@ Unit-level access is unchanged: each unit is read alone, under its own checks an
 
 ## Upload
 
+Readings of sources take the same steps ([mcp-data-tools.md](mcp-data-tools.md)): `POST /v1/sources/{source}/readings` splits a JSON reading under the profile `fga.json/groups-v1`, one unit per field group with the group's label from the source's active version, assigned without a label decision, and stores no original. The manifest records the profile as its normalization version and `fga.source/v1:<source>:<version>` as its extraction version.
+
 `POST /v1/buckets/{b}/documents/text?key=[&collection=1|&append=1]`
 
 The body is the text (`Content-Length` required, at most 64 MiB), with an optional `Idempotency-Key`. The SDK calls are `PutDocumentText` and `AppendText`; in the CLI, `fga put-document [-collection]` and `fga append` follow the bucket's mode.

@@ -4,7 +4,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
-- Stop 1, the profile, is built.
+- Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2's check against the running demo waits for the owner's OK, since it migrates the demo's catalog.
 
 ## Summary
 
@@ -201,7 +201,9 @@ Reading rules (`ErrReading`; a `*ReadingError` names at most a field's pointer, 
    - no original file is stored, because it would put every group under one key.
 5. **Answer.** `200` with `{"key", "document_version_id"}`. When a policy requires an approval, `202` with its ID, as for text uploads.
 
-A retry under the same idempotency key returns that attempt's outcome, so devices should send one, for example the sensor and its own timestamp. Without one, a retry publishes a second version. "Current" means last published, not latest observed: payload times are data, never order.
+A retry under the same idempotency key returns that attempt's outcome, so devices should send one, for example the sensor and its own timestamp. Without one, a retry publishes a second version. A retry must be the same reading's: another key, source or source version under the same idempotency key is `409 CONFLICT`. The poster may not read its readings, so a retry of a published one is answered while the same post would still be allowed, by deciding the begin's check again, as a begin's retry is (ruling 7). "Current" means last published, not latest observed: payload times are data, never order.
+
+The body must be sent as `Content-Type: application/json`; anything else is `400`, and a body above 1 MiB is `413`. A document keeps the owner it was created with; a changed owner in a later source version applies to new keys.
 
 ### Ingestion in client mode (ING-009 to ING-011)
 
@@ -457,34 +459,34 @@ Readings are ordinary resources, so existing rules apply to them. Allows add up:
 
 Two habits keep rules on readings from reaching other data:
 1. Give each source bucket its own project, so project rules reach it only for people of that project.
-2. Guard every condition on `source`, `group` or `published_at`, and restrict such rules to the roles they are for. Other resources do not carry these attributes, and a condition that fails to evaluate makes the action DENY ([policy-format-v1.md](policy-format-v1.md), evaluation, errors).
+2. Guard every condition on `source`, `group`, `sources` or `published_at` with `has()`, as the example bundle guards `shared_with`, and restrict such rules to the roles they are for. Other resources and principals do not carry these attributes, and a condition that fails to evaluate makes the action DENY ([policy-format-v1.md](policy-format-v1.md), evaluation, errors).
 
 Examples, all in the business set:
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
   {"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],
-   "when":"'source' in resource.attributes && resource.attributes.source in principal.attributes.sources"}]}
+   "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"}]}
 ```
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
   {"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],
-   "when":"'source' in resource.attributes && resource.attributes.source in principal.attributes.sources"},
+   "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"},
   {"id":"analysts-reading-history","effect":"allow","actions":["read-history","discover-history"],"roles":["analyst"],
-   "when":"'source' in resource.attributes && resource.attributes.project in principal.attributes.projects"}]}
+   "when":"has(resource.attributes.source) && resource.attributes.project in principal.attributes.projects"}]}
 ```
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
   {"id":"facility-read-location","effect":"allow","actions":["read"],"roles":["facility"],
-   "when":"'group' in resource.attributes && resource.attributes.group == 'location' && resource.attributes.project in principal.attributes.projects"}]}
+   "when":"has(resource.attributes.group) && resource.attributes.group == 'location' && resource.attributes.project in principal.attributes.projects"}]}
 ```
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
   {"id":"viewers-last-day","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],
-   "when":"'published_at' in resource.attributes && timestamp(resource.attributes.published_at) > request.now - duration('24h') && resource.attributes.project in principal.attributes.projects"}]}
+   "when":"has(resource.attributes.published_at) && timestamp(resource.attributes.published_at) > request.now - duration('24h') && resource.attributes.project in principal.attributes.projects"}]}
 ```
 
 ```json
@@ -597,26 +599,26 @@ Built `internal/jsonunits`: `Layout.Compile`, `Layout.Validate`, `Splitter.Split
 | `TestParseUnit` | Round trip, and every malformed unit refused |
 | `TestVectors` | The recorded cases, byte for byte |
 
-### Stop 2: sources and server-mode ingestion
+### Stop 2: sources and server-mode ingestion (built)
 
-Build:
-- catalog migration `0030`: `sources` and `source_versions`, and the bucket attribute `source`;
-- adminops, fga-admin commands and admin API routes for sources, with the second-administrator review; journal kinds `source-set` and `source-disabled` with their reconcile;
-- the server-mode ingestion route, the unit and document attributes, the `SOURCE_BUCKET` refusal and the `source` preset;
-- `fga/internal/jsonunits` in the allowed imports of fga-storage and fga-admin, reviewed;
-- example bundle rules, and updates to admin-api.md, native-api.md and its OpenAPI file, server-documents.md and server-visible-metadata.md.
+Built in two commits on the local branch `data-tools`:
+- **2a, sources:** migration `0030` (`sources`, `source_versions`, `buckets.source`, all backed up); package `sources` for the record; adminops, fga-admin commands and admin API routes, with the second-administrator review; journal kinds `source-set` and `source-disabled`, the restate after a failed review, and their reconcile; the `source` preset.
+- **2b, ingestion:** `POST /v1/sources/{source}/readings`; the unit, version and document attributes; the `SOURCE_BUCKET` refusal in the object and document begins; the manifest's profile and extraction versions; `fga/internal/jsonunits` and `fga/internal/sources` in fga-storage's allowed imports; the example bundle's rules and two sentinels; admin-api.md, native-api.md and its OpenAPI file, server-documents.md and server-visible-metadata.md.
 
-Done when a posting identity with a real token posts readings to the running demo, and members read only the groups policy allows through `documents.read`, unit content, selection, manifest, export and `resources/read`.
+Still to do: the check against the running demo, which migrates its catalog, re-signs its bundle with the new rules, adds a second administrator to its admin API and a test posting identity. It waits for the owner's OK.
 
 | Test | Covers |
 |---|---|
-| `TestSourceIngest` | A reading becomes one version with one unit per group, the right labels, attributes and manifest versions |
-| `TestSourceGroupsSeparate` | P1 on every read route: a member reads `climate` and never `location` |
-| `TestSourceIdentityLimits` | The posting identity cannot read readings, cannot write through other routes, cannot post to another source, and has no input for key, label or owner |
-| `TestSourceBucketRefusesOtherWrites` | `409 SOURCE_BUCKET` on every content route |
-| `TestSourceReview` | Labels below the bucket default refused; the author cannot review |
-| `TestSourceJournal` | A restore replays reviews and disables |
-| `TestIngestIdempotent` | The same key returns the same version; another key adds one |
+| `sources` `TestParse`, `TestCheck`, `TestCheckLabels`, `TestCanonical` | The record's rules for each mode, labels against the order and the bucket's label, a stable digest |
+| `catalog` `TestSourceLifecycle` | The bucket names its source; drafts supersede drafts; only the named draft is reviewed, not by its author; journaled reviews and disables; a disabled source takes no change |
+| `catalog` `TestFailedReviewRestatesSource`, `TestApplySourceState` | A failed review journals the committed state after it; reconcile's replay |
+| `adminops` `TestSources` | Identity, label and mode checks at add, put and review; four-eyes and the local administrator's exception; journal and audit |
+| `adminapi` `TestSourcesAPI` | Every route and status code, `try` included |
+| `recovery` `TestRestoreKeepsSourceReviews` | A restore keeps later reviews and disables; a later source stays unknown |
+| `content` `TestSourceIngest` | Key, units, labels, attributes, owner and manifest versions; idempotent retries |
+| `content` `TestSourceGroupsSeparate` | P1 on every read route: members read `climate` only, facility staff and the owner both groups, the poster and other projects nothing |
+| `content` `TestSourceIdentityLimits`, `TestSourceRefusals` | No posting to another source; `SOURCE_BUCKET` for text and objects; unknown, unreviewed and disabled sources; refusals quote no value |
+| `nativeapi` `TestReadingsHTTP` | The route, its retry, JSON only, 1 MiB, `409 SOURCE_BUCKET`, and no MCP decision opens it |
 
 ### Stop 3: client-mode ingestion
 
@@ -734,7 +736,6 @@ On 3 November 2026, fga main `7a5c33f`:
 To verify while coding:
 - the CEL type of `request.now`, and whether `timestamp()` and `duration()` are in the environment, for the time-window rule;
 - whether the decision role lets the storage role's adapter request `mcp.tool.invoke` and `mcp.tool.discover`, for bearer callers and the listing;
-- whether `catalog.Admin.CreateBucket` takes extra resource attributes, for `source`;
 - where the keys role reads a version's currency inside its fence, for the history twins;
 - how the bridge recognises a data tool's encrypted answer, for stop 6.
 

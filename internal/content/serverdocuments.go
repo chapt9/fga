@@ -12,8 +12,10 @@ import (
 	"fga/internal/blob"
 	"fga/internal/cryptowire"
 	"fga/internal/fence"
+	"fga/internal/jsonunits"
 	"fga/internal/payload"
 	"fga/internal/registry"
+	"fga/internal/sources"
 	"fga/internal/textunits"
 )
 
@@ -74,10 +76,18 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 			return DocumentPublished{}, err
 		}
 		if in, err = s.beginDocument(ctx, c, DocumentBeginRequest{Bucket: r.Bucket, Key: r.Key, IdempotencyKey: r.IdempotencyKey,
-			Units: specs, Collection: r.Collection || r.Append, Original: r.Original != nil, BaseVersion: base}, "server"); err != nil {
+			Units: specs, Collection: r.Collection || r.Append, Original: r.Original != nil, BaseVersion: base}, "server", nil); err != nil {
 			return DocumentPublished{}, err
 		}
 	}
+	return s.stageAndFinalize(ctx, c, in, paragraphs, r.Original)
+}
+
+// stageAndFinalize stages the new units of a server-mode document intent,
+// unless an earlier attempt under its idempotency key staged them, and
+// publishes the version: the steps after the begin, shared by text and
+// readings. units holds the new units' plaintext in order.
+func (s *Service) stageAndFinalize(ctx context.Context, c Caller, in storedDocIntent, units []string, original io.Reader) (DocumentPublished, error) {
 	if in.state != "RESERVED" {
 		return DocumentPublished{}, fmt.Errorf("%w: document intent is %s", ErrConflict, in.state)
 	}
@@ -87,7 +97,7 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 			fresh = append(fresh, u)
 		}
 	}
-	if len(fresh) != len(paragraphs) || (in.Original != nil) != (r.Original != nil) {
+	if len(fresh) != len(units) || (in.Original != nil) != (original != nil) {
 		return DocumentPublished{}, fmt.Errorf("%w: the idempotency key was used for another text", ErrConflict)
 	}
 	want := len(fresh)
@@ -103,7 +113,7 @@ func (s *Service) PutDocumentText(ctx context.Context, c Caller, r TextRequest, 
 	case sealed > 0:
 		return DocumentPublished{}, fmt.Errorf("%w: an earlier attempt of this upload did not finish; begin again under a new idempotency key", ErrConflict)
 	default:
-		if err := s.stageText(ctx, c, in, fresh, paragraphs, r.Original); err != nil {
+		if err := s.stageText(ctx, c, in, fresh, units, original); err != nil {
 			return DocumentPublished{}, err
 		}
 	}
@@ -238,6 +248,12 @@ func (s *Service) finalizeDocumentServer(ctx context.Context, c Caller, in store
 	}
 	m := cryptowire.Manifest{TenantID: in.Tenant, DocumentID: in.Document, DocumentVersionID: in.DocumentVersion,
 		NormalizationVersion: textunits.NormalizationVersion}
+	// A reading's manifest names the JSON profile and the source version
+	// it was split under, from the version's planned attributes.
+	if src, _ := in.attributes["source"].(string); src != "" {
+		version, _ := in.attributes["source_version"].(float64)
+		m.NormalizationVersion, m.ExtractionVersion = jsonunits.Profile, fmt.Sprintf("%s:%s:%d", sources.Format, src, int(version))
+	}
 	units := make([]checkedUnit, len(in.Units))
 	for i, u := range in.Units {
 		cu := checkedUnit{UnitIntent: u}

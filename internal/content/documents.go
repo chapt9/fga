@@ -138,18 +138,29 @@ type storedDocIntent struct {
 // be LIVE units of the tenant. An identical retry under the same
 // idempotency key returns the same intent after a fresh decision.
 func (s *Service) BeginDocument(ctx context.Context, c Caller, r DocumentBeginRequest) (DocumentIntent, error) {
-	in, err := s.beginDocument(ctx, c, r, "client")
+	in, err := s.beginDocument(ctx, c, r, "client", nil)
 	return in.DocumentIntent, err
 }
 
 // beginDocument is BeginDocument for a bucket in mode; it returns the
-// stored intent. Reused units must be LIVE units of that mode.
-func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRequest, mode string) (storedDocIntent, error) {
+// stored intent. Reused units must be LIVE units of that mode. reading is
+// set for a reading of a source (ING-003, ING-006): its owner, its group
+// labels and its attributes are the source version's, and only then may
+// the bucket be a source's (ING-002).
+func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRequest, mode string, reading *readingSpec) (storedDocIntent, error) {
 	if !ValidKey(r.Key) || r.IdempotencyKey == "" || len(r.IdempotencyKey) > 128 || len(r.Units) == 0 || len(r.Units) > cryptowire.MaxUnits {
 		return storedDocIntent{}, ErrInvalid
 	}
+	digest := r.digest()
+	if reading != nil {
+		if len(r.Units) != len(reading.groups) || r.Collection || r.Original || r.BaseVersion != "" ||
+			slices.ContainsFunc(r.Units, func(u DocumentUnitSpec) bool { return u != DocumentUnitSpec{} }) {
+			return storedDocIntent{}, fmt.Errorf("%w: a reading is one new unit per group", ErrInvalid)
+		}
+		digest = reading.digest(digest)
+	}
 	if in, err := s.docIntentByIdempotency(ctx, c, r.IdempotencyKey); err == nil {
-		if in.state == "ABORTED" || in.requestDigest != r.digest() {
+		if in.state == "ABORTED" || in.requestDigest != digest {
 			return storedDocIntent{}, fmt.Errorf("%w: the idempotency key was used for another request", ErrConflict)
 		}
 		op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
@@ -167,6 +178,13 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		if in.encryption != mode {
 			return storedDocIntent{}, ErrEncryptionMode
 		}
+		b, err := s.bucketByName(ctx, c.Tenant, r.Bucket)
+		if err != nil {
+			return storedDocIntent{}, err
+		}
+		if err := sourceBound(b, in.attributes, reading); err != nil {
+			return storedDocIntent{}, err
+		}
 		return in, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return storedDocIntent{}, err
@@ -181,7 +199,7 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	}
 	in := storedDocIntent{DocumentIntent: DocumentIntent{IntentID: cryptowire.NewUUID().String(), Tenant: tenantID.String(),
 		DocumentVersion: cryptowire.NewUUID().String(), MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime)},
-		principal: c.Principal, requestDigest: r.digest(), bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption}
+		principal: c.Principal, requestDigest: digest, bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption}
 	var kind, current string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id::text, o.kind, coalesce(o.current_document_version::text, ''), r.generation, r.scope,
 	                                               r.attributes FROM objects o
@@ -198,6 +216,12 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			"encryption": b.Encryption}
 		if r.Collection {
 			in.attributes["kind"] = "collection"
+		}
+		// A reading belongs to its source's owner, not to the system
+		// that posts it (D-C). A document keeps the owner it was created
+		// with.
+		if reading != nil {
+			in.attributes["owner"], in.attributes["source"] = reading.owner, reading.source
 		}
 	case err != nil:
 		return storedDocIntent{}, err
@@ -241,6 +265,12 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 					return storedDocIntent{}, err
 				}
 			}
+			// A group's label is checked for every reading (ING-006).
+			if reading != nil {
+				if err := s.labelAllowed(ctx, reading.labels[i], b.Label); err != nil {
+					return storedDocIntent{}, err
+				}
+			}
 			ui.IntentID, ui.Unit, ui.UnitVersion = cryptowire.NewUUID().String(), cryptowire.NewUUID().String(), cryptowire.NewUUID().String()
 			ui.CryptoVersion, ui.Blob, ui.Attempt = cryptowire.NewUUID().String(), cryptowire.NewUUID().String(), cryptowire.NewUUID().String()
 		}
@@ -256,13 +286,20 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	if err != nil {
 		return storedDocIntent{}, err
 	}
-	// Each route publishes in its own mode only (ENC-002).
+	// Each route publishes in its own mode only (ENC-002), and only the
+	// source routes begin in a source's bucket (ING-002).
 	if b.Encryption != mode {
 		return storedDocIntent{}, ErrEncryptionMode
+	}
+	if err := sourceBound(b, in.attributes, reading); err != nil {
+		return storedDocIntent{}, err
 	}
 	versionAttrs := map[string]any{"document": in.Document}
 	for _, k := range []string{"bucket", "owner", "project", "label", "kind", "encryption"} {
 		versionAttrs[k] = in.attributes[k]
+	}
+	if reading != nil {
+		versionAttrs["source"], versionAttrs["source_version"] = reading.source, reading.version
 	}
 	va, _ := json.Marshal(versionAttrs)
 	units, _ := json.Marshal(in.Units)
@@ -312,6 +349,11 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 			}
 			if types == textEntries {
 				attrs["entry"] = true
+			}
+			// A reading's unit is its group's: the group's label, set
+			// as a default is, without a label decision (ING-006, D-B).
+			if reading != nil {
+				attrs["label"], attrs["group"], attrs["source"] = reading.labels[u.Position], reading.groups[u.Position], reading.source
 			}
 			ua, _ := json.Marshal(attrs)
 			if _, err := tx.Exec(ctx, `
@@ -803,6 +845,7 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 			// version's link to its document.
 			docAttrs := maps.Clone(in.attributes)
 			delete(docAttrs, "document")
+			delete(docAttrs, "source_version")
 			attrs, _ := json.Marshal(docAttrs)
 			if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'storage.object', $3, 1, 1, 1, $4)`, c.Tenant, in.Document, in.scope, attrs); err != nil {
 				return err
@@ -836,6 +879,13 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 		versionAttrs := map[string]any{"document": in.Document}
 		for _, k := range []string{"bucket", "owner", "project", "label", "kind", "encryption"} {
 			versionAttrs[k] = in.attributes[k]
+		}
+		// A reading's version names its source and the source version
+		// it was split under (ING-006).
+		for _, k := range []string{"source", "source_version"} {
+			if v, ok := in.attributes[k]; ok {
+				versionAttrs[k] = v
+			}
 		}
 		va, _ := json.Marshal(versionAttrs)
 		if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.version', $3, 1, 1, 1, $4)`, c.Tenant, in.DocumentVersion, in.scope, va); err != nil {

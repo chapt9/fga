@@ -4,4 +4,6 @@
   {"id":"leads-approve-buckets","effect":"allow","actions":["approve"],"roles":["lead"],
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"leads-manage-buckets","effect":"allow","actions":["manage","share"],"roles":["lead"],
-   "when":"resource.attributes.project in principal.attributes.projects"}]}
+   "when":"resource.attributes.project in principal.attributes.projects"},
+  {"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],
+   "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"}]}

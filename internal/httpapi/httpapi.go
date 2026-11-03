@@ -40,6 +40,9 @@ const (
 	// CodeEncryptionMode answers 409: the target is in the other
 	// encryption mode than the route serves (ENC-002).
 	CodeEncryptionMode = "ENCRYPTION_MODE"
+	// CodeSourceBucket answers 409: the bucket belongs to a source of
+	// JSON readings, which only the source's routes write (ING-002).
+	CodeSourceBucket = "SOURCE_BUCKET"
 	// CodeLastReader answers 409: the change would leave client-mode
 	// files with no reader; the body counts them per bucket, and the
 	// change is made only once confirmed (safeguard 2 of 1 November 2026).

@@ -1,0 +1,296 @@
+package content_test
+
+import (
+	"encoding/json"
+	"errors"
+	"maps"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"fga/internal/adminops"
+	"fga/internal/catalog"
+	"fga/internal/content"
+	"fga/internal/journal"
+	"fga/internal/r1test"
+	"fga/internal/sources"
+)
+
+// readingPolicies are the fixture's policies with the example bundle's
+// rules for posting systems and a rule letting facility staff read the
+// location group of their projects' readings.
+func readingPolicies() map[string]string {
+	policies := maps.Clone(r1test.Policies)
+	add := func(file, rule string) {
+		policies[file] = strings.Replace(policies[file], `"rules":[`, `"rules":[`+rule+",", 1)
+	}
+	own := `has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources`
+	add("buckets.json", `{"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],"when":"`+own+`"}`)
+	add("objects.json", `{"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],"when":"`+own+`"}`)
+	add("units.json", `{"id":"facility-reads-location","effect":"allow","actions":["read"],"roles":["facility"],
+	  "when":"has(resource.attributes.group) && resource.attributes.group == 'location' && resource.attributes.project in principal.attributes.projects"}`)
+	return policies
+}
+
+const climateRecord = `{"format":"fga.source/v1","id":"%s","owner":"team-greenhouse",
+ "key":{"mode":"pointer","pointer":"/sensor","pattern":"[a-z0-9-]{1,48}","prefix":"sensor/"},
+ "groups":[{"name":"climate","label":"internal","fields":["/temperature","/humidity","/sensor"]},
+           {"name":"location","label":"restricted","fields":["/gps"]}]}`
+
+type readings struct {
+	st     *r1test.Stack
+	ops    adminops.Ops
+	sensor content.Caller
+}
+
+// newReadings builds a stack with an owner, a posting system for the
+// source greenhouse-climate, and that source added and reviewed.
+func newReadings(t *testing.T) *readings {
+	t.Helper()
+	st := r1test.NewWith(t, r1test.Options{Policies: readingPolicies()})
+	r := &readings{st: st, ops: adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
+		Now: func() time.Time { return *st.Clock }}}
+	st.User("team-greenhouse", []string{"member"}, "greenhouse")
+	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "sensor-7", []string{"source"},
+		map[string]any{"sources": []string{"greenhouse-climate"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Catalog.GrantCapabilities(ctx, r1test.Tenant, "sensor-7", adminops.Presets["source"]); err != nil {
+		t.Fatal(err)
+	}
+	r.sensor = st.Caller("sensor-7")
+	r.source(t, "greenhouse-climate", true)
+	return r
+}
+
+// source adds a server-mode source with its bucket and, if reviewed, makes
+// its draft active.
+func (r *readings) source(t *testing.T, id string, reviewed bool) {
+	t.Helper()
+	def, err := sources.Parse([]byte(strings.Replace(climateRecord, "%s", id, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := r.ops.AddSource(ctx, adminops.Who{Actor: "root", Via: "test"}, r1test.Tenant,
+		catalog.Bucket{Name: id, Project: "greenhouse", Label: "internal", Encryption: "server"}, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed {
+		if _, err := r.ops.ReviewSource(ctx, adminops.Who{Actor: "rita", Via: "test"}, r1test.Tenant, id, v.Version, v.Digest); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (r *readings) post(c content.Caller, source, idem, payload string) (content.ReadingPublished, error) {
+	return r.st.Content.PutReading(ctx, c, content.ReadingRequest{Source: source, IdempotencyKey: idem}, []byte(payload))
+}
+
+func (r *readings) attributes(t *testing.T, sql string, args ...any) []map[string]any {
+	t.Helper()
+	rows, err := r.st.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var a map[string]any
+		if err := rows.Scan(&a); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+const northReading = `{"sensor":"gh-north-1","temperature":21.5,"humidity":40,"gps":{"lat":48.1,"lon":11.5}}`
+
+// TestSourceIngest covers ING-002 to ING-006 in server mode: a reading
+// becomes a version of the document at the key its source derives, one
+// unit per group with the group's label, attributes and manifest profile,
+// owned by the source's owner; the posting system needs no label right;
+// a retry under the same idempotency key is the same version, one with
+// another reading is refused.
+func TestSourceIngest(t *testing.T) {
+	r := newReadings(t)
+	p, err := r.post(r.sensor, "greenhouse-climate", "r-1", northReading)
+	if err != nil || p.Key != "sensor/gh-north-1" || p.Units != 2 {
+		t.Fatalf("post = %+v, %v", p, err)
+	}
+	doc := r.attributes(t, `SELECT r.attributes FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
+	                        WHERE o.tenant = $1 AND o.key = 'sensor/gh-north-1' AND o.kind = 'document'`, r1test.Tenant)
+	if len(doc) != 1 || doc[0]["owner"] != "team-greenhouse" || doc[0]["source"] != "greenhouse-climate" || doc[0]["source_version"] != nil {
+		t.Fatalf("document attributes %v", doc)
+	}
+	version := r.attributes(t, `SELECT attributes FROM resources WHERE tenant = $1 AND id = $2`, r1test.Tenant, p.DocumentVersion)
+	if len(version) != 1 || version[0]["source"] != "greenhouse-climate" || version[0]["source_version"] != 1.0 || version[0]["owner"] != "team-greenhouse" {
+		t.Fatalf("version attributes %v", version)
+	}
+	units := r.attributes(t, `SELECT r.attributes FROM document_units u JOIN resources r ON r.tenant = u.tenant AND r.id = u.unit::text
+	                          WHERE u.tenant = $1 AND u.document_version = $2 ORDER BY u.position`, r1test.Tenant, p.DocumentVersion)
+	if len(units) != 2 || units[0]["group"] != "climate" || units[0]["label"] != "internal" || units[1]["group"] != "location" ||
+		units[1]["label"] != "restricted" || units[1]["source"] != "greenhouse-climate" || units[1]["owner"] != "team-greenhouse" {
+		t.Fatalf("unit attributes %v", units)
+	}
+	var norm, extraction string
+	if err := r.st.Pool.QueryRow(ctx, `SELECT normalization_version, extraction_version FROM document_versions WHERE tenant = $1 AND id = $2`,
+		r1test.Tenant, p.DocumentVersion).Scan(&norm, &extraction); err != nil || norm != "fga.json/groups-v1" ||
+		extraction != "fga.source/v1:greenhouse-climate:1" {
+		t.Fatalf("manifest versions %q %q %v", norm, extraction, err)
+	}
+
+	again, err := r.post(r.sensor, "greenhouse-climate", "r-1", northReading)
+	if err != nil || again.DocumentVersion != p.DocumentVersion {
+		t.Fatalf("a retry = %+v, %v", again, err)
+	}
+	if _, err := r.post(r.sensor, "greenhouse-climate", "r-1", `{"sensor":"gh-south-2","temperature":19}`); !errors.Is(err, content.ErrConflict) {
+		t.Fatalf("another reading under the same idempotency key: %v", err)
+	}
+	next, err := r.post(r.sensor, "greenhouse-climate", "r-2", `{"sensor":"gh-north-1","temperature":22}`)
+	if err != nil || next.Document != p.Document || next.DocumentVersion == p.DocumentVersion || next.Generation != p.Generation+1 {
+		t.Fatalf("the next reading = %+v, %v", next, err)
+	}
+}
+
+// TestSourceGroupsSeparate covers the design's property P1: a group's
+// values reach only callers allowed to read its unit, on every read
+// route. Members of the project read the climate group and never the
+// restricted location group; facility staff read both; the source's
+// owner reads both; the posting system and members of other projects
+// read nothing.
+func TestSourceGroupsSeparate(t *testing.T) {
+	r := newReadings(t)
+	if _, err := r.post(r.sensor, "greenhouse-climate", "r-1", northReading); err != nil {
+		t.Fatal(err)
+	}
+	st := r.st
+	mia := st.User("mia", []string{"member"}, "greenhouse")
+	fay := st.User("fay", []string{"member", "facility"}, "greenhouse")
+	olaf := st.User("olaf", []string{"member"}, "orchards")
+	owner := st.Caller("team-greenhouse")
+	const bucket, key = "greenhouse-climate", "sensor/gh-north-1"
+	all := st.UnitIDs(owner, bucket, key, "")
+	if len(all) != 2 {
+		t.Fatalf("the owner sees %v", all)
+	}
+	climate, location := all[0], all[1]
+	visible := func(c content.Caller) []string {
+		t.Helper()
+		page, err := st.Content.ListUnits(ctx, c, bucket, key, "", 100, "")
+		if err != nil {
+			return nil
+		}
+		var ids []string
+		for _, u := range page.Units {
+			ids = append(ids, u.Unit)
+		}
+		return ids
+	}
+	for name, c := range map[string]struct {
+		caller content.Caller
+		want   []string
+	}{
+		"a member":          {mia, []string{climate}},
+		"facility staff":    {fay, []string{climate, location}},
+		"the owner":         {owner, []string{climate, location}},
+		"the poster":        {r.sensor, nil},
+		"another project's": {olaf, nil},
+	} {
+		if got := visible(c.caller); !slices.Equal(got, c.want) {
+			t.Errorf("%s lists %v, want %v", name, got, c.want)
+		}
+	}
+	text, err := readUnitPlain(st, mia, bucket, key, "", climate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unit struct {
+		Group  string         `json:"group"`
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal([]byte(text), &unit); err != nil || unit.Group != "climate" || unit.Fields["/temperature"] != 21.5 ||
+		unit.Fields["/gps"] != nil {
+		t.Fatalf("the climate unit %q %v", text, err)
+	}
+	// Every route that would carry the location group refuses a member.
+	if _, err := readUnitPlain(st, mia, bucket, key, "", location); err == nil {
+		t.Error("a member read the location unit")
+	}
+	if _, err := st.Content.SelectUnits(ctx, mia, bucket, key, "", []string{climate, location}); err == nil {
+		t.Error("a member selected the location unit")
+	}
+	if _, _, err := st.Content.Manifest(ctx, mia, bucket, key, ""); err == nil {
+		t.Error("a member read the manifest of every unit")
+	}
+	if _, err := st.Content.ExportUnitsPlain(ctx, mia, bucket, key, "", []string{location}); err == nil {
+		t.Error("a member exported the location unit")
+	}
+	if _, err := st.Content.ReadOriginalPlain(ctx, owner, bucket, key, ""); err == nil {
+		t.Error("a reading has an original file")
+	}
+	if text, err := readUnitPlain(st, fay, bucket, key, "", location); err != nil || !strings.Contains(text, `"/gps":{"lat":48.1,"lon":11.5}`) {
+		t.Fatalf("facility staff read the location unit: %q %v", text, err)
+	}
+}
+
+// TestSourceIdentityLimits covers ING-002 and ING-003: a posting system
+// posts only to its own sources, and nobody writes a source's bucket
+// through another route, not even a member allowed to create objects in
+// the bucket's project.
+func TestSourceIdentityLimits(t *testing.T) {
+	r := newReadings(t)
+	r.source(t, "orchard", true)
+	st := r.st
+	if _, err := r.post(r.sensor, "orchard", "o-1", northReading); err == nil {
+		t.Fatal("a system posted to a source it does not serve")
+	}
+	if n := st.Count(`SELECT count(*) FROM objects o JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket WHERE b.name = 'orchard'`); n != 0 {
+		t.Fatalf("the refused reading left %d objects", n)
+	}
+	mia := st.User("mia", []string{"member"}, "greenhouse")
+	for name, c := range map[string]content.Caller{"the posting system": r.sensor, "a member": mia} {
+		if _, err := st.Content.PutDocumentText(ctx, c, content.TextRequest{Bucket: "greenhouse-climate", Key: "notes", IdempotencyKey: "t-" + name},
+			[]byte("a note")); !errors.Is(err, content.ErrSourceBucket) {
+			t.Errorf("%s writes text into the source's bucket: %v", name, err)
+		}
+	}
+	if _, err := st.Content.PutObject(ctx, mia, content.BeginRequest{Bucket: "greenhouse-climate", Key: "blob", IdempotencyKey: "o-1"}, 4,
+		strings.NewReader("data")); !errors.Is(err, content.ErrSourceBucket) {
+		t.Errorf("a member puts an object into the source's bucket: %v", err)
+	}
+}
+
+// TestSourceRefusals: an unknown or disabled source, or one with no
+// reviewed version, takes no reading; a reading the profile refuses, or
+// whose key is not one, is invalid, and its refusal names no value.
+func TestSourceRefusals(t *testing.T) {
+	r := newReadings(t)
+	r.source(t, "unreviewed", false)
+	for name, c := range map[string]struct {
+		source, payload string
+		want            error
+	}{
+		"an unknown source":         {"nowhere", northReading, content.ErrNotFound},
+		"a source not yet reviewed": {"unreviewed", northReading, content.ErrNotFound},
+		"a member in no group":      {"greenhouse-climate", `{"sensor":"gh-north-1","pin":"1234"}`, content.ErrInvalid},
+		"a key not matching":        {"greenhouse-climate", `{"sensor":"North 1"}`, content.ErrInvalid},
+		"not an object":             {"greenhouse-climate", `[1]`, content.ErrInvalid},
+	} {
+		_, err := r.post(r.sensor, c.source, "x-"+name, c.payload)
+		if !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+		if err != nil && (strings.Contains(err.Error(), "1234") || strings.Contains(err.Error(), "North 1")) {
+			t.Errorf("%s: the refusal quotes a value: %v", name, err)
+		}
+	}
+	if err := r.ops.DisableSource(ctx, adminops.Who{Actor: "root", Via: "test"}, r1test.Tenant, "greenhouse-climate"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.post(r.sensor, "greenhouse-climate", "after", northReading); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a reading of a disabled source: %v", err)
+	}
+}
