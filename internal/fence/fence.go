@@ -48,11 +48,14 @@ type Ref struct {
 
 // Resource is a bound resource. Generation 0 binds a planned resource,
 // which must not exist yet (it is created by the fenced transition).
+// AnyGeneration binds an existing resource's metadata revision only, for a
+// check that holds for every version of it (registry.CheckSpec).
 type Resource struct {
 	Type             string
 	ID               string
 	Generation       uint64
 	MetadataRevision uint64
+	AnyGeneration    bool
 }
 
 // Binding is the authority a decision is bound to, as the fence rechecks
@@ -101,7 +104,8 @@ func FromRecord(rec signing.Record) (Binding, error) {
 				return Binding{}, err
 			}
 		}
-		r := Resource{Type: c.ResourceType, ID: c.ResourceID, Generation: c.Generation, MetadataRevision: c.MetadataRevision}
+		r := Resource{Type: c.ResourceType, ID: c.ResourceID, Generation: c.Generation, MetadataRevision: c.MetadataRevision,
+			AnyGeneration: c.AnyGeneration && c.Generation != 0}
 		k := [2]string{r.Type, r.ID}
 		if old, ok := resources[k]; ok && old != r {
 			return Binding{}, fmt.Errorf("fence: %s %s is bound in two states", r.Type, r.ID)
@@ -396,7 +400,7 @@ func (f *Fence) check(ctx context.Context, tx pgx.Tx, b Binding, mutate []string
 			return ErrResource
 		case err != nil:
 			return fmt.Errorf("fence: resource: %w", err)
-		case gen != r.Generation || meta != r.MetadataRevision:
+		case meta != r.MetadataRevision || gen != r.Generation && !r.AnyGeneration:
 			return ErrResource
 		}
 	}

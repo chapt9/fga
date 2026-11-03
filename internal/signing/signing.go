@@ -92,13 +92,16 @@ type Check struct {
 	ResourceID       string `json:"resource_id"`
 	// Version is the exact immutable version the check is bound to, when
 	// the operation names one.
-	Version          string   `json:"version"`
-	Generation       uint64   `json:"generation"`
-	MetadataRevision uint64   `json:"metadata_revision"`
-	Action           string   `json:"action"`
-	BusinessEffect   string   `json:"business_effect"`
-	CeilingEffect    string   `json:"ceiling_effect"`
-	Requires         []string `json:"requires"`
+	Version          string `json:"version"`
+	Generation       uint64 `json:"generation"`
+	MetadataRevision uint64 `json:"metadata_revision"`
+	// AnyGeneration: the check holds for every version of its resource, so
+	// the fence rechecks its metadata revision only (registry.CheckSpec).
+	AnyGeneration  bool     `json:"any_generation,omitempty"`
+	Action         string   `json:"action"`
+	BusinessEffect string   `json:"business_effect"`
+	CeilingEffect  string   `json:"ceiling_effect"`
+	Requires       []string `json:"requires"`
 }
 
 // Context holds the revisions of the decision's context facts beyond

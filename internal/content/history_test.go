@@ -168,9 +168,9 @@ func TestDocumentHistoryChecks(t *testing.T) {
 
 // TestKeysReleaseHistory covers DOC-009 when a newer version arrives
 // mid-read: a reader decided for the current version loses it, in the
-// storage role's admission and in the keys role's release alike. A reader
-// of history whose decision the new version made stale, since its history
-// check binds the document as an object's does, reads again.
+// storage role's admission and in the keys role's release alike, while a
+// reader of history keeps reading the superseded version: its history check
+// holds for every version of the document.
 func TestKeysReleaseHistory(t *testing.T) {
 	st := r1test.NewWith(t, r1test.Options{Policies: historyPolicies(nil)})
 	st.ModeBucket("vault", "p1", "internal", "server")
@@ -218,12 +218,14 @@ func TestKeysReleaseHistory(t *testing.T) {
 	                                 WHERE o.key = 'notes' ORDER BY v.created_at LIMIT 1`).Scan(&first); err != nil {
 		t.Fatal(err)
 	}
-	publishAfter(registry.HistoryOp(registry.OpKeyReleaseUnit))
-	if err := read(ada, first); !errors.Is(err, content.ErrConflict) {
-		t.Errorf("a history release across a newer version: %v, want a conflict", err)
-	}
-	if err := read(ada, first); err != nil {
-		t.Errorf("a reader of history reads the superseded version again: %v", err)
+	for _, op := range []string{registry.HistoryOp(registry.OpDocReadUnit), registry.HistoryOp(registry.OpKeyReleaseUnit)} {
+		publishAfter(op)
+		if err := read(ada, first); err != nil {
+			t.Errorf("a reader of history loses a superseded version to a newer one after %s: %v", op, err)
+		}
+		if st.AfterDecide != nil {
+			t.Fatalf("the hook for %s did not run", op)
+		}
 	}
 }
 

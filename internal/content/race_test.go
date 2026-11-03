@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -60,6 +61,52 @@ func TestOverwriteDuringReadKeepsHistoryRule(t *testing.T) {
 	// Without a concurrent write, the current version reads normally.
 	if _, err := st.Content.Stat(ctx, bob.Caller, "reports", "doc", ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestHistoryReadAcrossOverwrite: a reader of history keeps reading an
+// older version when a newer one arrives mid-read, on every history route
+// of objects, since a history check holds for every version of the object
+// and binds only its metadata revision (registry.CheckSpec.AnyGeneration).
+func TestHistoryReadAcrossOverwrite(t *testing.T) {
+	st := r1test.New(t)
+	st.Bucket("reports", "p1")
+	alice := st.Client("alice", []string{"member"}, "p1") // the owner: read-history
+	v1, err := alice.Put("reports", "doc", []byte("v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.Put("reports", "doc", []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	n := 2
+	overwrite := func(op string) {
+		st.BeforeDecide = func(req decisionsvc.Request) {
+			if req.Operation == op {
+				st.BeforeDecide = nil
+				n++
+				if _, err := alice.Put("reports", "doc", []byte("v"+strconv.Itoa(n))); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	}
+	overwrite(registry.OpReadHistory)
+	if s, err := st.Content.ReadCiphertext(ctx, alice.Caller, "reports", "doc", v1.Version); err != nil {
+		t.Errorf("a history read across an overwrite: %v", err)
+	} else {
+		s.Close()
+	}
+	overwrite(registry.OpGetEnvelopeOld)
+	if _, err := st.Content.ReadPackage(ctx, alice.Caller, "reports", "doc", v1.Version, alice.Recipient.Fingerprint().String()); err != nil {
+		t.Errorf("an older version's package across an overwrite: %v", err)
+	}
+	overwrite(registry.OpStatHistory)
+	if _, err := st.Content.Stat(ctx, alice.Caller, "reports", "doc", v1.Version); err != nil {
+		t.Errorf("an older version's metadata across an overwrite: %v", err)
+	}
+	if st.BeforeDecide != nil {
+		t.Fatal("a hook did not run")
 	}
 }
 

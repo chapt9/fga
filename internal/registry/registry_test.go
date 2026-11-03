@@ -199,13 +199,31 @@ func TestDocumentTwins(t *testing.T) {
 			}
 		}
 		last := h.Checks[len(b.Checks)]
-		if last != (CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action}) {
+		if last != (CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action, AnyGeneration: true}) {
 			t.Errorf("history twin of %s ends with %+v", base, last)
 		}
 	}
 	for _, op := range []string{OpRead, OpDocShareUnits, OpDocSearch, OpMCPInvoke} {
 		if HistoryOp(op) != "" || ReadingOp(op) != "" {
 			t.Errorf("%s has a twin", op)
+		}
+	}
+	// The history operations of objects bind every check on the object for
+	// every version of it; plain reads bind the generation.
+	for _, name := range []string{OpReadHistory, OpStatHistory, OpDiscoverHistory, OpGetEnvelopeOld, OpKeyReleaseHistory} {
+		op, _ := ops.Lookup(name)
+		for _, c := range op.Checks {
+			if c.AnyGeneration != (c.ResourceType == "storage.object") {
+				t.Errorf("%s %s: AnyGeneration %t", name, c.Role, c.AnyGeneration)
+			}
+		}
+	}
+	for _, name := range []string{OpRead, OpStat, OpKeyRelease, OpGetEnvelope, OpObjectExport, OpDocReadUnit} {
+		op, _ := ops.Lookup(name)
+		for _, c := range op.Checks {
+			if c.AnyGeneration {
+				t.Errorf("%s %s binds no generation", name, c.Role)
+			}
 		}
 	}
 }

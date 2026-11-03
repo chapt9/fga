@@ -378,6 +378,13 @@ type CheckSpec struct {
 	// Optional lets a request leave the role unfilled, for operations whose
 	// checks depend on the data, such as lineage sources of three types.
 	Optional bool
+	// AnyGeneration marks a check that holds for every version of its
+	// resource, as a history check does: its decision binds the resource's
+	// metadata revision only, so a new version does not make it stale,
+	// while a change of labels, owner or grants still does. A plain read of
+	// the current version binds the generation too, which is what keeps it
+	// to the current version.
+	AnyGeneration bool
 }
 
 // CheckKind returns the check's kind, OPERATION when unset.
@@ -469,6 +476,9 @@ func (o *Operations) Digest() string {
 			fmt.Fprintf(h, "check %s %s %s %s %t", c.Role, c.ResourceType, c.Action, c.kind(), c.Repeated)
 			if c.Optional {
 				h.Write([]byte(" optional"))
+			}
+			if c.AnyGeneration {
+				h.Write([]byte(" any-generation"))
 			}
 			h.Write([]byte("\n"))
 		}

@@ -354,11 +354,13 @@ func (l *leased) Close() error {
 }
 
 // headHolds rechecks, after the decision, the head the operation selected
-// before it (review finding 2): the object still has the generation the
-// decision bound, and the version is still current exactly when the
-// operation chose the checks of a current version. Otherwise an overwrite
-// in between would let a historical version pass with the checks of a
-// current one. In the fence q is the transaction and the rows are locked.
+// before it (review finding 2): the version is still current exactly when
+// the operation chose the checks of a current version, and for those the
+// object still has the generation the decision bound. Otherwise an
+// overwrite in between would let a historical version pass with the checks
+// of a current one. The checks of a historical version hold for every
+// version (registry.CheckSpec.AnyGeneration), so a newer version does not
+// stop them. In the fence q is the transaction and the rows are locked.
 func (s *Service) headHolds(ctx context.Context, q catalog.Querier, tenant string, o object, v version, current bool, rec signing.Record, lock bool) error {
 	sql := `SELECT o.current_version, r.generation FROM objects o JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
 	         WHERE o.tenant = $1 AND o.id = $2`
@@ -376,7 +378,7 @@ func (s *Service) headHolds(ctx context.Context, q catalog.Querier, tenant strin
 			bound, ok = c.Generation, true
 		}
 	}
-	if !ok || generation != bound || (head != nil && *head == v.ID) != current {
+	if !ok || current && generation != bound || (head != nil && *head == v.ID) != current {
 		return fmt.Errorf("%w: the object changed during the operation", ErrConflict)
 	}
 	return nil

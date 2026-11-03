@@ -313,3 +313,41 @@ func TestFirstEpochRaiseIsOrdered(t *testing.T) {
 		t.Fatalf("effects = %d, want only the admitted one", n)
 	}
 }
+
+// TestAnyGeneration: a check that holds for every version of its resource
+// binds its metadata revision only. A new version does not make it stale;
+// a metadata change does. A check of the same resource that binds the
+// generation cannot be merged with it (registry.CheckSpec.AnyGeneration).
+func TestAnyGeneration(t *testing.T) {
+	history := func() signing.Record {
+		rec := record("d-h")
+		for i := range rec.Checks[:2] {
+			rec.Checks[i].AnyGeneration = true
+		}
+		return rec
+	}
+	for name, tc := range map[string]struct {
+		change string
+		want   error
+	}{
+		"a new version":   {`UPDATE resources SET generation = 18 WHERE id = 'o-1'`, nil},
+		"a label changed": {`UPDATE resources SET metadata_revision = 3 WHERE id = 'o-1'`, ErrResource},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _, pool := setup(t)
+			b, err := FromRecord(history())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pgtest.Exec(t, pool, tc.change)
+			if err := f.Run(context.Background(), b, nil, effect("h")); !errors.Is(err, tc.want) {
+				t.Fatalf("Run = %v, want %v", err, tc.want)
+			}
+		})
+	}
+	mixed := history()
+	mixed.Checks[1].AnyGeneration = false
+	if _, err := FromRecord(mixed); err == nil {
+		t.Fatal("one resource bound with and without its generation")
+	}
+}

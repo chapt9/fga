@@ -35,7 +35,7 @@ All fences and all authority changers acquire rows in this order. A transaction 
 | 3 | `identities`: actor, subject and every check principal, sorted by id | `FOR SHARE` | Same revision; not disabled; not expired |
 | 4 | `delegations`: every link of the chain, sorted by id | `FOR SHARE` | Same revision; not revoked; not expired |
 | 5 | `recipient_keys`: every recipient fingerprint, sorted | `FOR SHARE` | Same revision; status ACTIVE |
-| 6 | `resources`: every bound resource, sorted by (type, id) | `FOR UPDATE` when the operation changes it, otherwise `FOR SHARE` | Same generation and metadata revision |
+| 6 | `resources`: every bound resource, sorted by (type, id) | `FOR UPDATE` when the operation changes it, otherwise `FOR SHARE` | Same generation and metadata revision. A check that holds for every version of its resource, such as a history check, binds the metadata revision only (`any_generation`, `registry.CheckSpec.AnyGeneration`); a plain read of the current version binds both |
 | 6a | `approvals`: the approval the record binds (`context_revisions.approval`), if any | `FOR UPDATE` in a transition, `FOR SHARE` in a read-only check | State APPROVED, same revision, unexpired (APR-002) |
 | 7 | Operation rows: object heads, then versions, then upload intents, then envelopes, each sorted by id; for a label decision, the active label order (`FOR SHARE`), whose generation must be the record's; for a publication or share, the content-signing key's row (`FOR SHARE`), which must still be ACTIVE and the caller's | `FOR UPDATE` | Operation-specific expected state (PUB-003, PUB-007, D-06) |
 | 7a | `approvals` | update | The bound approval becomes CONSUMED, revision + 1, in the operation's transaction (APR-002, APR-003) |

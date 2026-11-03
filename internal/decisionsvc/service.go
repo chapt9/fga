@@ -494,7 +494,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !s.d.Now().Before(binding.ValidUntil) {
 		return deny(gate.ReasonDecisionExpired)
 	}
-	rec := s.record(resp.DecisionID, adapter, req, binding, bound, snap, d.Results, incarnation)
+	rec := s.record(resp.DecisionID, adapter, req, op, binding, bound, snap, d.Results, incarnation)
 	rec.ObligationMappingVersion, rec.Obligations = mapping, obligations
 	if op.BindsLineage != "" {
 		// A derived version decided without its sources still depends on
@@ -534,7 +534,7 @@ func (s *Service) dependencies(ctx context.Context, req Request, role string) ([
 	return nil, errors.New("decisionsvc: no check names the lineage")
 }
 
-func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound []registry.Resource, snap *release.Snapshot,
+func (s *Service) record(id, adapter string, req Request, op registry.Operation, b gate.Binding, bound []registry.Resource, snap *release.Snapshot,
 	results []decision.CheckResult, incarnation uint64) signing.Record {
 	rec := signing.Record{
 		DecisionID: id, Audience: req.Audience, Tenant: req.Tenant, RecoveryIncarnation: incarnation, Adapter: adapter,
@@ -550,9 +550,11 @@ func (s *Service) record(id, adapter string, req Request, b gate.Binding, bound 
 	for i, c := range req.Checks {
 		action, _ := s.d.Types.CanonicalAction(bound[i].Type, c.Action)
 		r := results[i]
+		spec, _ := op.Spec(c.Role)
 		rec.Checks = append(rec.Checks, signing.Check{ID: c.ID, Kind: string(kindOf(c.Kind)), PrincipalBinding: c.PrincipalBinding,
 			Principal: signing.Ref(r.Principal), KeyRevision: r.KeyRevision, ResourceType: bound[i].Type, ResourceID: bound[i].ID,
-			Version: c.Version, Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision, Action: action,
+			Version: c.Version, Generation: bound[i].Generation, MetadataRevision: bound[i].MetadataRevision,
+			AnyGeneration: spec.AnyGeneration && bound[i].Generation != 0, Action: action,
 			BusinessEffect: r.Business.String(), CeilingEffect: ceilingName(r.Ceiling), Requires: append([]string{}, r.Requires...)})
 	}
 	return rec

@@ -280,7 +280,7 @@ Today a document version is read with `read-units` on the version and `read` on 
 
 This changes existing behavior. A reader who reads superseded document versions today needs a `read-history` rule afterwards. In the example bundle, documents follow objects: the owner and auditor history rules cover them, members read only current versions, and three sentinels check it. Bundles are re-signed because the operations change (D-D).
 
-A reader allowed only the current version can lose it mid-call when a newer reading arrives, because the keys role then refuses the release. Data tools start again from the new current version, at most three times. A reader of history whose decision a newer version made stale reads again too, because the history check binds the document, as for objects.
+A reader allowed only the current version can lose it mid-call when a newer reading arrives, because the keys role then refuses the release. Data tools start again from the new current version, at most three times. A reader of history keeps reading: a history check holds for every version of the document, so it binds the document's metadata revision only (`registry.CheckSpec.AnyGeneration`), for objects as for documents.
 
 ## Data tools (DTL-001 to DTL-009)
 
@@ -668,7 +668,8 @@ Done when a reader without `read-history` gets only the current version on every
 |---|---|
 | `registry` `TestDocumentTwins` | Every history twin has its disclosure's checks and then the history action on the document; every reading twin has post-reading |
 | `content` `TestDocumentHistoryChecks` | Each disclosure route of a superseded version, in both modes: a member without `read-history` gets only the current version, a reader of history and the owner both |
-| `content` `TestKeysReleaseHistory` | A newer version arriving after a plain decision: the storage role's admission and the keys role's release refuse; a stale history read reads again |
+| `content` `TestKeysReleaseHistory` | A newer version arriving after a plain decision: the storage role's admission and the keys role's release refuse; a history read holds across it |
+| `content` `TestHistoryReadAcrossOverwrite`, `fence` `TestAnyGeneration` | A history read of an object holds across an overwrite on every history route; a metadata change still makes it stale, and a resource cannot be bound both ways |
 | `content` `TestDocumentVersionListing` | Newest first with `published_at`, omission without count, continuation binding, a moved head |
 | `content` `TestPublishedAtCondition` | A rule on `published_at` from a fixed date; a version without it meets no guarded condition |
 | `content` `TestDelegationWithoutHistory` | An agent gets the current version while its user reads history |

@@ -411,8 +411,21 @@ func historyTwins(ops []Operation) []Operation {
 		if !ok {
 			continue
 		}
-		checks := append(slices.Clone(op.Checks), CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action})
+		checks := append(slices.Clone(op.Checks), CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action, AnyGeneration: true})
 		out = append(out, Operation{Name: HistoryOp(op.Name), Checks: checks})
+	}
+	return out
+}
+
+// anyGeneration marks every check of checks on a storage object as holding
+// for every version of it, for a history operation whose other checks are
+// on other resources.
+func anyGeneration(checks []CheckSpec) []CheckSpec {
+	out := slices.Clone(checks)
+	for i := range out {
+		if out[i].ResourceType == "storage.object" {
+			out[i].AnyGeneration = true
+		}
 	}
 	return out
 }
@@ -485,10 +498,12 @@ func baseOperations() []Operation {
 	one := func(name, role, typ, action string) Operation {
 		return Operation{Name: name, Checks: []CheckSpec{{Role: role, ResourceType: typ, Action: action}}}
 	}
+	// A history operation's checks on the object hold for every version
+	// of it (AnyGeneration).
 	withHistory := func(name, action, history string) Operation {
 		return Operation{Name: name, Checks: []CheckSpec{
-			{Role: RoleObject, ResourceType: "storage.object", Action: action},
-			{Role: RoleHistory, ResourceType: "storage.object", Action: history},
+			{Role: RoleObject, ResourceType: "storage.object", Action: action, AnyGeneration: true},
+			{Role: RoleHistory, ResourceType: "storage.object", Action: history, AnyGeneration: true},
 		}}
 	}
 	getEnvelope := []CheckSpec{
@@ -518,7 +533,8 @@ func baseOperations() []Operation {
 		one(OpDelete, RoleObject, "storage.object", "delete"),
 		one(OpDeleteVersion, RoleObject, "storage.object", "delete-version"),
 		{Name: OpGetEnvelope, Checks: getEnvelope},
-		{Name: OpGetEnvelopeOld, Checks: append(getEnvelope[:1:1], append([]CheckSpec{{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history"}}, getEnvelope[1:]...)...)},
+		{Name: OpGetEnvelopeOld, Checks: anyGeneration(append(getEnvelope[:1:1],
+			append([]CheckSpec{{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history"}}, getEnvelope[1:]...)...))},
 		{Name: OpPublishEnvelope, Checks: envelopeChecks(false)},
 		one(OpRetireEnvelope, RoleEnvelope, "crypto.envelope", "retire"),
 		one(OpEnrollRecipient, RoleRecipient, "crypto.recipient", "enroll"),
@@ -540,8 +556,8 @@ func baseOperations() []Operation {
 		one(OpKeySealCreate, RoleBucket, "storage.bucket", "create-object"),
 		one(OpKeySealVersion, RoleObject, "storage.object", "new-version"),
 		one(OpKeyRelease, RoleObject, "storage.object", "read"),
-		{Name: OpKeyReleaseHistory, Checks: []CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "read"},
-			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history"}}},
+		{Name: OpKeyReleaseHistory, Checks: []CheckSpec{{Role: RoleObject, ResourceType: "storage.object", Action: "read", AnyGeneration: true},
+			{Role: RoleHistory, ResourceType: "storage.object", Action: "read-history", AnyGeneration: true}}},
 		one(OpPublishServerCreate, RoleBucket, "storage.bucket", "create-object"),
 		{Name: OpPublishServerCreateLabeled, Checks: []CheckSpec{{Role: RoleBucket, ResourceType: "storage.bucket", Action: "create-object"},
 			{Role: RoleLabel, ResourceType: "storage.object", Action: "label"}}},
