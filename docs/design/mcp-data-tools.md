@@ -8,6 +8,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - Stop 3, client-mode ingestion, is built, with the owner's two choices D-M and D-N.
 - Stop 4, document history, is built, with two fixes the owner asked for the same day: a history read holds across a newer version, and a rule can bound history to a window such as the last day (evaluator `fga.evaluator/2`). The specification erratum for the window waits for the next specification version.
 - Stop 5, data tools in the storage role, is built for both encryption modes, and stop 6, MCP, too.
+- Stop 7, the console pages, is built in fga-console. Stops 3, 5, 6 and 7 were checked together against the running demo on 4 November 2026 ("Combined demo check").
 - Order: the owner chose data tools first, then client mode first, and on 3 November 2026 asked for stops 3, 5, 6 and 7 in one go, without bloating the code base. Both encryption modes stay required for sources and data tools.
 
 ## Summary
@@ -729,11 +730,29 @@ Built on 4 November 2026: `data.list` in `registry.MCPTools` and `MCPToolRoutes`
 
 Done when an MCP client with a real agent token under a delegation lists and calls data tools against the running demo, the delegation's missing history limits it to the current reading, and the bridge answers a client-mode tool with the person's own key.
 
-### Stop 7: console
+### Stop 7: console (built)
 
-Build the source and data tool pages in fga-console.
+Built in fga-console on its branch `data-tools` on 4 November 2026: the pages Data sources and Data tools over the admin API, the console server's forward routes for them with IDs checked first, and `POST /api/data-tools/preview`, which reaches the file API with the person's own pass. Plain words: post-reading is "Send readings", the role `source` "Sending system". The console's `TestSourcesAndToolsAreForwarded` covers the routes.
 
-Done when an administrator builds a source and a tool from a pasted sample, a second administrator reviews the source, the tool is previewed and published, and an agent uses it, checked in a real browser against the running demo.
+Done when an administrator builds a source and a tool from a pasted sample, a second administrator reviews the source, the tool is previewed and published, and an agent uses it, checked in a real browser against the running demo: done, see below.
+
+### Combined demo check (stops 3, 5, 6 and 7)
+
+On 4 November 2026 the demo moved to fga `data-tools` 5c01eee and fga-console `data-tools` 82ba93d: every binary rebuilt, migration 0031 applied, the example bundle re-signed at epoch 6 (`members-use-data-tools`), and `mcp enable` run again for `data.list`. A snapshot from before is in the session's scratchpad (`demo-before-stop5`, temporary). Checked against the running roles:
+
+- **Stop 3.** A client-mode source `greenhouse-private` (temperature for lena and alice, restricted humidity for lena). The sensor posted with `fga post-reading`: lena opened both groups, alice temperature, bob nothing, and neither value was in the catalog, the blobs or the journal. The SDK refused to post while lena, the humidity group's only reader, had no active recipient key.
+- **Stop 5.** Over `greenhouse-climate`: lena (owner) got both groups, alice the internal one with `skip_fields` and not found with `skip_reading`, carl not found; a bad argument 400, an unknown sensor 404; the preview of the published record answered like the call, and carl's preview not found. History: lena five readings newest first, `since` bounded them, alice the current one. Over `greenhouse-private`, each recipient's client opened exactly its groups, bob got nothing, the answer on the wire held alice's one package and no value, another person's key answered 404 and none `409 ENCRYPTION_MODE`.
+- **Stop 6.** Over MCP, lena listed the four data tools and read five history readings; agent-7 acting for lena under a delegation without history listed them, read the current reading only, and both groups of the latest; a generic client got the client-mode error for `private_climate`; carl listed none. Through `fga mcp-bridge` with their own keys, lena got both groups of `private_climate` and alice temperature.
+- **Stop 7.** In the built-in browser: root built `greenhouse-soil` from a pasted sample (groups soil and restricted chemistry, key `soil/` plus the sensor) and got no review button for their own draft; rita reviewed it (catalog: author root, reviewer rita); rita built `read_soil`, previewed it as herself (moisture, not the restricted pH), saved and published it; agent-7 for lena then read moisture and pH over MCP, alice moisture. The audit held 18 data tool events and no value.
+
+Changes to the demo's directory, all through `fga-admin`:
+- lena: `discover` and `invoke` on `agent.tool` (she held `approve` only, so the capability bound refused her before policy, DLG-004), and her recipient key enrolled;
+- greenhouse-sensor: sources `greenhouse-private` and `greenhouse-soil`, the `source-client` preset, a signing key;
+- agent-7: role agent, the storage preset, and the delegation `dlg-agent7-lena` (no `storage.object` rights, so no history);
+- rita: a member of p1 with the storage preset and the console's own-record right, so that her preview reads as a person, and a dev sign-in name in the console's `console.json`;
+- sources `greenhouse-private` and `greenhouse-soil`, and the tools `read_climate`, `read_climate_strict`, `climate_history`, `private_climate` and `read_soil`.
+
+Found and fixed: the sources table pushed its buttons out of sight at the console's usual width, and reviews were confirmed with the danger style (fga-console 82ba93d). Before the check, a code read found that client-mode tool packages carried Go's default field names instead of the unit package's wire shape (fixed in 5c01eee).
 
 ## Decisions
 
