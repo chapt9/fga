@@ -26,8 +26,8 @@ func readingPolicies() map[string]string {
 		policies[file] = strings.Replace(policies[file], `"rules":[`, `"rules":[`+rule+",", 1)
 	}
 	own := `has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources`
-	add("buckets.json", `{"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],"when":"`+own+`"}`)
-	add("objects.json", `{"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],"when":"`+own+`"}`)
+	add("buckets.json", `{"id":"sources-post-readings","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"`+own+`"}`)
+	add("objects.json", `{"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"`+own+`"}`)
 	add("units.json", `{"id":"facility-reads-location","effect":"allow","actions":["read"],"roles":["facility"],
 	  "when":"has(resource.attributes.group) && resource.attributes.group == 'location' && resource.attributes.project in principal.attributes.projects"}`)
 	return policies
@@ -236,10 +236,10 @@ func TestSourceGroupsSeparate(t *testing.T) {
 	}
 }
 
-// TestSourceIdentityLimits covers ING-002 and ING-003: a posting system
-// posts only to its own sources, and nobody writes a source's bucket
-// through another route, not even a member allowed to create objects in
-// the bucket's project.
+// TestSourceIdentityLimits covers ING-002, ING-003 and ING-012: a posting
+// system posts only to its own sources and uploads nothing, and nobody
+// writes a source's bucket through another route, not even a member
+// allowed to create objects in the bucket's project.
 func TestSourceIdentityLimits(t *testing.T) {
 	r := newReadings(t)
 	r.source(t, "orchard", true)
@@ -250,16 +250,53 @@ func TestSourceIdentityLimits(t *testing.T) {
 	if n := st.Count(`SELECT count(*) FROM objects o JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket WHERE b.name = 'orchard'`); n != 0 {
 		t.Fatalf("the refused reading left %d objects", n)
 	}
+	// The right to post is no right to upload: the decision refuses the
+	// posting system before the bucket's source is looked at.
+	if _, err := st.Content.PutDocumentText(ctx, r.sensor, content.TextRequest{Bucket: "greenhouse-climate", Key: "notes", IdempotencyKey: "t-sensor"},
+		[]byte("a note")); !errors.Is(err, content.ErrNotFound) {
+		t.Errorf("the posting system writes text into its source's bucket: %v", err)
+	}
 	mia := st.User("mia", []string{"member"}, "greenhouse")
-	for name, c := range map[string]content.Caller{"the posting system": r.sensor, "a member": mia} {
-		if _, err := st.Content.PutDocumentText(ctx, c, content.TextRequest{Bucket: "greenhouse-climate", Key: "notes", IdempotencyKey: "t-" + name},
-			[]byte("a note")); !errors.Is(err, content.ErrSourceBucket) {
-			t.Errorf("%s writes text into the source's bucket: %v", name, err)
-		}
+	if _, err := st.Content.PutDocumentText(ctx, mia, content.TextRequest{Bucket: "greenhouse-climate", Key: "notes", IdempotencyKey: "t-mia"},
+		[]byte("a note")); !errors.Is(err, content.ErrSourceBucket) {
+		t.Errorf("a member writes text into the source's bucket: %v", err)
 	}
 	if _, err := st.Content.PutObject(ctx, mia, content.BeginRequest{Bucket: "greenhouse-climate", Key: "blob", IdempotencyKey: "o-1"}, 4,
 		strings.NewReader("data")); !errors.Is(err, content.ErrSourceBucket) {
 		t.Errorf("a member puts an object into the source's bucket: %v", err)
+	}
+}
+
+// TestPostingNeedsItsOwnRight is the regression test of the first open
+// point of stop 2's demo check (ING-012): a post is decided as
+// post-reading, so a member whose rules let them upload in the bucket's
+// project, and the readings' owner, whose rules let them add versions,
+// post nothing, though both hold every capability. Before, a member posted
+// a reading under a new key that looked like the device's.
+func TestPostingNeedsItsOwnRight(t *testing.T) {
+	r := newReadings(t)
+	if _, err := r.post(r.sensor, "greenhouse-climate", "r-1", northReading); err != nil {
+		t.Fatal(err)
+	}
+	st := r.st
+	mia := st.User("mia", []string{"member"}, "greenhouse")
+	owner := st.Caller("team-greenhouse")
+	for name, c := range map[string]struct {
+		caller  content.Caller
+		payload string
+	}{
+		"a member under a new key":         {mia, `{"sensor":"made-up","temperature":99}`},
+		"a member under the device's key":  {mia, `{"sensor":"gh-north-1","temperature":99}`},
+		"the owner under a new key":        {owner, `{"sensor":"owner-made","temperature":99}`},
+		"the owner under the device's key": {owner, `{"sensor":"gh-north-1","temperature":99}`},
+	} {
+		if _, err := r.post(c.caller, "greenhouse-climate", "m-"+name, c.payload); !errors.Is(err, content.ErrNotFound) {
+			t.Errorf("%s posts: %v", name, err)
+		}
+	}
+	if n := st.Count(`SELECT count(*) FROM document_versions v JOIN objects o ON o.tenant = v.tenant AND o.id = v.document
+	                   JOIN buckets b ON b.tenant = o.tenant AND b.id = o.bucket WHERE b.source IS NOT NULL`); n != 1 {
+		t.Fatalf("%d reading versions, want only the device's", n)
 	}
 }
 

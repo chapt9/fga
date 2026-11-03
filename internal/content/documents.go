@@ -129,6 +129,9 @@ type storedDocIntent struct {
 	result        []byte
 	// encryption is the mode the document version began under (ENC-001).
 	encryption string
+	// post marks a reading of a source, whose steps decide post-reading
+	// (ING-012).
+	post bool
 }
 
 // BeginDocument reserves a document version (DOC-002 step 1). A new key
@@ -199,7 +202,7 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	}
 	in := storedDocIntent{DocumentIntent: DocumentIntent{IntentID: cryptowire.NewUUID().String(), Tenant: tenantID.String(),
 		DocumentVersion: cryptowire.NewUUID().String(), MaxCiphertext: s.d.Limits.MaxCiphertext, ExpiresAt: s.d.Now().Add(s.d.Limits.IntentLifetime)},
-		principal: c.Principal, requestDigest: digest, bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption}
+		principal: c.Principal, requestDigest: digest, bucket: b.ID, key: r.Key, scope: b.Scope, encryption: b.Encryption, post: reading != nil}
 	var kind, current string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT o.id::text, o.kind, coalesce(o.current_document_version::text, ''), r.generation, r.scope,
 	                                               r.attributes FROM objects o
@@ -421,12 +424,19 @@ func reuseCheck(n, unit string, types unitTypes) []check {
 }
 
 // docChecks is the check on the document: create-object on the bucket for
-// a new key, new-version on the document otherwise.
+// a new key, new-version on the document otherwise. A reading's steps are
+// the operations' reading twins, which decide post-reading on the same
+// resources, so no rule for uploads or owners reaches a post (ING-012).
 func docChecks(in storedDocIntent, create, version string) (string, check) {
-	if in.newDocument {
-		return create, check{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}
+	createAction, versionAction := "create-object", "new-version"
+	if in.post {
+		create, version = registry.ReadingOp(create), registry.ReadingOp(version)
+		createAction, versionAction = "post-reading", "post-reading"
 	}
-	return version, check{id: "document", role: registry.RoleDocument, action: "new-version", ref: canonical("storage.object", in.Document)}
+	if in.newDocument {
+		return create, check{id: "bucket", role: registry.RoleBucket, action: createAction, ref: canonical("storage.bucket", in.bucket.String())}
+	}
+	return version, check{id: "document", role: registry.RoleDocument, action: versionAction, ref: canonical("storage.object", in.Document)}
 }
 
 func (s *Service) docIntentByIdempotency(ctx context.Context, c Caller, key string) (storedDocIntent, error) {
@@ -475,7 +485,12 @@ func (s *Service) docIntent(ctx context.Context, q interface {
 	if err := json.Unmarshal(units, &in.Units); err != nil {
 		return in, err
 	}
-	return in, json.Unmarshal(attrs, &in.attributes)
+	if err := json.Unmarshal(attrs, &in.attributes); err != nil {
+		return in, err
+	}
+	// Only a reading's begin plans the source attribute (ING-012).
+	_, in.post = in.attributes["source"]
+	return in, nil
 }
 
 // UnitFinal is one unit's signed descriptor and initial envelopes.

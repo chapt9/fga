@@ -52,11 +52,11 @@ var Presets = map[string]map[string][]string{
 		"agent.tool":         {"discover", "invoke"},
 	},
 	// source is the capability set of a system posting server-mode
-	// readings to a source (docs/design/mcp-data-tools.md); policies say
-	// to which sources.
+	// readings to a source (docs/design/mcp-data-tools.md, ING-012):
+	// posting, and no upload; policies say to which sources.
 	"source": {
-		"storage.bucket": {"create-object"},
-		"storage.object": {"new-version"},
+		"storage.bucket": {"post-reading"},
+		"storage.object": {"post-reading"},
 	},
 	// approver lets an actor decide approvals (ruling 6); policies still
 	// say on which resources.

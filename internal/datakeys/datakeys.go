@@ -294,12 +294,16 @@ func (s *Service) Release(ctx context.Context, decision signing.Signed, versionI
 // data key (SSE-001, SSE-003). The decision is for
 // storage.key.seal-document-create with create-object on the intent's
 // bucket, or storage.key.seal-document-version with new-version on its
-// document, made for the intent's own principal. Inside the fence the
-// document intent must be RESERVED and unexpired and each unit intent
-// RESERVED without a key; each key is sealed for its unit's exact
-// identity and stored with the unit intent, once. Reused units get none.
+// document, made for the intent's own principal. A reading of a source is
+// sealed under the reading twins instead, storage.key.seal-reading-create
+// or storage.key.seal-reading-version with post-reading, and only a
+// reading is (ING-012). Inside the fence the document intent must be
+// RESERVED and unexpired and each unit intent RESERVED without a key; each
+// key is sealed for its unit's exact identity and stored with the unit
+// intent, once. Reused units get none.
 func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, docIntentID string) ([]DataKey, error) {
-	rec, err := s.verify(decision, registry.OpKeySealDocCreate, registry.OpKeySealDocVersion)
+	rec, err := s.verify(decision, registry.OpKeySealDocCreate, registry.OpKeySealDocVersion,
+		registry.OpKeySealReadingCreate, registry.OpKeySealReadingVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -309,14 +313,14 @@ func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, doc
 	}
 	var tenant, bucket, document cryptowire.UUID
 	var principal, state, mode, kind string
-	var newDocument bool
+	var newDocument, reading bool
 	var expiresAt time.Time
 	err = s.d.Catalog.Pool().QueryRow(ctx, `
 		SELECT t.id, d.bucket, d.document, d.principal, d.new_document, d.state, d.encryption, d.expires_at,
-		       coalesce(d.planned_attributes->>'kind', '')
+		       coalesce(d.planned_attributes->>'kind', ''), d.planned_attributes->>'source' IS NOT NULL
 		  FROM document_intents d JOIN tenants t ON t.name = d.tenant
 		 WHERE d.tenant = $1 AND d.id = $2`, rec.Tenant, id).
-		Scan(&tenant, &bucket, &document, &principal, &newDocument, &state, &mode, &expiresAt, &kind)
+		Scan(&tenant, &bucket, &document, &principal, &newDocument, &state, &mode, &expiresAt, &kind, &reading)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -324,8 +328,10 @@ func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, doc
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	c := rec.Checks[0]
-	bound := principal == rec.Actor.ID && mode == "server"
-	if rec.Operation == registry.OpKeySealDocCreate {
+	// Only a reading's begin plans the source attribute.
+	readingSeal := rec.Operation == registry.OpKeySealReadingCreate || rec.Operation == registry.OpKeySealReadingVersion
+	bound := principal == rec.Actor.ID && mode == "server" && reading == readingSeal
+	if rec.Operation == registry.OpKeySealDocCreate || rec.Operation == registry.OpKeySealReadingCreate {
 		bound = bound && newDocument && c.ResourceID == bucket.String()
 	} else {
 		bound = bound && !newDocument && c.ResourceID == document.String()

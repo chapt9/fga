@@ -164,9 +164,9 @@ var Policies = map[string]string{
 
 // UserActions are the capabilities every fixture user gets (DLG-004).
 var UserActions = map[string][]string{
-	"storage.bucket": {"create-object", "list", "manage", "approve", "share"},
+	"storage.bucket": {"create-object", "list", "manage", "approve", "share", "post-reading"},
 	"storage.object": {"read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version", "share",
-		"label", "relabel", "propose-label", "export", "approve"},
+		"label", "relabel", "propose-label", "export", "approve", "post-reading"},
 	"crypto.envelope":     {"create", "release", "retire", "approve"},
 	"document.version":    {"read-units", "raw-read", "discover", "share", "export", "approve"},
 	"document.text_unit":  {"read", "share", "label", "relabel", "propose-label", "export-key", "approve"},

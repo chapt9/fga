@@ -30,8 +30,8 @@ func TestReadingsHTTP(t *testing.T) {
 	policies := maps.Clone(r1test.Policies)
 	own := `has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources`
 	for file, rule := range map[string]string{
-		"buckets.json": `{"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],"when":"` + own + `"}`,
-		"objects.json": `{"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],"when":"` + own + `"}`,
+		"buckets.json": `{"id":"sources-post-readings","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
+		"objects.json": `{"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
 	} {
 		policies[file] = strings.Replace(policies[file], `"rules":[`, `"rules":[`+rule+",", 1)
 	}

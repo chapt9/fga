@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -43,9 +44,12 @@ type fixture struct {
 	alice  *r1test.Client
 }
 
-func setup(t *testing.T) *fixture {
+func setup(t *testing.T) *fixture { t.Helper(); return setupWith(t, r1test.Options{}) }
+
+// setupWith is setup on a stack built with opts.
+func setupWith(t *testing.T, opts r1test.Options) *fixture {
 	t.Helper()
-	st := r1test.New(t)
+	st := r1test.NewWith(t, opts)
 	f := &fixture{st: st, ring: st.KEKs, svc: st.DataKeys}
 	f.st.ModeBucket("vault", "p1", "internal", "server")
 	f.alice = f.st.Client("alice", []string{"member"}, "p1")
@@ -123,6 +127,22 @@ func (f *fixture) intent(t *testing.T, principal, bucket, mode string) (string, 
 		t.Fatal(err)
 	}
 	return id.String(), b
+}
+
+// docIntent writes a RESERVED server-mode document intent of principal for
+// a new key in bucket, with planned attributes attrs and no units.
+func (f *fixture) docIntent(t *testing.T, principal, bucket, attrs string) string {
+	t.Helper()
+	id := cryptowire.NewUUID()
+	if _, err := f.st.Pool.Exec(ctx, `
+		INSERT INTO document_intents (tenant, id, principal, idempotency_key, request_digest, bucket, key, document, new_document,
+		                              document_version, expected_generation, planned_scope, planned_attributes, units, state, expires_at,
+		                              created_at, encryption)
+		VALUES ($1, $2, $3, $4, 'd', $5, $6, gen_random_uuid(), true, gen_random_uuid(), 0, '', $7::jsonb, '[]', 'RESERVED', $8, $9, 'server')`,
+		r1test.Tenant, id, principal, id.String(), bucket, "k-"+id.String(), attrs, f.st.Clock.Add(time.Hour), *f.st.Clock); err != nil {
+		t.Fatal(err)
+	}
+	return id.String()
 }
 
 // version publishes a LIVE server-mode version of alice's object at key in
@@ -262,6 +282,33 @@ func TestSeal(t *testing.T) {
 
 // TestSealWithoutKEK: a tenant without an active KEK version gets no data
 // key, and nothing is stored.
+// TestSealDocumentKeepsReadingsApart covers ING-012 in the keys role: a
+// reading's unit keys are sealed only under a reading's seal, which decides
+// post-reading, and another document's only under the document's seal.
+func TestSealDocumentKeepsReadingsApart(t *testing.T) {
+	policies := maps.Clone(r1test.Policies)
+	policies["buckets.json"] = strings.Replace(policies["buckets.json"], `"rules":[`,
+		`"rules":[{"id":"members-post","effect":"allow","actions":["post-reading"],"roles":["member"]},`, 1)
+	f := setupWith(t, r1test.Options{Policies: policies})
+	post := decisionsvc.Check{ID: "bucket", Role: registry.RoleBucket, Action: "post-reading", Resource: decisionsvc.Alias{Type: "storage.bucket", ID: f.vault}}
+	for name, c := range map[string]struct {
+		attrs, op string
+		check     decisionsvc.Check
+		ok        bool
+	}{
+		"a reading under a reading's seal":   {`{"source":"greenhouse-climate"}`, registry.OpKeySealReadingCreate, post, true},
+		"a reading under a document's seal":  {`{"source":"greenhouse-climate"}`, registry.OpKeySealDocCreate, createObject(f.vault), false},
+		"a document under a reading's seal":  {`{}`, registry.OpKeySealReadingCreate, post, false},
+		"a document under a document's seal": {`{}`, registry.OpKeySealDocCreate, createObject(f.vault), true},
+	} {
+		id := f.docIntent(t, "alice", f.vault, c.attrs)
+		_, err := f.svc.SealDocument(ctx, f.decide(t, f.alice, c.op, c.check), id)
+		if c.ok && err != nil || !c.ok && !errors.Is(err, datakeys.ErrDecision) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestSealWithoutKEK(t *testing.T) {
 	f := setup(t)
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE kek_versions SET state = 'RETIRED'`); err != nil {

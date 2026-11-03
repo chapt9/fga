@@ -20,7 +20,7 @@ A refusal is logged with the console, tenant and subject; it changes nothing.
 | `GET /v1/admin/identities?after=&limit=` | identities with roles, attributes and capabilities, in ID order |
 | `PUT /v1/admin/identities/{id}` | create an identity or replace its `roles` and `attributes` |
 | `POST /v1/admin/identities/{id}/disable` | disable an identity (final). Refused with 409 and `unreadable`, client-mode files per bucket, while it is the last reader of any; optional body `{"confirm_unreadable": true}` disables it anyway (see "Last readers") |
-| `POST /v1/admin/identities/{id}/capabilities/grant` | grant a `preset` (`storage`, `approver`) or `capabilities` (type to actions) |
+| `POST /v1/admin/identities/{id}/capabilities/grant` | grant a `preset` (`storage`, `approver`, `source`) or `capabilities` (type to actions) |
 | `POST /v1/admin/identities/{id}/capabilities/revoke` | revoke them; answers whether the identity held any |
 | `GET /v1/admin/delegations`, `POST /v1/admin/delegations` | list; add one (`id`, `actor`, `subject`, `audience`, `grants`, `expires_in`, optional `parent`) |
 | `POST /v1/admin/delegations/{id}/revoke` | revoke a delegation |

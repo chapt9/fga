@@ -271,7 +271,9 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 }
 
 // intentChecks are the checks that authorize an intent's upload: create on
-// the bucket for a new key, new-version on the object otherwise.
+// the bucket for a new key, new-version on the object otherwise. A unit
+// is authorized like its document, a reading's unit under the reading
+// twins with post-reading (ING-012).
 func (s *Service) intentChecks(in storedIntent, create, version string) (string, []check) {
 	if in.kind == "derived" {
 		if create == registry.OpBeginCreate {
@@ -286,10 +288,16 @@ func (s *Service) intentChecks(in storedIntent, create, version string) (string,
 		}
 	}
 	if in.kind == "unit" || in.kind == "original" {
-		if in.docNew {
-			return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}
+		createAction, versionAction := "create-object", "new-version"
+		// Only a reading's begin plans the source attribute on its units.
+		if _, post := in.attributes["source"]; post {
+			create, version = registry.ReadingOp(create), registry.ReadingOp(version)
+			createAction, versionAction = "post-reading", "post-reading"
 		}
-		return version, []check{{id: "object", role: registry.RoleObject, action: "new-version", ref: canonical("storage.object", in.docObject.String())}}
+		if in.docNew {
+			return create, []check{{id: "bucket", role: registry.RoleBucket, action: createAction, ref: canonical("storage.bucket", in.bucket.String())}}
+		}
+		return version, []check{{id: "object", role: registry.RoleObject, action: versionAction, ref: canonical("storage.object", in.docObject.String())}}
 	}
 	if in.newObject {
 		return create, []check{{id: "bucket", role: registry.RoleBucket, action: "create-object", ref: canonical("storage.bucket", in.bucket.String())}}

@@ -9,7 +9,7 @@
   {"id":"members-read","effect":"allow","actions":["read","stat","discover"],"roles":["member"],
    "when":"resource.attributes.project in principal.attributes.projects"},
   {"id":"auditors-history","effect":"allow","actions":["read-history","discover-history"],"roles":["auditor"]},
-  {"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],
+  {"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],
    "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"},
   {"id":"contractors-never-read","effect":"deny","actions":["read"],"roles":["contractor"]},
   {"id":"grantees-read","effect":"allow","actions":["read"],"roles":["*"],

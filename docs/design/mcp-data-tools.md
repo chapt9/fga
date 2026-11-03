@@ -1,10 +1,10 @@
-# MCP data tools: sources, readings and data tools (ING-001 to ING-011, DTL-001 to DTL-009, DOC-009 to DOC-011, MCP-009)
+# MCP data tools: sources, readings and data tools (ING-001 to ING-012, DTL-001 to DTL-009, DOC-009 to DOC-011, MCP-009)
 
 Status: design record, 3 November 2026. Our own design; no upstream mapping. It turns the owner's proposal of 3 November 2026, "Configurable MCP data tools for FGA", into buildable parts and adds protection per field group. Checked against fga main `7a5c33f` (see "Checked against the code").
 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
-- Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two open points for the owner, listed under stop 2.
+- Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
 
 ## Summary
 
@@ -47,7 +47,7 @@ Out of scope for these stops:
 
 ```
 device, script -- token for fga-storage --> fga-storage   POST /v1/sources/{source}/readings        (server mode)
-                                               |-- fga-decision   create-object or new-version
+                                               |-- fga-decision   post-reading
                                                |-- fga-keys       one data key per group unit
                                                '-- catalog, blobs one document version, one unit per group
 
@@ -187,15 +187,15 @@ Reading rules (`ErrReading`; a `*ReadingError` names at most a field's pointer, 
 5. Every group becomes one unit, always, in layout order: `{"group":"<name>","fields":{"<field>":<value>,…}}`. Fields are sorted by their bytes, object members inside values by the bytes of their names. There is no insignificant whitespace. Strings escape `"` and `\` with a backslash, use `\b \f \n \r \t` for those controls and `\u00xx` in lower case for the others, and keep every other character, U+2028 included, as UTF-8. A group with no field present is `{"group":"<name>","fields":{}}`, so every reading of a source version has the same unit count, which tells nothing (ING-005).
 6. `Reading.Fields` lists the fields present in each unit: names without values. A client-mode begin declares them in clear (ING-010).
 
-### Ingestion in server mode (ING-002, ING-003)
+### Ingestion in server mode (ING-002, ING-003, ING-012)
 
 `POST /v1/sources/{source}/readings`. The body is the payload with `Content-Type: application/json`. `Idempotency-Key` is optional, at most 128 bytes. The caller authenticates with a bearer token for `fga-storage` (D-04). No gateway rule opens this route, so no MCP decision reaches it.
 
 1. **Source.** The source of that ID in the caller's tenant, active, with an active reviewed version, in a server-mode bucket. An unknown source is `404 NOT_FOUND`; a client-mode one `409 ENCRYPTION_MODE`.
 2. **Split.** The payload is split with that version's layout. A refusal is `400 INVALID_REQUEST` with the profile's reason, never with payload values.
-3. **Begin.** The document is begun as `PutDocumentText` begins it, with the document's checks: `create-object` on the bucket for a new key, `new-version` on the document otherwise. These are today's operations. The begin takes no bucket, key, label, owner or group from the caller (ING-003).
-4. **Seal, stage, publish.** As for server-mode text ([server-documents.md](server-documents.md)):
-   - one keys decision seals a data key for every unit;
+3. **Begin.** The document is begun as `PutDocumentText` begins it, but each step decides `post-reading` in place of the document's checks: on the source's bucket for a new key, and on the reading's document for a new version. The steps are the reading twins of the document operations, such as `reading.begin-create` (ING-012). No rule for uploads or owners reaches a post, so only a rule written for posting lets anyone post. The begin takes no bucket, key, label, owner or group from the caller (ING-003).
+4. **Seal, stage, publish.** As for server-mode text ([server-documents.md](server-documents.md)), under the reading twins:
+   - one keys decision seals a data key for every unit, and the keys role seals a reading's keys only under a reading's seal;
    - each unit is encrypted into its own blob;
    - the manifest records `normalization_version` `fga.json/groups-v1` and `extraction_version` `fga.source/v1:<id>:<version>`, within the manifest's 64-byte bound;
    - no original file is stored, because it would put every group under one key.
@@ -209,20 +209,20 @@ The body must be sent as `Content-Type: application/json`; anything else is `400
 
 The posting client holds the fga SDK, a content-signing key enrolled for its identity, and no reader's private key. For each reading:
 
-1. **Layout.** It reads the active source version: `GET /v1/sources/{source}`, decided as `create-object` on the source's bucket, answers the layout and each group's recipients. It looks up their active recipient keys as clients do today (`crypto.recipient.discover`), and may keep both until the source version changes.
+1. **Layout.** It reads the active source version: `GET /v1/sources/{source}`, decided as `post-reading` on the source's bucket, answers the layout and each group's recipients. It looks up their active recipient keys as clients do today (`crypto.recipient.discover`), and may keep both until the source version changes.
 2. **Split.** It splits the payload with `jsonunits`, the same code and vectors as the storage role.
 3. **Begin.** `POST /v1/sources/{source}/readings/begin` with `{"key", "units": [{"fields": […]}, …], "idempotency_key"}`. The storage role checks:
    - the bucket is in client mode, otherwise `409 ENCRYPTION_MODE`;
    - the key follows the source's key rule: prefix and pattern in `pointer` mode, prefix plus the caller's ID in `principal` mode, the prefix alone in `fixed` mode;
    - there is one unit per group, and each unit's fields are sorted, unique and fields of that unit's group.
 
-   It then assigns the attributes and labels as in server mode and decides the document's checks as a client-mode document begin does. The answer is the document intent with its unit intents. `jsonunits` gains the shared check of a declaration (`Splitter.CheckDeclared`) in stop 3.
+   It then assigns the attributes and labels as in server mode and decides the reading twins of a client-mode document begin's checks, with `post-reading` (ING-012). The answer is the document intent with its unit intents. `jsonunits` gains the shared check of a declaration (`Splitter.CheckDeclared`) in stop 3.
 4. **Encrypt, stage, finalize.** As for client-mode documents ([documents.md](documents.md)):
    - each unit is encrypted under a fresh keyset and staged through its unit intent;
    - the client signs the manifest, with `normalization_version` and `extraction_version` as in server mode, and the unit descriptors;
    - it makes one envelope per unit for each recipient its group names, and finalizes through `POST /v1/document-uploads/{intent}/finalize`.
 
-   Finalize decides, as today, the document, `share` on the version and the units, `create` on each planned envelope, and each recipient's `read-units`, `read` and `receive-key` (ING-011).
+   Finalize decides the reading twin of the document's check, `share` on the version and the units, `create` on each planned envelope, and each recipient's `read-units`, `read` and `receive-key` (ING-011).
 5. **Answer.** As in server mode.
 
 What fga sees of a client-mode reading (D-J, ING-010):
@@ -433,7 +433,7 @@ Both use the same code in `internal/adminops`, as today.
 | `POST /v1/admin/data-tools/{name}/disable` | `data-tool disable` | Unlisted and refused |
 
 A posting system is an ordinary identity: its ID is its token's `sub`, with role `source`, the attribute `sources` listing its source IDs, and one of two new presets in `adminops.Presets`:
-- `source`: `create-object` on `storage.bucket` and `new-version` on `storage.object`;
+- `source`: `post-reading` on `storage.bucket` and `storage.object`, and nothing to upload with (ING-012);
 - `source-client`: those, plus `share` on `document.version` and `document.text_unit`, `create` on `crypto.envelope`, `discover` on `crypto.recipient`, and `discover`, `enroll`, `activate` and `retire` on `crypto.signing-key`.
 
 The admin API never reads readings. Administrators gain no content access through the builder.
@@ -455,7 +455,7 @@ Plain JS pages over the admin API, and over the file API with the person's own p
 
 ## Policy
 
-Readings are ordinary resources, so existing rules apply to them. Allows add up: a rule that already lets members read units below `restricted` also lets them read a `confidential` group. Use labels for the floor and group rules for exceptions, as the example source does by labelling `location` `restricted`.
+Readings are ordinary resources, so existing read rules apply to them. Posting is the exception: a post decides `post-reading`, which no rule for uploads or owners names, so only a rule written for posting lets anyone post (ING-012). Allows add up: a rule that already lets members read units below `restricted` also lets them read a `confidential` group. Use labels for the floor and group rules for exceptions, as the example source does by labelling `location` `restricted`.
 
 Two habits keep rules on readings from reaching other data:
 1. Give each source bucket its own project, so project rules reach it only for people of that project.
@@ -465,13 +465,13 @@ Examples, all in the business set:
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"storage.bucket","scope":"","rules":[
-  {"id":"sources-create-readings","effect":"allow","actions":["create-object"],"roles":["source"],
+  {"id":"sources-post-readings","effect":"allow","actions":["post-reading"],"roles":["source"],
    "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"}]}
 ```
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"storage.object","scope":"","rules":[
-  {"id":"sources-version-readings","effect":"allow","actions":["new-version"],"roles":["source"],
+  {"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],
    "when":"has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources"},
   {"id":"analysts-reading-history","effect":"allow","actions":["read-history","discover-history"],"roles":["analyst"],
    "when":"has(resource.attributes.source) && resource.attributes.project in principal.attributes.projects"}]}
@@ -536,6 +536,7 @@ Holds:
 - **P7.** Policy never reads payload values. Time conditions use the server's `published_at`.
 - **P8.** Definition changes are audited. Source reviews and disables are journaled, so a restore cannot undo them.
 - **P9.** fga never sees a client-mode value or holds its key, and fga-mcp never returns client-mode plaintext.
+- **P10.** Posting is a right of its own. A post decides `post-reading`, which no rule for uploads or owners reaches, and the `source` preset grants no upload.
 
 Does not hold:
 - Fields inside one group cannot be told apart.
@@ -562,6 +563,7 @@ New IDs, free in `docs` as of 3 November 2026; to confirm against the specificat
 | ING-009 | A source uses its bucket's mode: server mode by default, client mode on request. A mode change applies to readings begun afterwards, and each ingestion route refuses the other mode |
 | ING-010 | In client mode the posting client applies the profile, and the begin declares the key and each unit's fields in clear. fga checks them against the active source version and never sees values |
 | ING-011 | In client mode each group's unit gets envelopes for the recipients the source version names for that group, each decided at finalize |
+| ING-012 | A post decides `post-reading` at each of its steps, on the source's bucket for a new key and on the reading's document for a new version. No rule for uploads or owners reaches it, and the keys role seals a reading's keys only under a reading's seal |
 | DOC-009 | Disclosing a superseded document version also needs `read-history` on the document, in the storage and keys roles alike |
 | DOC-010 | Document versions are listed newest first. Superseded entries need `discover-history` on the document, and unauthorized entries leave no trace |
 | DOC-011 | Every new document version carries the server's `published_at` as a protected attribute |
@@ -601,9 +603,10 @@ Built `internal/jsonunits`: `Layout.Compile`, `Layout.Validate`, `Splitter.Split
 
 ### Stop 2: sources and server-mode ingestion (built)
 
-Built in two commits on the local branch `data-tools`:
+Built on the local branch `data-tools`:
 - **2a, sources:** migration `0030` (`sources`, `source_versions`, `buckets.source`, all backed up); package `sources` for the record; adminops, fga-admin commands and admin API routes, with the second-administrator review; journal kinds `source-set` and `source-disabled`, the restate after a failed review, and their reconcile; the `source` preset.
 - **2b, ingestion:** `POST /v1/sources/{source}/readings`; the unit, version and document attributes; the `SOURCE_BUCKET` refusal in the object and document begins; the manifest's profile and extraction versions; `fga/internal/jsonunits` and `fga/internal/sources` in fga-storage's allowed imports; the example bundle's rules and two sentinels; admin-api.md, native-api.md and its OpenAPI file, server-documents.md and server-visible-metadata.md.
+- **2c, the posting right:** the action `post-reading` on `storage.bucket` and `storage.object`; the reading twins of the begin, key seal, unit staging and publication operations (`registry.ReadingOp`); the keys role's binding of a reading to a reading's seal; the `source` preset without upload actions; the example bundle's rules and six sentinels; native-api.md, server-documents.md and admin-api.md.
 
 Checked against the running demo on 3 November 2026, with the binaries of `1c2ce8e`:
 - Migration `0030` applied to the demo's catalog. The example bundle, re-signed at epoch 3, loaded, and decisions name epoch 3.
@@ -612,11 +615,9 @@ Checked against the running demo on 3 November 2026, with the binaries of `1c2ce
 - On every read route of the native API, members of the bucket's project read `temperature` only. The owner read both groups, and a member of another project and the poster read nothing. A `select` of both groups was refused whole, and no original exists. Text and object writes into the bucket answered `409 SOURCE_BUCKET`.
 - MCP is not enabled in the demo, so no MCP route was tried there. `TestReadingsHTTP` covers it.
 
-Open points from the check, for the owner:
-1. **Members can post readings.** A post is decided as `create-object` on the source's bucket. The example bundle's `members-use-bucket` rule allows `create-object` on every bucket of a member's project. In the demo, a member of the bucket's project posted a reading under a new key. It is stored like the device's readings, and only the audit event names the member. New versions of existing keys stay refused, since `new-version` is the owner's. A project of its own per source bucket narrows this to that project's members but does not stop it. Options:
-   - guard the example bundle's rule with `!has(resource.attributes.source)`, a policy-only change that every tenant's bundle must repeat;
-   - decide posts as an action of their own that no existing rule allows, at the cost of a new operation and re-signed bundles. Recommended, since fga is default deny.
-2. **A used idempotency key with another reading.** A retry is matched by key, source and source version, not by values, as for text. So a different reading under a used idempotency key gets the first reading's outcome and is not stored. Comparing values needs a keyed digest in the intent, because a plain hash of a small reading lets a database reader confirm guessed values. Options:
+Points from the check:
+1. **Members could post readings. Resolved.** A post was decided as `create-object` on the source's bucket, which the example bundle's `members-use-bucket` rule allows on every bucket of a member's project. In the demo, a member of the bucket's project posted a reading under a new key. It was stored like the device's readings, and only the audit event named the member. On 3 November 2026 the owner chose to decide posts as an action of their own, `post-reading`, built as 2c (ING-012). `TestPostingNeedsItsOwnRight` is its regression test. The demo runs `1c2ce8e` until it gets the new binaries and a bundle re-signed with the new action.
+2. **A used idempotency key with another reading. Open.** A retry is matched by key, source and source version, not by values, as for text. So a different reading under a used idempotency key gets the first reading's outcome and is not stored. Comparing values needs a keyed digest in the intent, because a plain hash of a small reading lets a database reader confirm guessed values. Options:
    - keep it and say so in the posting docs;
    - add the keyed digest and answer `409 CONFLICT`.
 
@@ -630,7 +631,9 @@ Open points from the check, for the owner:
 | `recovery` `TestRestoreKeepsSourceReviews` | A restore keeps later reviews and disables; a later source stays unknown |
 | `content` `TestSourceIngest` | Key, units, labels, attributes, owner and manifest versions; idempotent retries |
 | `content` `TestSourceGroupsSeparate` | P1 on every read route: members read `climate` only, facility staff and the owner both groups, the poster and other projects nothing |
-| `content` `TestSourceIdentityLimits`, `TestSourceRefusals` | No posting to another source; `SOURCE_BUCKET` for text and objects; unknown, unreviewed and disabled sources; refusals quote no value |
+| `content` `TestSourceIdentityLimits`, `TestSourceRefusals` | No posting to another source; the posting system uploads nothing; `SOURCE_BUCKET` for text and objects; unknown, unreviewed and disabled sources; refusals quote no value |
+| `content` `TestPostingNeedsItsOwnRight` | Members of the bucket's project and the readings' owner post nothing, under a new key or the device's, though they hold every capability (ING-012) |
+| `datakeys` `TestSealDocumentKeepsReadingsApart` | A reading's keys are sealed only under a reading's seal, another document's only under the document's |
 | `nativeapi` `TestReadingsHTTP` | The route, its retry, JSON only, 1 MiB, `409 SOURCE_BUCKET`, and no MCP decision opens it |
 
 ### Stop 3: client-mode ingestion
@@ -744,7 +747,7 @@ On 3 November 2026, fga main `7a5c33f`:
 - Objects have history twins (`withHistory`). Document unit reads and `storage.key.release-unit` have none, and no route lists document versions: `objectByKey`, which `ListVersions` uses, sees kind `object` only.
 - `internal/strictjson` refuses duplicate member names. Policy conditions have `request.now` (`internal/policy/engine`).
 - fga-mcp may link no catalog, payload or key package, and fga-tools no storage content package (`allowed-imports.txt`).
-- The `storage` preset grants the client-mode actions `source-client` takes a subset of (`adminops.Presets`).
+- The `storage` preset grants the client-mode actions that `source-client` adds to `source` (`adminops.Presets`).
 
 To verify while coding:
 - the CEL type of `request.now`, and whether `timestamp()` and `duration()` are in the environment, for the time-window rule;
@@ -754,4 +757,4 @@ To verify while coding:
 
 ## Documents to update with the code
 
-admin-api.md, native-api.md and native-api.openapi.yaml, documents.md, server-documents.md, server-visible-metadata.md, labels-and-approvals.md, mcp-role.md, mcp-gateway.md, mcp-bridge.md, delegated-agents.md, and the next specification errata with ING-001 to ING-011, DTL-001 to DTL-009, DOC-009 to DOC-011 and MCP-009.
+admin-api.md, native-api.md and native-api.openapi.yaml, documents.md, server-documents.md, server-visible-metadata.md, labels-and-approvals.md, mcp-role.md, mcp-gateway.md, mcp-bridge.md, delegated-agents.md, and the next specification errata with ING-001 to ING-012, DTL-001 to DTL-009, DOC-009 to DOC-011 and MCP-009.

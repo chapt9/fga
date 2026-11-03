@@ -76,12 +76,18 @@ var r1TypeDefs = []TypeDef{
 	// raises or sets a label, relabel lowers it (LAB-004); propose-label
 	// stores an advisory classifier proposal (LAB-002), which under default
 	// deny is an action like any other (ruling 7).
-	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve", "share"}},
+	//
+	// post-reading on buckets and objects is our addition to the spec's
+	// table (docs/design/mcp-data-tools.md, ING-012): posting a reading of a
+	// source, on the source's bucket for a new key and on the reading's
+	// document for a new version. It is an action of its own so that no rule
+	// for uploads or owners reaches a post.
+	{Name: "storage.bucket", Actions: []string{"create-object", "list", "manage", "approve", "share", "post-reading"}},
 	// export on storage objects is our addition to the spec's table: the
 	// compound export operation names "export on the document version (or
 	// object)".
 	{Name: "storage.object", Actions: []string{"read", "stat", "discover", "read-history", "discover-history",
-		"new-version", "delete", "delete-version", "share", "label", "relabel", "propose-label", "approve", "export"},
+		"new-version", "delete", "delete-version", "share", "label", "relabel", "propose-label", "approve", "export", "post-reading"},
 		ActionAliases: map[string]string{"storage.object.read": "read"}},
 	{Name: "document.version", Actions: []string{"read-units", "raw-read", "discover", "share", "export", "approve"}},
 	{Name: "document.text_unit", Actions: []string{"read", "share", "use-in-model", "export-key", "label", "relabel", "propose-label", "approve"}},

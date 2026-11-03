@@ -108,6 +108,21 @@ const (
 	OpDocShareVersion   = "document.share-version"
 	OpDocShareUnits     = "document.share-units"
 	OpDocDiscover       = "document.version.discover"
+
+	// Readings of sources (docs/design/mcp-data-tools.md, ING-012): the
+	// reading twins of a server-mode document's begin, key seal, unit
+	// staging and publication. They have the same checks with post-reading
+	// in place of create-object and new-version, so no rule for uploads or
+	// owners reaches a post (ReadingOp).
+	OpReadingBeginCreate    = "reading.begin-create"
+	OpReadingBeginVersion   = "reading.begin-version"
+	OpReadingStageCreate    = "reading.stage-create"
+	OpReadingStageVersion   = "reading.stage-version"
+	OpReadingPublishCreate  = "reading.publish-create"
+	OpReadingPublishVersion = "reading.publish-version"
+	OpKeySealReadingCreate  = "storage.key.seal-reading-create"
+	OpKeySealReadingVersion = "storage.key.seal-reading-version"
+
 	// Disclosure (DOC-006, DOC-007, DSC-001): selecting units, reading a
 	// unit's ciphertext, the full manifest, and a unit's envelope from the
 	// keys role.
@@ -320,6 +335,7 @@ func envelopeChecks(repeated bool) []CheckSpec {
 func r1Operations() []Operation {
 	ops := baseOperations()
 	ops = append(ops, entryTwins(ops)...)
+	ops = append(ops, readingTwins(ops)...)
 	ops = append(ops, grantOperations()...)
 	for i := range ops {
 		ops[i].Preparatory = preparatory[ops[i].Name]
@@ -334,6 +350,40 @@ var preparatory = map[string]bool{
 	OpDocBeginCreate: true, OpDocBeginVersion: true,
 	OpDerivedBegin: true, OpDerivedBeginVersion: true, OpDerivedStageVersion: true,
 	OpKeySealCreate: true, OpKeySealVersion: true, OpKeySealDocCreate: true, OpKeySealDocVersion: true, OpKeySealDerivedVersion: true,
+	OpReadingBeginCreate: true, OpReadingBeginVersion: true, OpReadingStageCreate: true, OpReadingStageVersion: true,
+	OpKeySealReadingCreate: true, OpKeySealReadingVersion: true,
+}
+
+// readingOps maps each operation of a server-mode document's write to its
+// reading twin (ING-012).
+var readingOps = map[string]string{
+	OpDocBeginCreate: OpReadingBeginCreate, OpDocBeginVersion: OpReadingBeginVersion,
+	OpKeySealDocCreate: OpKeySealReadingCreate, OpKeySealDocVersion: OpKeySealReadingVersion,
+	OpStageCreate: OpReadingStageCreate, OpStageVersion: OpReadingStageVersion,
+	OpDocPublishCreate: OpReadingPublishCreate, OpDocPublishVersion: OpReadingPublishVersion,
+}
+
+// ReadingOp returns the reading twin of a document write operation, and ""
+// for any other operation, which no decision is made for.
+func ReadingOp(op string) string { return readingOps[op] }
+
+// readingTwins are the reading twins of the document write operations: the
+// same roles and resource types, deciding post-reading.
+func readingTwins(ops []Operation) []Operation {
+	var out []Operation
+	for _, op := range ops {
+		name, ok := readingOps[op.Name]
+		if !ok {
+			continue
+		}
+		twin := Operation{Name: name}
+		for _, c := range op.Checks {
+			c.Action = "post-reading"
+			twin.Checks = append(twin.Checks, c)
+		}
+		out = append(out, twin)
+	}
+	return out
 }
 
 // entryTwins are the text-entry forms of the unit operations (DOC-005):
