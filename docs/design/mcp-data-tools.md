@@ -675,7 +675,13 @@ Done when a reader without `read-history` gets only the current version on every
 | `engine` `TestTimeRule`, `TestNextChangeFromAttribute` | The accepted and rejected forms of `request.now`; the bound read from a resource attribute, past, absent, malformed and non-string |
 | `content` `TestDelegationWithoutHistory` | An agent gets the current version while its user reads history |
 
-In the example bundle, documents follow objects: owners and auditors read history under the existing rules, and members read current versions only. The bundle has three new sentinels for it. The demo still runs `974d2fc` until it gets the new binaries and a bundle re-signed at epoch 5.
+In the example bundle, documents follow objects: owners and auditors read history under the existing rules, and members read current versions only. The bundle has three new sentinels for it.
+
+Checked against the running demo on 3 November 2026, with the binaries of `8dd681a` and the example bundle re-signed at epoch 5 (evaluator `fga.evaluator/2`):
+- The device posted a new reading, whose version carries `published_at`; versions published before stop 4 carry none.
+- The version listing showed the readings' owner all four versions newest first, and members of the project only the current one. A member of another project and the device got `404`.
+- The owner read the oldest version and the current one. Members read the current version's `temperature` group only: the oldest version was refused by `read-history` on the document (`BUSINESS_DENY`, epoch 5), and `humidity` by its label.
+- No time-window rule is in the example bundle, and a newer version arriving mid-read cannot be timed by hand, so those two were not tried in the demo. `TestPublishedAtCondition`, `TestKeysReleaseHistory` and `TestHistoryReadAcrossOverwrite` cover them.
 
 Two fixes the owner asked for on 3 November 2026, after stop 4 was first built:
 - **History reads across a newer version.** A history check holds for every version, so it binds its resource's metadata revision only (`registry.CheckSpec.AnyGeneration`, signed as `any_generation`). A newer version no longer interrupts a history read, of documents or objects, while a change of labels, owner or grants still does. Exporting an old object version still binds the generation, since one operation serves both current and old versions.
