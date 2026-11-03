@@ -39,6 +39,10 @@
 //	                   author may review, as the local administrator's tool (ADM-003)
 //	source disable     -tenant T -id S                       (journaled; final)
 //	source list        -tenant T
+//	data-tool add|put  -tenant T -file F   a data tool's draft (add: version 1); F holds the record fga.data-tool/v1
+//	data-tool review   -tenant T -id NAME -version N -digest D   make the draft active and register mcp.tool:NAME
+//	data-tool disable  -tenant T -id NAME                    (final)
+//	data-tool list     -tenant T
 //	epoch raise        -tenant T -epoch N                    (journaled)
 //	backup-key generate -out FILE [-encrypt]        create a backup key (keep it apart from catalog and backups)
 //	key protect|unprotect -file FILE                encrypt a backup key file with a passphrase, or decrypt it
@@ -97,6 +101,7 @@ import (
 	"fga/internal/backupcrypt"
 	"fga/internal/blob"
 	"fga/internal/catalog"
+	"fga/internal/datatools"
 	"fga/internal/delegation"
 	"fga/internal/journal"
 	"fga/internal/jsonunits"
@@ -171,7 +176,7 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	tenant := fs.String("tenant", "", "tenant")
-	id := fs.String("id", "", "identity, delegation or source ID")
+	id := fs.String("id", "", "identity, delegation or source ID, or data tool name")
 	name := fs.String("name", "", "bucket name")
 	project := fs.String("project", "", "bucket default project")
 	label := fs.String("label", "internal", "bucket default label")
@@ -196,10 +201,10 @@ func run(args []string) error {
 	out := fs.String("out", "", "backup directory or key file to create")
 	backupKeyFile := fs.String("backup-key", "", "backup key file")
 	encrypt := fs.Bool("encrypt", false, "protect the new key file with a passphrase")
-	keyFile := fs.String("file", "", "key protect|unprotect: the key file; kek: the ring file; source add|put: the source file")
+	keyFile := fs.String("file", "", "key protect|unprotect: the key file; kek: the ring file; source|data-tool add|put: the record file")
 	payloadFile := fs.String("payload", "", "source try: the sample reading's file")
-	version := fs.Int("version", 0, "source try|review: the source version")
-	digest := fs.String("digest", "", "source review: the digest of the draft reviewed")
+	version := fs.Int("version", 0, "source try|review, data-tool review: the version")
+	digest := fs.String("digest", "", "source|data-tool review: the digest of the draft reviewed")
 	passphraseFile := fs.String("passphrase-file", "", "file holding the key passphrase (default $FGA_BACKUP_KEY_PASSPHRASE)")
 	dir := fs.String("dir", "", "audit export directory")
 	follow := fs.Bool("follow", false, "keep exporting until interrupted")
@@ -414,7 +419,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		var v catalog.SourceVersion
+		var v catalog.RecordVersion
 		var def sources.Definition
 		if cmd == "source add" {
 			body := struct {
@@ -472,10 +477,69 @@ func run(args []string) error {
 			return errors.New("source review needs -tenant, -id, -version and -digest")
 		}
 		v, err := ops.ReviewSource(ctx, operator, *tenant, *id, *version, *digest)
-		if err == nil {
-			fmt.Printf("source %s version %d %s\n", *id, v.Version, v.State)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("source %s version %d %s\n", *id, v.Version, v.State)
+		broken, err := ops.BrokenDataTools(ctx, *tenant, *id)
+		if len(broken) > 0 {
+			fmt.Printf("data tools that no longer fit and answer 409 until a new version is reviewed: %s\n", strings.Join(broken, ", "))
 		}
 		return err
+	case "data-tool add", "data-tool put":
+		if err := need(*tenant, *keyFile); err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return err
+		}
+		def, err := datatools.Parse(raw)
+		if err != nil {
+			return err
+		}
+		var v catalog.RecordVersion
+		if cmd == "data-tool add" {
+			v, err = ops.AddDataTool(ctx, operator, *tenant, def)
+		} else {
+			v, err = ops.PutDataTool(ctx, operator, *tenant, def)
+		}
+		if err == nil {
+			fmt.Printf("data tool %s version %d %s digest %s\n", def.Name, v.Version, v.State, v.Digest)
+		}
+		return err
+	case "data-tool review":
+		if err := need(*tenant, *id, *digest); err != nil || *version < 1 {
+			return errors.New("data-tool review needs -tenant, -id, -version and -digest")
+		}
+		v, err := ops.ReviewDataTool(ctx, operator, *tenant, *id, *version, *digest)
+		if err == nil {
+			fmt.Printf("data tool %s version %d %s\n", *id, v.Version, v.State)
+		}
+		return err
+	case "data-tool disable":
+		if err := need(*tenant, *id); err != nil {
+			return err
+		}
+		return ops.DisableDataTool(ctx, operator, *tenant, *id)
+	case "data-tool list":
+		if err := need(*tenant); err != nil {
+			return err
+		}
+		for after := ""; ; {
+			list, err := e.store.ListDataTools(ctx, *tenant, "", after, 100)
+			if err != nil {
+				return err
+			}
+			for _, t := range list {
+				line, _ := json.Marshal(t)
+				fmt.Println(string(line))
+			}
+			if len(list) < 100 {
+				return nil
+			}
+			after = list[len(list)-1].Name
+		}
 	case "source disable":
 		if err := need(*tenant, *id); err != nil {
 			return err

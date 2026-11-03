@@ -34,55 +34,9 @@ import (
 // system did not pin is refused on the client, and a recipient whom policy
 // refuses refuses the post.
 func TestClientReadingsHTTP(t *testing.T) {
-	policies := maps.Clone(r1test.Policies)
-	own := `has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources`
-	for file, rule := range map[string]string{
-		"buckets.json":   `{"id":"sources-post-readings","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
-		"objects.json":   `{"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
-		"documents.json": `{"id":"sources-share-readings","effect":"allow","actions":["share"],"roles":["source"],"when":"` + own + `"}`,
-		"units.json":     `{"id":"sources-share-reading-units","effect":"allow","actions":["share"],"roles":["source"],"when":"` + own + `"}`,
-	} {
-		policies[file] = strings.Replace(policies[file], `"rules":[`, `"rules":[`+rule+",", 1)
-	}
-	d := deployFull(t, admission.DefaultLimits, r1test.Options{Policies: policies})
+	d, _, lena, alice, bob, sensor := privateReadings(t, nil)
 	ctx := context.Background()
 	st := d.st
-	lena := st.Client("lena", []string{"member"}, "greenhouse")
-	alice := st.Client("alice", []string{"member"}, "greenhouse")
-	bob := st.Client("bob", []string{"member"}, "greenhouse")
-	carl := st.Client("carl", []string{"member"}, "orchards")
-	sensor := st.Client("sensor-7", []string{"source"})
-	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "sensor-7", []string{"source"},
-		map[string]any{"sources": []string{"greenhouse-private", "orchard-private"}}, nil); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []*r1test.Client{lena, alice, carl} {
-		sensor.Pin(c)
-		c.Pin(sensor)
-	}
-	bob.Pin(sensor)
-	ops := adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
-		Now: func() time.Time { return *st.Clock }}
-	source := func(id, project, groups string) {
-		t.Helper()
-		def, err := sources.Parse([]byte(`{"format":"fga.source/v1","id":"` + id + `","owner":"lena",
-		 "key":{"mode":"pointer","pointer":"/sensor","pattern":"[a-z0-9-]{1,48}","prefix":"sensor/"},"groups":[` + groups + `]}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		v, err := ops.AddSource(ctx, adminops.Who{Actor: "root", Via: "test"}, r1test.Tenant,
-			catalog.Bucket{Name: id, Project: project, Label: "internal", Encryption: "client"}, def)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := ops.ReviewSource(ctx, adminops.Who{Actor: "rita", Via: "test"}, r1test.Tenant, id, v.Version, v.Digest); err != nil {
-			t.Fatal(err)
-		}
-	}
-	source("greenhouse-private", "greenhouse", `{"name":"temperature","label":"internal","fields":["/sensor","/temperature"],"recipients":["lena","alice"]},
-	 {"name":"humidity","label":"restricted","fields":["/humidity"],"recipients":["lena"]}`)
-	source("orchard-private", "greenhouse", `{"name":"all","label":"internal","fields":["/sensor","/temperature"],"recipients":["lena","carl"]}`)
-
 	poster := d.client(t, sensor)
 	post := func(src, id, idem string) error {
 		_, err := poster.PostReading(ctx, src, []byte(`{"sensor":"`+id+`","temperature":21.7351,"humidity":58.4127}`), "", idem)
@@ -192,6 +146,67 @@ func TestClientReadingsHTTP(t *testing.T) {
 	                   WHERE b.name = 'orchard-private' AND o.current_document_version IS NOT NULL`); n != 0 {
 		t.Fatalf("the refused reading left %d published documents", n)
 	}
+}
+
+// privateReadings deploys two client-mode sources posted by sensor-7, in
+// project greenhouse: greenhouse-private, whose temperature group lena and
+// alice receive and whose restricted humidity group lena only, and
+// orchard-private, which names carl of another project. extra adds rules
+// by policy file.
+func privateReadings(t *testing.T, extra map[string]string) (d *deployment, ops adminops.Ops, lena, alice, bob, sensor *r1test.Client) {
+	t.Helper()
+	policies := maps.Clone(r1test.Policies)
+	own := `has(resource.attributes.source) && has(principal.attributes.sources) && resource.attributes.source in principal.attributes.sources`
+	rules := map[string]string{
+		"buckets.json":   `{"id":"sources-post-readings","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
+		"objects.json":   `{"id":"sources-post-reading-versions","effect":"allow","actions":["post-reading"],"roles":["source"],"when":"` + own + `"}`,
+		"documents.json": `{"id":"sources-share-readings","effect":"allow","actions":["share"],"roles":["source"],"when":"` + own + `"}`,
+		"units.json":     `{"id":"sources-share-reading-units","effect":"allow","actions":["share"],"roles":["source"],"when":"` + own + `"}`,
+	}
+	for _, m := range []map[string]string{rules, extra} {
+		for file, rule := range m {
+			policies[file] = strings.Replace(policies[file], `"rules":[`, `"rules":[`+rule+",", 1)
+		}
+	}
+	d = deployFull(t, admission.DefaultLimits, r1test.Options{Policies: policies})
+	ctx := context.Background()
+	st := d.st
+	lena = st.Client("lena", []string{"member"}, "greenhouse")
+	alice = st.Client("alice", []string{"member"}, "greenhouse")
+	bob = st.Client("bob", []string{"member"}, "greenhouse")
+	carl := st.Client("carl", []string{"member"}, "orchards")
+	sensor = st.Client("sensor-7", []string{"source"})
+	if err := st.Catalog.PutIdentity(ctx, r1test.Tenant, "sensor-7", []string{"source"},
+		map[string]any{"sources": []string{"greenhouse-private", "orchard-private"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*r1test.Client{lena, alice, carl} {
+		sensor.Pin(c)
+		c.Pin(sensor)
+	}
+	bob.Pin(sensor)
+	ops = adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
+		Now: func() time.Time { return *st.Clock }}
+	source := func(id, project, groups string) {
+		t.Helper()
+		def, err := sources.Parse([]byte(`{"format":"fga.source/v1","id":"` + id + `","owner":"lena",
+		 "key":{"mode":"pointer","pointer":"/sensor","pattern":"[a-z0-9-]{1,48}","prefix":"sensor/"},"groups":[` + groups + `]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := ops.AddSource(ctx, adminops.Who{Actor: "root", Via: "test"}, r1test.Tenant,
+			catalog.Bucket{Name: id, Project: project, Label: "internal", Encryption: "client"}, def)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ops.ReviewSource(ctx, adminops.Who{Actor: "rita", Via: "test"}, r1test.Tenant, id, v.Version, v.Digest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source("greenhouse-private", "greenhouse", `{"name":"temperature","label":"internal","fields":["/sensor","/temperature"],"recipients":["lena","alice"]},
+	 {"name":"humidity","label":"restricted","fields":["/humidity"],"recipients":["lena"]}`)
+	source("orchard-private", "greenhouse", `{"name":"all","label":"internal","fields":["/sensor","/temperature"],"recipients":["lena","carl"]}`)
+	return d, ops, lena, alice, bob, sensor
 }
 
 func mustDigest(t *testing.T, s string) cryptowire.Digest {

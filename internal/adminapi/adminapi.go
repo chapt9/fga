@@ -26,6 +26,7 @@ import (
 	"fga/internal/audit"
 	"fga/internal/authn"
 	"fga/internal/catalog"
+	"fga/internal/datatools"
 	"fga/internal/delegation"
 	"fga/internal/jsonunits"
 	"fga/internal/release"
@@ -101,6 +102,11 @@ func Handler(c Config) http.Handler {
 	route("POST /v1/admin/sources/{id}/try", s.trySource)
 	route("POST /v1/admin/sources/{id}/review", s.reviewSource)
 	route("POST /v1/admin/sources/{id}/disable", s.disableSource)
+	route("GET /v1/admin/data-tools", s.listDataTools)
+	route("POST /v1/admin/data-tools", s.putDataTool)
+	route("PUT /v1/admin/data-tools/{id}", s.putDataTool)
+	route("POST /v1/admin/data-tools/{id}/review", s.reviewDataTool)
+	route("POST /v1/admin/data-tools/{id}/disable", s.disableDataTool)
 	route("GET /v1/admin/policy", s.policy)
 	route("GET /v1/admin/events", s.events)
 	return mux
@@ -368,8 +374,8 @@ func (s *server) listSources(w http.ResponseWriter, r *http.Request, c caller) {
 	list(w, items, limit, func(src catalog.Source) string { return src.ID })
 }
 
-// sourceVersionJSON answers a stored version.
-func sourceVersionJSON(id string, v catalog.SourceVersion) map[string]any {
+// versionJSON answers a stored version of a source or a data tool.
+func versionJSON(id string, v catalog.RecordVersion) map[string]any {
 	return map[string]any{"id": id, "version": v.Version, "state": v.State, "digest": v.Digest}
 }
 
@@ -392,7 +398,7 @@ func (s *server) addSource(w http.ResponseWriter, r *http.Request, c caller) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, sourceVersionJSON(def.ID, v))
+	writeJSON(w, http.StatusCreated, versionJSON(def.ID, v))
 }
 
 func (s *server) putSource(w http.ResponseWriter, r *http.Request, c caller) {
@@ -413,7 +419,7 @@ func (s *server) putSource(w http.ResponseWriter, r *http.Request, c caller) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sourceVersionJSON(def.ID, v))
+	writeJSON(w, http.StatusOK, versionJSON(def.ID, v))
 }
 
 // trySource splits a sample payload the administrator sends. A refusal
@@ -465,7 +471,82 @@ func (s *server) reviewSource(w http.ResponseWriter, r *http.Request, c caller) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sourceVersionJSON(r.PathValue("id"), v))
+	out := versionJSON(r.PathValue("id"), v)
+	// The review is committed; tools it breaks are reported, not refused.
+	if broken, err := s.Ops.BrokenDataTools(r.Context(), c.tenant, r.PathValue("id")); err != nil {
+		s.Logger.Error("admin API: listing the data tools a source review breaks", "error", err)
+	} else if len(broken) > 0 {
+		out["breaks_data_tools"] = broken
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) listDataTools(w http.ResponseWriter, r *http.Request, c caller) {
+	after, limit, err := page(r)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	items, err := s.Ops.Store.ListDataTools(r.Context(), c.tenant, r.URL.Query().Get("source"), after, limit)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	list(w, items, limit, func(t catalog.DataTool) string { return t.Name })
+}
+
+// putDataTool adds a data tool with its draft version 1 (POST) or stores
+// its next version as the draft (PUT); the body is the record.
+func (s *server) putDataTool(w http.ResponseWriter, r *http.Request, c caller) {
+	var raw json.RawMessage
+	if !s.decode(w, r, &raw) {
+		return
+	}
+	add := r.Method == http.MethodPost
+	def, err := datatools.Parse(raw)
+	if err == nil && !add && def.Name != r.PathValue("id") {
+		err = errors.New("the record's name is not the tool's")
+	}
+	if err != nil {
+		s.fail(w, errors.Join(adminops.ErrInvalid, err))
+		return
+	}
+	v, status := catalog.RecordVersion{}, http.StatusOK
+	if add {
+		v, err = s.Ops.AddDataTool(r.Context(), c.who(), c.tenant, def)
+		status = http.StatusCreated
+	} else {
+		v, err = s.Ops.PutDataTool(r.Context(), c.who(), c.tenant, def)
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, status, versionJSON(def.Name, v))
+}
+
+func (s *server) reviewDataTool(w http.ResponseWriter, r *http.Request, c caller) {
+	var body struct {
+		Version int    `json:"version"`
+		Digest  string `json:"digest"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	v, err := s.Ops.ReviewDataTool(r.Context(), c.who(), c.tenant, r.PathValue("id"), body.Version, body.Digest)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, versionJSON(r.PathValue("id"), v))
+}
+
+func (s *server) disableDataTool(w http.ResponseWriter, r *http.Request, c caller) {
+	if err := s.Ops.DisableDataTool(r.Context(), c.who(), c.tenant, r.PathValue("id")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) disableSource(w http.ResponseWriter, r *http.Request, c caller) {
@@ -589,10 +670,10 @@ func (s *server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, adminops.ErrInvalid), errors.Is(err, catalog.ErrBadDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, catalog.ErrNoRow):
-		writeError(w, http.StatusNotFound, "no such identity, delegation or source")
+		writeError(w, http.StatusNotFound, "no such identity, delegation, source or data tool")
 	case errors.Is(err, catalog.ErrSelfReview):
 		writeError(w, http.StatusForbidden, "the author of a draft cannot review it; another administrator does")
-	case errors.Is(err, catalog.ErrSourceConflict), errors.Is(err, catalog.ErrSourceDisabled):
+	case errors.Is(err, catalog.ErrDraftConflict), errors.Is(err, catalog.ErrDisabled):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, catalog.ErrDelegationExists):
 		writeError(w, http.StatusConflict, "a delegation with this ID exists; delegations are revoked and replaced, never changed")

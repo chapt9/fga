@@ -159,47 +159,49 @@ func (s *Service) candidates(ctx context.Context, tenant string, bucket cryptowi
 	return out, rows.Err()
 }
 
-// discoverable decides discover for each candidate in one batch. The batch
-// is denied as a whole if any check is, so a denial is narrowed down by
-// deciding the candidates one by one; a failed item never grants its
-// peers (DEC-004).
+// discoverable decides discover for each candidate (eachAllowed).
 func (s *Service) discoverable(ctx context.Context, c Caller, cands []candidate) ([]bool, error) {
-	checks := func(cs []candidate, offset int) []check {
-		out := make([]check, len(cs))
-		for i, cand := range cs {
-			out[i] = check{id: "object-" + strconv.Itoa(offset+i), role: registry.RoleObject, action: "discover",
-				ref: canonical("storage.object", cand.object.String()), version: cand.entry.Version}
-		}
-		return out
+	checks := make([]check, len(cands))
+	for i, cand := range cands {
+		checks[i] = check{id: "object-" + strconv.Itoa(i), role: registry.RoleObject, action: "discover",
+			ref: canonical("storage.object", cand.object.String()), version: cand.entry.Version}
 	}
-	visible := make([]bool, len(cands))
-	_, rec, err := s.decide(ctx, c, registry.OpDiscover, Audience, false, checks(cands, 0))
+	return s.eachAllowed(ctx, c, registry.OpDiscover, checks)
+}
+
+// eachAllowed decides op with checks in one batch and reports which checks
+// are allowed. The batch is denied as a whole if any check is, so a denial
+// is narrowed down by deciding the checks one by one; a failed item never
+// grants its peers (DEC-004).
+func (s *Service) eachAllowed(ctx context.Context, c Caller, op string, checks []check) ([]bool, error) {
+	allowed := make([]bool, len(checks))
+	_, rec, err := s.decide(ctx, c, op, Audience, false, checks)
 	if err == nil {
 		if err := s.checked(ctx, rec); err != nil {
 			return nil, err
 		}
-		for i := range visible {
-			visible[i] = true
+		for i := range allowed {
+			allowed[i] = true
 		}
-		return visible, nil
+		return allowed, nil
 	}
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	for i := range cands {
-		_, rec, err := s.decide(ctx, c, registry.OpDiscover, Audience, false, checks(cands[i:i+1], i))
-		switch {
-		case err == ErrNotFound:
+	for i := range checks {
+		_, rec, err := s.decide(ctx, c, op, Audience, false, checks[i:i+1])
+		if errors.Is(err, ErrNotFound) {
 			continue
-		case err != nil:
+		}
+		if err != nil {
 			return nil, err
 		}
 		if err := s.checked(ctx, rec); err != nil {
 			return nil, err
 		}
-		visible[i] = true
+		allowed[i] = true
 	}
-	return visible, nil
+	return allowed, nil
 }
 
 // VersionEntry is one visible version of a key.
@@ -410,8 +412,18 @@ type DocumentVersionPage struct {
 // caller, the document, the policy epoch and the incarnation, and the
 // listing starts again when the head moves, as ListVersions does.
 func (s *Service) ListDocumentVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (DocumentVersionPage, error) {
+	return s.documentVersionsIn(ctx, c, bucketName, key, limit, continuation, window{})
+}
+
+// window bounds a listing of document versions by publication time: since
+// inclusive, until exclusive, zero unbounded. A bounded listing leaves out
+// versions without published_at.
+type window struct{ since, until time.Time }
+
+func (s *Service) documentVersionsIn(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string,
+	w window) (DocumentVersionPage, error) {
 	for range 3 {
-		page, err := s.listDocumentVersions(ctx, c, bucketName, key, limit, continuation)
+		page, err := s.listDocumentVersions(ctx, c, bucketName, key, limit, continuation, w)
 		if !errors.Is(err, errHeadMoved) {
 			return page, err
 		}
@@ -419,7 +431,8 @@ func (s *Service) ListDocumentVersions(ctx context.Context, c Caller, bucketName
 	return DocumentVersionPage{}, fmt.Errorf("%w: the document keeps changing", ErrConflict)
 }
 
-func (s *Service) listDocumentVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (DocumentVersionPage, error) {
+func (s *Service) listDocumentVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string,
+	w window) (DocumentVersionPage, error) {
 	if limit <= 0 || limit > s.d.Limits.ListPageMax {
 		limit = min(100, s.d.Limits.ListPageMax)
 	}
@@ -496,6 +509,15 @@ func (s *Service) listDocumentVersions(ctx context.Context, c Caller, bucketName
 		case continuation != "":
 			sql += ` AND (v.created_at < $3 OR v.created_at = $3 AND v.id::text > $4)`
 			args = append(args, afterTime, afterID)
+		}
+		for _, b := range []struct {
+			at time.Time
+			op string
+		}{{w.since, ">="}, {w.until, "<"}} {
+			if !b.at.IsZero() {
+				args = append(args, b.at)
+				sql += ` AND (r.attributes->>'published_at')::timestamptz ` + b.op + ` $` + strconv.Itoa(len(args))
+			}
 		}
 		sql += ` ORDER BY v.created_at DESC, v.id::text LIMIT ` + strconv.Itoa(limit+1)
 		rows, err := tx.Query(ctx, sql, args...)

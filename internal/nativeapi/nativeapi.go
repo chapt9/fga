@@ -380,6 +380,59 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 		}
 		httpapi.WriteJSON(w, http.StatusCreated, in)
 	}))
+	// Data tools (docs/design/mcp-data-tools.md, DTL-004 to DTL-009): the
+	// listing shows the tools the caller may discover; a call needs invoke
+	// on its tool and makes the native reads it is made of; a preview runs
+	// a draft for a caller allowed to list the source's bucket. Answers are
+	// never cached.
+	mux.HandleFunc("GET /v1/data-tools", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		q := r.URL.Query()
+		limit, err := strconv.Atoi(q.Get("limit"))
+		if q.Get("limit") == "" {
+			limit, err = 0, nil
+		}
+		if err != nil {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		page, err := svc.ListDataTools(r.Context(), c, limit, q.Get("continuation"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		httpapi.WriteJSON(w, http.StatusOK, page)
+	}))
+	mux.HandleFunc("POST /v1/data-tools/{name}/call", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var b content.DataToolCall
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		ans, err := svc.CallDataTool(r.Context(), c, r.PathValue("name"), b)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		httpapi.WriteJSON(w, http.StatusOK, ans)
+	}))
+	mux.HandleFunc("POST /v1/data-tools/preview", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		var b struct {
+			Definition json.RawMessage `json:"definition"`
+			Arguments  json.RawMessage `json:"arguments,omitempty"`
+			Recipient  string          `json:"recipient,omitempty"`
+		}
+		if !httpapi.DecodeJSON(w, r, &b) {
+			return
+		}
+		ans, err := svc.PreviewDataTool(r.Context(), c, b.Definition, content.DataToolCall{Arguments: b.Arguments, Recipient: b.Recipient})
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		httpapi.WriteJSON(w, http.StatusOK, ans)
+	}))
 	mux.HandleFunc("PUT /v1/buckets/{bucket}/object", stream(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := object(r)
 		h := r.Header

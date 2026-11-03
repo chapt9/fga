@@ -124,7 +124,7 @@ func TestSources(t *testing.T) {
 	if _, err := ops.ReviewSource(ctx, root, r1test.Tenant, "greenhouse-climate", 1, v1.Digest); !errors.Is(err, catalog.ErrSelfReview) {
 		t.Fatalf("the author reviews: %v", err)
 	}
-	if _, err := ops.ReviewSource(ctx, rita, r1test.Tenant, "greenhouse-climate", 1, "0000"); !errors.Is(err, catalog.ErrSourceConflict) {
+	if _, err := ops.ReviewSource(ctx, rita, r1test.Tenant, "greenhouse-climate", 1, "0000"); !errors.Is(err, catalog.ErrDraftConflict) {
 		t.Fatalf("another digest: %v", err)
 	}
 	if got := entries(); len(got) != 0 {
@@ -169,7 +169,7 @@ func TestSources(t *testing.T) {
 	if err := ops.DisableSource(ctx, rita, r1test.Tenant, "greenhouse-climate"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ops.PutSource(ctx, root, r1test.Tenant, record(t, func(d *sources.Definition) { d.Owner = "lena" })); !errors.Is(err, catalog.ErrSourceDisabled) {
+	if _, err := ops.PutSource(ctx, root, r1test.Tenant, record(t, func(d *sources.Definition) { d.Owner = "lena" })); !errors.Is(err, catalog.ErrDisabled) {
 		t.Fatalf("a draft for a disabled source: %v", err)
 	}
 	if got, want := entries(), []string{"source-set", "source-set", "source-set", "source-disabled"}; !slices.Equal(got, want) {

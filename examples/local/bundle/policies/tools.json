@@ -1,4 +1,6 @@
 {"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
   {"id":"members-use-mcp","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"mcp\""},
   {"id":"members-use-tools","effect":"allow","actions":["discover","invoke"],"roles":["member"],"when":"resource.attributes.kind == \"executor\""},
+  {"id":"members-use-data-tools","effect":"allow","actions":["discover","invoke"],"roles":["member"],
+   "when":"resource.attributes.kind == \"data\" && resource.attributes.project in principal.attributes.projects"},
   {"id":"leads-settle-tools","effect":"allow","actions":["approve","resolve","write-off"],"roles":["lead"],"when":"resource.attributes.kind == \"executor\""}]}

@@ -52,7 +52,8 @@ import (
 // export directory holds past it.
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases", "share_grants",
-	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "sources", "source_versions", "objects", "object_versions",
+	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "sources", "source_versions", "data_tools", "data_tool_versions",
+	"objects", "object_versions",
 	"document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
 	"read_admissions", "retirements", "approvals", "consumed_decisions", "audit_outbox", "audit_export_state",

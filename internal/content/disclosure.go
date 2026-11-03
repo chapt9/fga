@@ -441,6 +441,11 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
+	return s.unitPackage(ctx, c, d, m, recipient)
+}
+
+// unitPackage is UnitPackage for unit m of the resolved version d.
+func (s *Service) unitPackage(ctx context.Context, c Caller, d docVersion, m member, recipient string) (UnitPackageOut, error) {
 	readOp, readChecks := d.historic(d.units.readOp, unitReadChecks(d, m))
 	_, rec, err := s.decide(ctx, c, readOp, Audience, false, readChecks)
 	if err != nil {
@@ -494,6 +499,12 @@ func (s *Service) ReadUnitCiphertext(ctx context.Context, c Caller, bucketName, 
 	if err != nil {
 		return nil, err
 	}
+	return s.readUnitCiphertext(ctx, c, d, m)
+}
+
+// readUnitCiphertext is ReadUnitCiphertext for unit m of the resolved
+// version d.
+func (s *Service) readUnitCiphertext(ctx context.Context, c Caller, d docVersion, m member) (*Stream, error) {
 	op, checks := d.historic(d.units.readOp, unitReadChecks(d, m))
 	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {

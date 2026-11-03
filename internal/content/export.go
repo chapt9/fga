@@ -334,45 +334,15 @@ func (s *Service) SearchDocuments(ctx context.Context, c Caller, bucketName stri
 	return page, nil
 }
 
-// discoverVersions decides discover on each candidate's document version:
-// one batch, and one decision per candidate if the batch is denied.
+// discoverVersions decides discover on each candidate's document version
+// (eachAllowed).
 func (s *Service) discoverVersions(ctx context.Context, c Caller, cands []SearchResult) ([]bool, error) {
-	checks := func(cs []SearchResult, offset int) []check {
-		out := make([]check, len(cs))
-		for i, r := range cs {
-			out[i] = check{id: "version-" + strconv.Itoa(offset+i), role: registry.RoleVersion, action: "discover",
-				ref: canonical("document.version", r.DocumentVersion)}
-		}
-		return out
+	checks := make([]check, len(cands))
+	for i, r := range cands {
+		checks[i] = check{id: "version-" + strconv.Itoa(i), role: registry.RoleVersion, action: "discover",
+			ref: canonical("document.version", r.DocumentVersion)}
 	}
-	visible := make([]bool, len(cands))
-	_, rec, err := s.decide(ctx, c, registry.OpDocSearch, Audience, false, checks(cands, 0))
-	if err == nil {
-		if err := s.checked(ctx, rec); err != nil {
-			return nil, err
-		}
-		for i := range visible {
-			visible[i] = true
-		}
-		return visible, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	for i := range cands {
-		_, rec, err := s.decide(ctx, c, registry.OpDocSearch, Audience, false, checks(cands[i:i+1], i))
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if err := s.checked(ctx, rec); err != nil {
-			return nil, err
-		}
-		visible[i] = true
-	}
-	return visible, nil
+	return s.eachAllowed(ctx, c, registry.OpDocSearch, checks)
 }
 
 // ObjectExport is an encrypted remote export of one object version: its

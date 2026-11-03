@@ -7,7 +7,8 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
 - Stop 3, client-mode ingestion, is built, with the owner's two choices D-M and D-N.
 - Stop 4, document history, is built, with two fixes the owner asked for the same day: a history read holds across a newer version, and a rule can bound history to a window such as the last day (evaluator `fga.evaluator/2`). The specification erratum for the window waits for the next specification version.
-- Order, 3 November 2026: the owner chose data tools first, so stop 4, document history, comes next. Both encryption modes stay required for sources and data tools, as the owner restated the same day. Whether client-mode ingestion, stop 3, comes before or after the server-mode data tools is settled after stop 4.
+- Stop 5, data tools in the storage role, is built for both encryption modes.
+- Order: the owner chose data tools first, then client mode first, and on 3 November 2026 asked for stops 3, 5, 6 and 7 in one go, without bloating the code base. Both encryption modes stay required for sources and data tools.
 
 ## Summary
 
@@ -294,7 +295,6 @@ A reader allowed only the current version can lose it mid-call when a newer read
 {
   "format": "fga.data-tool/v1",
   "name": "read_climate",
-  "version": 3,
   "description": "Latest air temperature and humidity in one greenhouse.",
   "source": "greenhouse-climate",
   "operation": "latest",
@@ -314,15 +314,15 @@ A reader allowed only the current version can lose it mid-call when a newer read
 | Field | Rule |
 |---|---|
 | `name` | `^[a-z][a-z0-9_]{0,63}$`, unique per tenant. Every built-in MCP name contains a dot, so a data tool can never take one (DTL-007, D-I) |
-| `version` | As for sources. A call uses the active version unless it pins one |
+| `version` | None in the record: the catalog numbers versions, as for sources. A call uses the active version unless it pins one |
 | `description` | Plain text, at most 1,000 characters |
 | `source` | An active source. The tool is checked against the source's active version at review |
 | `operation` | `latest` or `history` |
-| `arguments` | At most 8. Types: `enum` with `values`; `string` with `pattern` and `max_length`; `integer` with `minimum` and `maximum`; `timestamp` in RFC 3339. Names follow the tool name pattern |
+| `arguments` | At most 8, and each one the key selection uses: `enum` with `values`, or `string`. Names follow the tool name pattern and are none of the reserved names. Other types wait for a use: tool arguments visible to policy are left open |
 | `select` | How the key is chosen, only inside the source's bucket (DTL-003). `{"fixed": "<key>"}`: one key. `{"argument": a, "keys": {value: key}}`: an enum argument maps to listed keys. `{"argument": a}`: a string argument, validated by the source's key pattern, gives the key `prefix` plus value, for sources in `pointer` or `principal` mode. A tool never takes a bucket or a free key |
 | `outputs` | 1 to 32. Each names one field of one group of the source version and a `type`: `string`, `number`, `boolean`, `object`, `array` or `any` (default) |
 | `on_unreadable` | `skip_reading` (default): a reading is returned only when every group its outputs use is readable for the caller. `skip_fields`: fields of unreadable groups are left out, and a reading with no readable group is left out (DTL-005) |
-| `history` | History tools only: `max_readings`, default 50 and at most 200, and an optional `max_age`. History tools always accept `since`, `until` and `limit`, which are reserved argument names |
+| `history` | History tools only: `max_readings`, default 50 and at most 200. History tools always accept `since`, `until` and `limit`, which are reserved argument names. A bound on age is a rule on `published_at` (Policy) |
 
 ### Registration and review (DTL-001)
 
@@ -338,7 +338,7 @@ A reader allowed only the current version can lose it mid-call when a newer read
 
 ### Listing (DTL-004)
 
-`GET /v1/data-tools?after=&limit=` serves bearer callers and gateway calls under `data.list`.
+`GET /v1/data-tools?limit=&continuation=` serves bearer callers and gateway calls under `data.list`. The continuation is sealed and bound to the caller, as for unit listings.
 - The storage role decides `discover` on every active data tool resource for the caller, with `mcp.tool.discover` in batches of 50.
 - It returns only those allowed, in name order: `name`, `version`, `description`, `encryption`, `input_schema` and `output_schema`.
 - It never returns the source, bucket, keys or field pointers.
@@ -346,7 +346,7 @@ A reader allowed only the current version can lose it mid-call when a newer read
 
 ### A call (DTL-002 to DTL-006, DTL-009)
 
-`POST /v1/data-tools/{name}/call` with body `{"arguments": {…}, "version": n}`. `version` is optional, and a version that is not active answers `409`.
+`POST /v1/data-tools/{name}/call` with body `{"arguments": {…}, "version": n, "recipient": "<fingerprint>"}`. `version` is optional, and a version that is not active answers `409`. `recipient` is the caller's recipient key, required for a tool over a client-mode source: the packages are those for that key, which must be the caller's.
 
 1. **Who may call.** A bearer caller: the storage role decides `mcp.tool.invoke` on `mcp.tool:{name}`. A gateway caller: the decision in `Fga-Decision` is `mcp.tool.invoke` on exactly that tool, which the gateway rule checks (MCP-009). It is not decided again (DTL-004).
 2. **Which definition.** The active or pinned version, read in one snapshot with the source's active version. A disabled or missing tool answers not found.
@@ -361,10 +361,10 @@ A reader allowed only the current version can lose it mid-call when a newer read
 5. **History.**
    - List versions as DOC-010 does: newest first, `since` inclusive and `until` exclusive on `published_at`, at most `limit` and the tool's `max_readings`.
    - Read each listed version as in step 4, with the history twins.
-   - Versions the caller may not read are left out without a trace.
-   - To page, the caller calls again with `until` set to the oldest `published_at` returned.
+   - Versions the caller may not read are left out without a trace. A key without a document, or whose current version the caller may not discover, answers `404`, as the native listing does.
+   - An answer stops before it would exceed its bound. To page, the caller calls again with `until` set to the oldest `published_at` returned.
 6. **Answer.** Never cached (`Cache-Control: no-store`), at most 1 MiB.
-7. **Audit.** One event per call with actor, subject, delegation, tool, version, definition digest, and the document versions and units disclosed. IDs only, never values (DSC-003).
+7. **Audit.** One event per answered call, a `read_admission` with outcome `DATA_TOOL` (`DATA_TOOL_PREVIEW` for a preview), with actor, subject, delegation, tool, version, definition digest, and the document versions and units disclosed. IDs only, never values (DSC-003). Each unit read is also audited as its native read is.
 
 For every caller chain, a call's result is a subset of what the native reads return to that caller (DTL-002). The projection of step 4 is one function in `internal/jsonunits`, added in stop 5, which the storage role and the bridge share, so both modes give the same result.
 
@@ -380,7 +380,7 @@ Latest, server mode:
 
 History, server mode: `{"tool", "version", "readings": [{"reading": {…}, "origin": {…}}, …]}`, newest first.
 
-Client mode: `{"tool", "version", "encrypted": true, "projection": {"outputs": […], "on_unreadable": …}, "readings": [{"origin": {…}, "packages": […]}, …]}`. The caller's client opens the packages with its own key and applies the projection, which gives the server-mode shape.
+Client mode: `{"tool", "version", "encrypted": true, "projection": {"outputs": […], "on_unreadable": …}, "origin": {…}, "packages": […]}` for a latest tool, and `"readings": [{"origin": {…}, "packages": […]}, …]` for a history tool. Each package is a unit's signed descriptor, the caller's envelope and the ciphertext. The caller's client opens the packages with its own key, checks that each descriptor names the reading's version, and applies the projection, which gives the server-mode shape (`sdk/go` `CallDataTool`).
 
 `origin.label` is the highest label, under the label order, of the units the reading used. It is metadata for whoever receives the result, such as an MCP firewall sink, and never an access decision (DTL-006).
 
@@ -398,7 +398,7 @@ Client mode: `{"tool", "version", "encrypted": true, "projection": {"outputs": [
 - Checks: `list` on the source's bucket, then exactly the reads of a call.
 - No tool resource exists yet, so there is no invoke check.
 - No gateway rule opens it, so agents cannot reach it.
-- The answer is that of a call. A validation error may name the source's groups and pointers, which callers allowed to list the bucket may see.
+- The answer is that of a call. A draft that breaks the record's rules or does not fit the source's active version answers `400` with the code only; the admin API's add and put give the reason.
 - For a client-mode source the answer holds packages, which the console can open only once the browser opens document units. Until then the builder previews server-mode tools only.
 
 ## MCP (MCP-009)
@@ -697,28 +697,25 @@ Pending specification erratum, for the next version after 2.6.2 (TEST-003: norma
 - V-154: the given becomes "uses request.now in arithmetic, or compares it with anything other than a timestamp literal or a resource attribute's timestamp, give or take a duration literal".
 - A new case: a comparison with a resource attribute's time bounds `valid_until` at that time plus the duration.
 
-### Stop 5: data tools in the storage role
+### Stop 5: data tools in the storage role (built)
 
-Build:
-- catalog migration: `data_tools` and `data_tool_versions`;
-- adminops, fga-admin commands and admin API routes for data tools; review registering `mcp.tool:<name>`;
-- the listing, call and preview routes, schema generation and call audit;
-- the shared projection in `internal/jsonunits`, and client-mode answers with packages.
-
-Done when, through the file API, alice's call returns exactly the fields she may read, bob's returns not found or fewer fields as `on_unreadable` says, a preview of the published record answers like the call, and a client-mode call answers only the caller's packages.
+Built on the local branch `data-tools` on 4 November 2026:
+- catalog migration `0031_data_tools.sql` (`data_tools`, `data_tool_versions`, both backed up), with the draft and review machinery shared with sources (`catalog` `records`);
+- package `internal/datatools`: the record, its own rules, its fit to a source version, argument resolution and the two schemas;
+- adminops, admin API routes and `fga-admin data-tool` commands; review registers `mcp.tool:<name>`, and a source review reports the tools it breaks;
+- `GET /v1/data-tools`, `POST /v1/data-tools/{name}/call` and `POST /v1/data-tools/preview`, composed of the native unit reads (`readUnitPlain`, `unitPackage`, `readUnitCiphertext`) on the resolved version, with the call audit;
+- the shared projection `jsonunits.Projection`, `sdk/go` `ListDataTools` and `CallDataTool`, which opens client-mode packages, and `fga data-tool [-tool T -args JSON]`;
+- the example bundle's rule `members-use-data-tools`, with two sentinels.
 
 | Test | Covers |
 |---|---|
-| `TestDataToolReview` | Registration, generation advance, name rules, built-in names refused, tools broken by a source version |
-| `TestDataToolList` | `discover` per tool; no source, bucket, key or pointer in the answer |
-| `TestDataToolLatest` | Projection, renaming, declared types, both `on_unreadable` modes, restarts when the head moves |
-| `TestDataToolHistory` | `since`, `until`, `limit`, omission without trace, history twins |
-| `TestDataToolSubsetOfNative` | P2 over a matrix of callers, delegations and policies: the tool's result is within the native reads |
-| `TestDataToolArguments` | Strict validation, every select mode, unknown and denied keys alike |
-| `TestDataToolClientMode` | Packages only for the caller's key; opening them and projecting gives the server-mode answer |
-| `TestDataToolStale` | A pinned old version and a tool that no longer fits its source answer `409` |
-| `TestDataToolAudit` | IDs only, never values |
-| `TestDataToolPreview` | The `list` gate; same answer as a call |
+| `content` `TestDataToolReview` | Registration and its attributes, alias, generation advance, digest check, name, source, field and key rules, an unused argument, tools a source version breaks answering `409`, disable |
+| `content` `TestDataToolLatest` | Projection, renaming, declared types, both `on_unreadable` modes, origin and label, strict arguments, unknown and denied keys alike, pinned versions, a restart when a reading lands mid-call |
+| `content` `TestDataToolHistory` | Newest first, `since`, `until`, `limit`, a key without readings, a member without `read-history`, an agent whose delegation leaves history out |
+| `content` `TestDataToolSubsetOfNative` | P2 over the owner, a member, an auditor, another project's member and an agent without unit reads: every group a tool answers is one the caller reads natively |
+| `content` `TestDataToolListPreviewAudit` | `discover` per tool, paging, nothing of source, bucket, key or pointer listed; the preview's `list` gate, same answer as the call, an unfit draft; one call event, no value in the audit |
+| `nativeapi` `TestDataToolsHTTP` | Client mode with the SDK: each recipient opens exactly its groups, a member who is no recipient gets nothing, only the caller's envelope and no value on the wire, `no-store`, another person's key refused |
+| `datatools` `TestRecord`, `jsonunits` `TestProjection` | The record's rules, fit, arguments and schemas; the projection's checks, modes and types, `KeyFor` and `HasKey` |
 
 ### Stop 6: MCP
 
@@ -780,8 +777,10 @@ On 3 November 2026, fga main `7a5c33f`:
 - fga-mcp may link no catalog, payload or key package, and fga-tools no storage content package (`allowed-imports.txt`).
 - The `storage` preset grants the client-mode actions that `source-client` adds to `source` (`adminops.Presets`).
 
+Verified while coding:
+- the decision role lets the storage role's adapter decide `mcp.tool.invoke` and `mcp.tool.discover` for bearer callers and delegated agents (stop 5 tests).
+
 To verify while coding:
-- whether the decision role lets the storage role's adapter request `mcp.tool.invoke` and `mcp.tool.discover`, for bearer callers and the listing;
 - how the bridge recognises a data tool's encrypted answer, for stop 6.
 
 ## Documents to update with the code

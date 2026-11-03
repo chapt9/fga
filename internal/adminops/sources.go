@@ -21,16 +21,16 @@ import (
 
 // AddSource creates a source, its bucket and its draft version 1. The
 // bucket is created in b's encryption mode and names the source.
-func (o Ops) AddSource(ctx context.Context, who Who, tenant string, b catalog.Bucket, def sources.Definition) (catalog.SourceVersion, error) {
+func (o Ops) AddSource(ctx context.Context, who Who, tenant string, b catalog.Bucket, def sources.Definition) (catalog.RecordVersion, error) {
 	if !catalog.BucketName.MatchString(b.Name) {
-		return catalog.SourceVersion{}, invalid("bucket name %q", b.Name)
+		return catalog.RecordVersion{}, invalid("bucket name %q", b.Name)
 	}
 	if err := o.checkSource(ctx, tenant, def, b.Encryption, b.Label); err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	raw, digest, err := def.Canonical()
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	now := o.Now().UTC()
 	err = o.Store.Administer(ctx, o.event(tenant, who, "source.add", "source", def.ID), o.journal(), func(a *catalog.Admin) error {
@@ -38,23 +38,23 @@ func (o Ops) AddSource(ctx context.Context, who Who, tenant string, b catalog.Bu
 		return err
 	})
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
-	return catalog.SourceVersion{Version: 1, State: "DRAFT", Digest: digest, Definition: raw, Author: who.Actor, CreatedAt: now}, nil
+	return catalog.RecordVersion{Version: 1, State: "DRAFT", Digest: digest, Definition: raw, Author: who.Actor, CreatedAt: now}, nil
 }
 
 // PutSource stores a source's next version as its draft.
-func (o Ops) PutSource(ctx context.Context, who Who, tenant string, def sources.Definition) (catalog.SourceVersion, error) {
+func (o Ops) PutSource(ctx context.Context, who Who, tenant string, def sources.Definition) (catalog.RecordVersion, error) {
 	src, err := o.source(ctx, tenant, def.ID)
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	if err := o.checkSource(ctx, tenant, def, src.Encryption, src.Label); err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	raw, digest, err := def.Canonical()
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	now := o.Now().UTC()
 	var version int
@@ -63,9 +63,9 @@ func (o Ops) PutSource(ctx context.Context, who Who, tenant string, def sources.
 		return err
 	})
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
-	return catalog.SourceVersion{Version: version, State: "DRAFT", Digest: digest, Definition: raw, Author: who.Actor, CreatedAt: now}, nil
+	return catalog.RecordVersion{Version: version, State: "DRAFT", Digest: digest, Definition: raw, Author: who.Actor, CreatedAt: now}, nil
 }
 
 // TrySource splits a sample payload with a version's layout, the draft's
@@ -76,7 +76,7 @@ func (o Ops) TrySource(ctx context.Context, tenant, id string, version int, payl
 	if err != nil {
 		return jsonunits.Reading{}, err
 	}
-	var v *catalog.SourceVersion
+	var v *catalog.RecordVersion
 	switch {
 	case version > 0:
 		got, err := o.Store.SourceVersion(ctx, tenant, id, version)
@@ -105,22 +105,22 @@ func (o Ops) TrySource(ctx context.Context, tenant, id string, version int, payl
 // ReviewSource makes a source's draft its active version: version and
 // digest name the draft the reviewer saw. The draft is checked again,
 // since labels, the label order and identities may have changed.
-func (o Ops) ReviewSource(ctx context.Context, who Who, tenant, id string, version int, digest string) (catalog.SourceVersion, error) {
+func (o Ops) ReviewSource(ctx context.Context, who Who, tenant, id string, version int, digest string) (catalog.RecordVersion, error) {
 	src, err := o.source(ctx, tenant, id)
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	if src.Draft == nil || src.Draft.Version != version || src.Draft.Digest != digest {
-		return catalog.SourceVersion{}, catalog.ErrSourceConflict
+		return catalog.RecordVersion{}, catalog.ErrDraftConflict
 	}
 	def, err := sources.Parse(src.Draft.Definition)
 	if err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
 	if err := o.checkSource(ctx, tenant, def, src.Encryption, src.Label); err != nil {
-		return catalog.SourceVersion{}, err
+		return catalog.RecordVersion{}, err
 	}
-	var v catalog.SourceVersion
+	var v catalog.RecordVersion
 	err = o.Store.Administer(ctx, o.event(tenant, who, "source.review", "source", id), o.journal(), func(a *catalog.Admin) error {
 		v, err = a.ReviewSource(ctx, tenant, id, version, digest, who.Actor, o.AllowSelfReview, o.Now().UTC())
 		return err

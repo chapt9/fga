@@ -97,9 +97,9 @@ func TestSourceLifecycle(t *testing.T) {
 		reviewer string
 		want     error
 	}{
-		"a superseded draft":   {1, digest1, "rita", ErrSourceConflict},
-		"another digest":       {2, digest1, "rita", ErrSourceConflict},
-		"an unknown version":   {7, digest2, "rita", ErrSourceConflict},
+		"a superseded draft":   {1, digest1, "rita", ErrDraftConflict},
+		"another digest":       {2, digest1, "rita", ErrDraftConflict},
+		"an unknown version":   {7, digest2, "rita", ErrDraftConflict},
 		"the draft's author":   {2, digest2, "root", ErrSelfReview},
 		"an unknown source ID": {2, digest2, "rita", nil},
 	} {
@@ -159,7 +159,7 @@ func TestSourceLifecycle(t *testing.T) {
 	if err := admin(func(a *Admin) error {
 		_, err := a.PutSourceDraft(ctx, "t-acme", "greenhouse", raw3, digest3, "root", now)
 		return err
-	}); !errors.Is(err, ErrSourceDisabled) {
+	}); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("a draft for a disabled source: %v", err)
 	}
 	if list, err := s.ListSources(ctx, "t-acme", "", 10); err != nil || len(list) != 1 || !list[0].Disabled || list[0].Active.Version != 3 {
@@ -235,7 +235,7 @@ func TestApplySourceState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	active := func() *SourceVersion {
+	active := func() *RecordVersion {
 		t.Helper()
 		src, err := s.Source(ctx, "t-acme", "greenhouse")
 		if err != nil {

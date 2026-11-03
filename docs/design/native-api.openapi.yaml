@@ -138,6 +138,55 @@ paths:
       responses:
         "200": { description: The active layout, content: { application/json: { schema: { type: object } } } }
         default: { $ref: "#/components/responses/Error" }
+  /v1/data-tools:
+    get:
+      operationId: listDataTools
+      description: The enabled data tools the caller may discover (DTL-004), in name order, with their schemas; never their source, bucket, keys or field pointers. Never cached.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: continuation, in: query, schema: { type: string } }
+      responses:
+        "200": { description: A page of data tools, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/data-tools/{name}/call:
+    post:
+      operationId: callDataTool
+      description: Calls a data tool (DTL-002 to DTL-006, DTL-009). Besides invoke on the tool, the call makes the native reads it is made of for the same caller, so its answer is within theirs. A tool over a client-mode source answers the caller's unit packages with the projection its client applies, and needs the caller's recipient key. An unknown, disabled or denied tool and a missing or unreadable latest reading answer 404; a pinned version that is not active and a tool that no longer fits its source 409. Never cached.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string, pattern: "^[a-z][a-z0-9_]{0,63}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                arguments: { type: object }
+                version: { type: integer, minimum: 1 }
+                recipient: { type: string }
+      responses:
+        "200": { description: The tool's answer, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/data-tools/preview:
+    post:
+      operationId: previewDataTool
+      description: Runs a draft data tool record as the caller, for the console's builder (DTL-008), with list on the source's bucket and the reads of a call. No gateway decision opens it. Never cached.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [definition]
+              properties:
+                definition: { type: object }
+                arguments: { type: object }
+                recipient: { type: string }
+      responses:
+        "200": { description: The answer a call would give, content: { application/json: { schema: { type: object } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/sources/{source}/readings/begin:
     post:
       operationId: beginClientReading

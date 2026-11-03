@@ -49,7 +49,13 @@ type readings struct {
 // source greenhouse-climate, and that source added and reviewed.
 func newReadings(t *testing.T) *readings {
 	t.Helper()
-	st := r1test.NewWith(t, r1test.Options{Policies: readingPolicies()})
+	return newReadingsWith(t, readingPolicies())
+}
+
+// newReadingsWith is newReadings under policies.
+func newReadingsWith(t *testing.T, policies map[string]string) *readings {
+	t.Helper()
+	st := r1test.NewWith(t, r1test.Options{Policies: policies})
 	r := &readings{st: st, ops: adminops.Ops{Store: st.Catalog, Journal: func() (*journal.Journal, error) { return st.Journal, nil },
 		Now: func() time.Time { return *st.Clock }}}
 	st.User("team-greenhouse", []string{"member"}, "greenhouse")

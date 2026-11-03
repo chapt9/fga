@@ -232,6 +232,8 @@ func clientCommand(cmd string, args []string) error {
 	generation := fs.Uint64("generation", 1, "envelope generation")
 	prefix := fs.String("prefix", "", "key prefix")
 	source := fs.String("source", "", "source of readings (post-reading)")
+	tool := fs.String("tool", "", "data-tool: the data tool to call; without it, list the tools")
+	toolArgs := fs.String("args", "", "data-tool: the call's arguments as a JSON object")
 	ifNoneMatch := fs.Bool("if-none-match", false, "fail if the key has a current version")
 	tenant := fs.String("tenant", "", "tenant")
 	principal := fs.String("principal", "", "principal")
@@ -452,6 +454,34 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		fmt.Printf("published reading version %s of document %s\n", p.DocumentVersion, p.Document)
+		return nil
+	case "data-tool":
+		// The data tools the caller may discover, or a call of -tool
+		// (DTL-004, DTL-009): a client-mode tool's packages are opened with
+		// the caller's own key and projected here.
+		if *tool == "" {
+			tools, err := c.ListDataTools(ctx)
+			if err != nil {
+				return err
+			}
+			for _, t := range tools {
+				line, _ := json.Marshal(t)
+				fmt.Println(string(line))
+			}
+			return nil
+		}
+		v := 0
+		if *version != "" {
+			var err error
+			if v, err = strconv.Atoi(*version); err != nil {
+				return fmt.Errorf("-version: %w", err)
+			}
+		}
+		ans, err := c.CallDataTool(ctx, *tool, json.RawMessage(*toolArgs), v)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(ans))
 		return nil
 	case "put-document", "append":
 		text, err := os.ReadFile(*in)

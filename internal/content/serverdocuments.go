@@ -322,6 +322,14 @@ func (s *Service) ReadUnitPlain(ctx context.Context, c Caller, bucketName, key, 
 	if err != nil {
 		return nil, err
 	}
+	return s.readUnitPlain(ctx, c, d, m)
+}
+
+// readUnitPlain is ReadUnitPlain for unit m of the resolved version d.
+func (s *Service) readUnitPlain(ctx context.Context, c Caller, d docVersion, m member) (*Stream, error) {
+	if s.d.DataKeys == nil {
+		return nil, fmt.Errorf("%w: server mode is not configured", ErrUnavailable)
+	}
 	op, checks := d.historic(d.units.readOp, unitReadChecks(d, m))
 	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
