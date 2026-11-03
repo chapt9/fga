@@ -3,7 +3,7 @@
 Status: design record, 3 November 2026. Our own design; no upstream mapping. It turns the owner's proposal of 3 November 2026, "Configurable MCP data tools for FGA", into buildable parts and adds protection per field group. Checked against fga main `7a5c33f` (see "Checked against the code").
 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
-- The same day the owner asked for client-side encryption as an option, as for objects. The client-mode decisions D-J to D-L await the owner's OK.
+- The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
 - Stop 1, the profile, is built.
 
 ## Summary
@@ -708,9 +708,9 @@ The owner accepted every recommendation of D-A to D-I on 3 November 2026. The al
 | D-H | Buckets | One bucket per source, created with it | Sources sharing buckets, which needs a per-key binding in policy |
 | D-I | Tool names in MCP | As written, with no dots allowed | Prefixed, `data.<name>` |
 
-Client mode, proposed on 3 November 2026 after the owner asked for it; awaiting the owner's OK:
+Client mode, added on 3 November 2026 at the owner's request; the owner accepted every recommendation the same day:
 
-| ID | Question | Recommendation | Alternative |
+| ID | Question | Chosen | Not chosen |
 |---|---|---|---|
 | D-J | What fga sees of a client-mode reading | Its key, its groups by position, their labels, and the fields present in each unit at the layout's pointers. Values and member names nested inside a field stay encrypted | Every member name, nested ones included |
 | D-K | Who gets envelopes | The recipients the source version names per group, reviewed like the rest of the source | Each posting client chooses: who can read would then depend on each device's configuration |
