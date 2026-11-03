@@ -14,6 +14,8 @@ For every check of a delegated request (DLG-003, DLG-004):
 
 The effective authority is the intersection of the three. The agent's own roles play no part.
 
+A delegation that leaves out `read-history` and `discover-history` limits the agent to current versions, of documents as of objects, while the user reads history (DOC-009).
+
 ## Creating and ending a delegation
 
 `fga-admin delegation add -tenant T -id ID -actor AGENT -subject USER -audience WORKLOAD -grants 'type:a,b;type:c' -expires 24h [-parent ID]`
@@ -67,3 +69,4 @@ A role may also present a delegation itself, with no token: the request names th
 | `internal/catalog` `TestPutDelegation` | Creation: a child narrows its parent in actions and lifetime; no overwrite, no self-delegation, no past expiry, no unknown actor, no empty grant |
 | `internal/catalog` `TestParentInTheTransaction` | A child delegation recorded by an administration resolves its parent through that transaction, on a pool of one connection (audit F4) |
 | `scripts/smoke.sh` | An agent under a delegation reads the user's document through MCP; without it, nothing; its session is bound to it |
+| `internal/content` `TestDelegationWithoutHistory` | An agent whose delegation leaves out `read-history` reads only a document's current version; the user reads history |

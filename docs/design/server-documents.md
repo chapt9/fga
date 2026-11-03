@@ -35,7 +35,7 @@ The body is the text (`Content-Length` required, at most 64 MiB), with an option
 `GET /v1/buckets/{b}/document/unit/content?key=&unit=[&version=]`
 
 1. **Admission.** The unit read's checks (`document.read-unit` or `collection.entry.read`: `read-units` on the version, `read` on the unit) admit it like a ciphertext unit read.
-2. **Release.** The keys role releases that unit's data key against `storage.key.release-unit` or `release-entry`, with the same checks. It checks that the unit is a member of that document version at the unit version named, and that both are LIVE.
+2. **Release.** The keys role releases that unit's data key against `storage.key.release-unit` or `release-entry`, with the same checks. It checks that the unit is a member of that document version at the unit version named, and that both are LIVE. A version that is not current needs the history twins, with `read-history` on the document; under the plain operations the keys role releases only while the version is still current (DOC-009).
 3. **Stream.** The plaintext streams under the read's lease.
 
 The unit listing (`/document/units`) now names the document version it lists, so that `GetDocument` reads every unit from that version. The SDK reads a unit without a client descriptor through the server route. In server mode the content is the server's word (N-09).

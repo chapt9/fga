@@ -85,14 +85,18 @@ func TestServerDocument(t *testing.T) {
 		t.Fatalf("the owner reads the restricted unit: %q %v", got, err)
 	}
 
-	// A new version; the first stays readable by its version.
+	// A new version; the first stays readable by its version to whoever may
+	// read the document's history: the owner, not another member (DOC-009).
 	p2, err := st.Content.PutDocumentText(ctx, alice.Caller, content.TextRequest{Bucket: "vault", Key: "q3/notes.md", IdempotencyKey: "doc-2"},
 		[]byte("Rewritten.\n\nAll of it."))
 	if err != nil || p2.Generation != 2 || p2.Units != 2 {
 		t.Fatalf("second version: %+v %v", p2, err)
 	}
-	if got, err := readUnitPlain(st, bob.Caller, "vault", "q3/notes.md", p.DocumentVersion, units[0]); err != nil || got != want[0] {
-		t.Fatalf("a unit of the first version: %q %v", got, err)
+	if got, err := readUnitPlain(st, alice.Caller, "vault", "q3/notes.md", p.DocumentVersion, units[0]); err != nil || got != want[0] {
+		t.Fatalf("the owner reads a unit of the first version: %q %v", got, err)
+	}
+	if _, err := readUnitPlain(st, bob.Caller, "vault", "q3/notes.md", p.DocumentVersion, units[0]); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a member without read-history reads a unit of the first version: %v", err)
 	}
 
 	// Each route serves its own mode (ENC-002).

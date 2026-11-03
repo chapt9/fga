@@ -385,3 +385,162 @@ func (s *Service) tokenAEAD() (cipher.AEAD, error) {
 	}
 	return cipher.NewGCM(block)
 }
+
+// DocumentVersionEntry is one listed version of a document (DOC-010).
+type DocumentVersionEntry struct {
+	DocumentVersion string `json:"document_version_id"`
+	// PublishedAt is the server's publication time; versions published
+	// before it was recorded have none (DOC-011, D-E).
+	PublishedAt string `json:"published_at,omitempty"`
+	Current     bool   `json:"current"`
+}
+
+// DocumentVersionPage is a page of a document's versions, newest first.
+type DocumentVersionPage struct {
+	Versions     []DocumentVersionEntry `json:"versions"`
+	Continuation string                 `json:"continuation,omitempty"`
+}
+
+// ListDocumentVersions lists a document's LIVE versions, newest first
+// (DOC-010). discover on the current version admits the listing, and a
+// superseded entry needs discover-history on the document too; every
+// entry needs discover on its own version, so a rule on publication time
+// can bound history (DOC-011). Entries the caller may not discover are
+// left out without a count. The continuation is sealed and bound to the
+// caller, the document, the policy epoch and the incarnation, and the
+// listing starts again when the head moves, as ListVersions does.
+func (s *Service) ListDocumentVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (DocumentVersionPage, error) {
+	for range 3 {
+		page, err := s.listDocumentVersions(ctx, c, bucketName, key, limit, continuation)
+		if !errors.Is(err, errHeadMoved) {
+			return page, err
+		}
+	}
+	return DocumentVersionPage{}, fmt.Errorf("%w: the document keeps changing", ErrConflict)
+}
+
+func (s *Service) listDocumentVersions(ctx context.Context, c Caller, bucketName, key string, limit int, continuation string) (DocumentVersionPage, error) {
+	if limit <= 0 || limit > s.d.Limits.ListPageMax {
+		limit = min(100, s.d.Limits.ListPageMax)
+	}
+	d, err := s.documentVersion(ctx, c.Tenant, bucketName, key, "")
+	if err != nil {
+		return DocumentVersionPage{}, err
+	}
+	current := []check{{id: "version", role: registry.RoleVersion, action: "discover", ref: canonical("document.version", d.id.String())}}
+	_, rec, err := s.decide(ctx, c, registry.OpDocDiscover, Audience, false, current)
+	if err != nil {
+		return DocumentVersionPage{}, err
+	}
+	if err := s.checked(ctx, rec); err != nil {
+		return DocumentVersionPage{}, err
+	}
+	history := false
+	if _, histRec, err := s.decide(ctx, c, registry.HistoryOp(registry.OpDocDiscover), Audience, false,
+		append(current, d.historyCheck("discover-history"))); err == nil {
+		history = s.checked(ctx, histRec) == nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return DocumentVersionPage{}, err
+	}
+	cur := cursor{Tenant: c.Tenant, Principal: c.Principal, Revision: rec.Actor.Revision, Bucket: "document-versions", Prefix: d.document.String(),
+		Epoch: rec.PolicyEpoch, Incarnation: rec.RecoveryIncarnation}
+	var afterTime time.Time
+	var afterID string
+	if continuation != "" {
+		prev, err := s.openToken(continuation)
+		if err != nil || prev.Tenant != cur.Tenant || prev.Principal != cur.Principal || prev.Revision != cur.Revision ||
+			prev.Bucket != cur.Bucket || prev.Prefix != cur.Prefix || prev.Epoch != cur.Epoch || prev.Incarnation != cur.Incarnation ||
+			!s.d.Now().Before(prev.Expires) {
+			return DocumentVersionPage{}, ErrInvalid
+		}
+		at, id, ok := strings.Cut(prev.After, "|")
+		if afterTime, err = time.Parse(time.RFC3339Nano, at); !ok || err != nil {
+			return DocumentVersionPage{}, ErrInvalid
+		}
+		afterID = id
+	}
+	page := DocumentVersionPage{Versions: []DocumentVersionEntry{}}
+	if !history && continuation != "" {
+		// Without discover-history only the current version is listed, on
+		// the first page.
+		return page, nil
+	}
+	type candidate struct {
+		id          string
+		createdAt   time.Time
+		publishedAt string
+	}
+	var cands []candidate
+	err = func() error {
+		tx, err := s.d.Catalog.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // read-only
+		var head *cryptowire.UUID
+		if err := tx.QueryRow(ctx, `SELECT current_document_version FROM objects WHERE tenant = $1 AND id = $2`, c.Tenant, d.document).
+			Scan(&head); err != nil {
+			return err
+		}
+		if head == nil || *head != d.id {
+			return errHeadMoved
+		}
+		sql := `SELECT v.id::text, v.created_at, coalesce(r.attributes->>'published_at', '') FROM document_versions v
+		          JOIN resources r ON r.tenant = v.tenant AND r.id = v.id::text
+		         WHERE v.tenant = $1 AND v.document = $2 AND v.state = 'LIVE'`
+		args := []any{c.Tenant, d.document}
+		switch {
+		case !history:
+			sql += ` AND v.id = $3`
+			args = append(args, d.id)
+		case continuation != "":
+			sql += ` AND (v.created_at < $3 OR v.created_at = $3 AND v.id::text > $4)`
+			args = append(args, afterTime, afterID)
+		}
+		sql += ` ORDER BY v.created_at DESC, v.id::text LIMIT ` + strconv.Itoa(limit+1)
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var x candidate
+			if err := rows.Scan(&x.id, &x.createdAt, &x.publishedAt); err != nil {
+				return err
+			}
+			cands = append(cands, x)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		return DocumentVersionPage{}, err
+	}
+	more := len(cands) > limit
+	if more {
+		cands = cands[:limit]
+	}
+	for start := 0; start < len(cands); start += discoverBatch {
+		batch := cands[start:min(len(cands), start+discoverBatch)]
+		results := make([]SearchResult, len(batch))
+		for i, x := range batch {
+			results[i] = SearchResult{DocumentVersion: x.id}
+		}
+		visible, err := s.discoverVersions(ctx, c, results)
+		if err != nil {
+			return DocumentVersionPage{}, err
+		}
+		for i, x := range batch {
+			if visible[i] {
+				page.Versions = append(page.Versions, DocumentVersionEntry{DocumentVersion: x.id, PublishedAt: x.publishedAt, Current: x.id == d.id.String()})
+			}
+		}
+	}
+	if more {
+		last := cands[len(cands)-1]
+		cur.After, cur.Expires = last.createdAt.Format(time.RFC3339Nano)+"|"+last.id, s.d.Now().Add(s.d.Limits.TokenLifetime)
+		if page.Continuation, err = s.sealToken(cur); err != nil {
+			return DocumentVersionPage{}, err
+		}
+	}
+	return page, nil
+}

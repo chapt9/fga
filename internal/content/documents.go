@@ -902,6 +902,9 @@ func (s *Service) commitDocument(ctx context.Context, c Caller, in storedDocInte
 				versionAttrs[k] = v
 			}
 		}
+		// The server's publication time, in RFC 3339 UTC, for policies that
+		// bound history by time (DOC-011, D-E).
+		versionAttrs["published_at"] = now.UTC().Format(time.RFC3339Nano)
 		va, _ := json.Marshal(versionAttrs)
 		if _, err := tx.Exec(ctx, `INSERT INTO resources VALUES ($1, $2, 'document.version', $3, 1, 1, 1, $4)`, c.Tenant, in.DocumentVersion, in.scope, va); err != nil {
 			return err

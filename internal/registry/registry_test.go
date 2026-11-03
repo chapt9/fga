@@ -168,3 +168,44 @@ func TestR1TypesExcludeLaterPhases(t *testing.T) {
 		}
 	}
 }
+
+// TestDocumentTwins covers the generated twins of the document operations:
+// a reading twin has its operation's checks with post-reading (ING-012),
+// and a history twin has them followed by the history action on the
+// document (DOC-009, DOC-010). No other operation has a twin.
+func TestDocumentTwins(t *testing.T) {
+	ops := CoreOperations(CoreTypes())
+	for base, twin := range readingOps {
+		b, okB := ops.Lookup(base)
+		r, okR := ops.Lookup(twin)
+		if !okB || !okR || ReadingOp(base) != twin || len(r.Checks) != len(b.Checks) || r.Preparatory != b.Preparatory {
+			t.Fatalf("reading twin of %s: %+v", base, r)
+		}
+		for i, c := range r.Checks {
+			if c.Action != "post-reading" || c.Role != b.Checks[i].Role || c.ResourceType != b.Checks[i].ResourceType {
+				t.Errorf("reading twin %s check %d: %+v", twin, i, c)
+			}
+		}
+	}
+	for base, action := range historyOps {
+		b, okB := ops.Lookup(base)
+		h, okH := ops.Lookup(HistoryOp(base))
+		if !okB || !okH || len(h.Checks) != len(b.Checks)+1 || h.Preparatory {
+			t.Fatalf("history twin of %s: %+v", base, h)
+		}
+		for i, c := range b.Checks {
+			if h.Checks[i] != c {
+				t.Errorf("history twin of %s check %d: %+v, want %+v", base, i, h.Checks[i], c)
+			}
+		}
+		last := h.Checks[len(b.Checks)]
+		if last != (CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action}) {
+			t.Errorf("history twin of %s ends with %+v", base, last)
+		}
+	}
+	for _, op := range []string{OpRead, OpDocShareUnits, OpDocSearch, OpMCPInvoke} {
+		if HistoryOp(op) != "" || ReadingOp(op) != "" {
+			t.Errorf("%s has a twin", op)
+		}
+	}
+}

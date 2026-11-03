@@ -56,8 +56,9 @@ func (s *Service) ReadOriginalPlain(ctx context.Context, c Caller, bucketName, k
 	if err != nil {
 		return nil, err
 	}
-	signed, _, err := s.decide(ctx, c, registry.OpKeyReleaseOriginal, KeysAudience, true,
+	releaseOp, releaseChecks := d.historic(registry.OpKeyReleaseOriginal,
 		[]check{{id: "version", role: registry.RoleVersion, action: "raw-read", ref: canonical("document.version", d.id.String())}})
+	signed, _, err := s.decide(ctx, c, releaseOp, KeysAudience, true, releaseChecks)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +131,9 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 	}
 	versionRef := canonical("document.version", d.id.String())
 	var recs []signing.Record
-	for start := 0; start < len(ms); start += (maxBatch - 2) / 2 {
-		batch := ms[start:min(len(ms), start+(maxBatch-2)/2)]
+	per := (d.room() - 2) / 2
+	for start := 0; start < len(ms); start += per {
+		batch := ms[start:min(len(ms), start+per)]
 		checks := []check{{id: "version", role: registry.RoleVersion, action: "export", ref: versionRef},
 			{id: "version-read", role: registry.RoleVersionRead, action: "read-units", ref: versionRef}}
 		for i, m := range batch {
@@ -140,7 +142,8 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 				check{id: "unit-" + n, role: registry.RoleUnit, action: "read", ref: ref, version: m.entry.UnitVersion},
 				check{id: "unit-export-" + n, role: registry.RoleUnitExport, action: "export-key", ref: ref, version: m.entry.UnitVersion})
 		}
-		_, rec, err := s.decide(ctx, c, registry.OpDocExport, Audience, true, checks)
+		op, checks := d.historic(registry.OpDocExport, checks)
+		_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 		if err != nil {
 			return PlainExport{}, err
 		}
@@ -161,6 +164,9 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 	}
 	versions := make([]version, len(ms))
 	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.stillCurrent(ctx, tx, c.Tenant, d, true); err != nil {
+			return err
+		}
 		targets := []audit.Target{{Type: "document.version", ID: d.id.String()}}
 		for i, m := range ms {
 			id, _ := cryptowire.ParseUUID(m.entry.UnitVersion)
@@ -197,7 +203,8 @@ func (s *Service) ExportUnitsPlain(ctx context.Context, c Caller, bucketName, ke
 // unitText has the keys role release one unit's data key under the unit
 // read's checks and decrypts the unit whole.
 func (s *Service) unitText(ctx context.Context, c Caller, d docVersion, m member, v version, tenantID cryptowire.UUID) (string, error) {
-	signed, _, err := s.decide(ctx, c, d.units.releaseOp, KeysAudience, true, unitReadChecks(d, m))
+	op, checks := d.historic(d.units.releaseOp, unitReadChecks(d, m))
+	signed, _, err := s.decide(ctx, c, op, KeysAudience, true, checks)
 	if err != nil {
 		return "", err
 	}

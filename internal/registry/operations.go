@@ -336,6 +336,7 @@ func r1Operations() []Operation {
 	ops := baseOperations()
 	ops = append(ops, entryTwins(ops)...)
 	ops = append(ops, readingTwins(ops)...)
+	ops = append(ops, historyTwins(ops)...)
 	ops = append(ops, grantOperations()...)
 	for i := range ops {
 		ops[i].Preparatory = preparatory[ops[i].Name]
@@ -366,6 +367,55 @@ var readingOps = map[string]string{
 // ReadingOp returns the reading twin of a document write operation, and ""
 // for any other operation, which no decision is made for.
 func ReadingOp(op string) string { return readingOps[op] }
+
+// historyOps are the disclosures of a document version that have a history
+// twin (DOC-009), with the action the twin adds on the document:
+// read-history for content, discover-history for a listing's entries.
+var historyOps = map[string]string{
+	OpDocSelectUnits:         "read-history",
+	OpDocReadUnit:            "read-history",
+	OpDocManifest:            "read-history",
+	OpDocGetUnitEnvelope:     "read-history",
+	OpDocRawRead:             "read-history",
+	OpDocGetOriginalEnvelope: "read-history",
+	OpDocExport:              "read-history",
+	OpDocExportEnvelope:      "read-history",
+	OpDocSelectEntries:       "read-history",
+	OpDocReadEntry:           "read-history",
+	OpDocManifestEntries:     "read-history",
+	OpDocGetEntryEnvelope:    "read-history",
+	OpKeyReleaseUnit:         "read-history",
+	OpKeyReleaseEntry:        "read-history",
+	OpKeyReleaseOriginal:     "read-history",
+	OpDocDiscover:            "discover-history",
+}
+
+// HistoryOp returns the history twin of a document version's disclosure,
+// named after it with "-history", and "" for any other operation, which no
+// decision is made for. A twin has the disclosure's checks and then one on
+// the document (RoleHistory), for a version that is not its document's
+// current one (DOC-009, DOC-010).
+func HistoryOp(op string) string {
+	if _, ok := historyOps[op]; !ok {
+		return ""
+	}
+	return op + "-history"
+}
+
+// historyTwins are the history twins of the document disclosures, as
+// withHistory makes them for objects.
+func historyTwins(ops []Operation) []Operation {
+	var out []Operation
+	for _, op := range ops {
+		action, ok := historyOps[op.Name]
+		if !ok {
+			continue
+		}
+		checks := append(slices.Clone(op.Checks), CheckSpec{Role: RoleHistory, ResourceType: "storage.object", Action: action})
+		out = append(out, Operation{Name: HistoryOp(op.Name), Checks: checks})
+	}
+	return out
+}
 
 // readingTwins are the reading twins of the document write operations: the
 // same roles and resource types, deciding post-reading.

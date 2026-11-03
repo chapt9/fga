@@ -245,10 +245,13 @@ func (s *Service) envelope(ctx context.Context, q catalog.Querier, tenant string
 // role's checks and the release is seen (review finding 3).
 func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelopeID string, extra ...signing.Signed) (Delivered, error) {
 	rec, err := s.d.Verifier.Check(decision)
-	exported := rec.Operation == registry.OpDocExportEnvelope
+	// A document's operations, or their history twins for a superseded
+	// version (DOC-009).
+	docOp := func(op string) bool { return rec.Operation == op || rec.Operation == registry.HistoryOp(op) }
+	exported := docOp(registry.OpDocExportEnvelope)
 	objectExport := rec.Operation == registry.OpObjectExportEnvelope
-	unit := rec.Operation == registry.OpDocGetUnitEnvelope || rec.Operation == registry.OpDocGetEntryEnvelope || exported
-	original := rec.Operation == registry.OpDocGetOriginalEnvelope
+	unit := docOp(registry.OpDocGetUnitEnvelope) || docOp(registry.OpDocGetEntryEnvelope) || exported
+	original := docOp(registry.OpDocGetOriginalEnvelope)
 	derived := rec.Operation == registry.OpDerivedGetEnvelope
 	if err != nil || !rec.SingleUse || (rec.Operation != registry.OpGetEnvelope && rec.Operation != registry.OpGetEnvelopeOld && !unit && !original && !derived &&
 		!objectExport) ||
@@ -270,14 +273,29 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 	if (unit || original) != (e.DocumentVersion != nil) || e.Encryption != "client" {
 		return Delivered{}, ErrDecision
 	}
+	var document string
+	if e.DocumentVersion != nil {
+		if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT document::text FROM document_versions WHERE tenant = $1 AND id = $2`,
+			rec.Tenant, *e.DocumentVersion).Scan(&document); err != nil {
+			return Delivered{}, ErrNotFound
+		}
+	}
 	for _, c := range rec.Checks {
 		var ok bool
 		holder := c.Kind == string(registry.KindOperation) || c.PrincipalBinding == e.Recipient
 		switch c.ResourceType + " " + c.Action {
 		case "crypto.envelope release":
 			ok = c.ResourceID == e.ID.String() && c.Version == e.Version.String()
-		case "storage.object read", "storage.object read-history":
+		case "storage.object read":
 			ok = !unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
+		case "storage.object read-history":
+			if e.DocumentVersion != nil {
+				// A superseded document version: the caller's history on
+				// the document (DOC-009).
+				ok = c.ResourceID == document && c.Kind == string(registry.KindOperation)
+			} else {
+				ok = c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
+			}
 		case "document.text_unit read", "text.entry read":
 			ok = unit && c.ResourceID == e.Object.String() && c.Version == e.Version.String() && holder
 		case "document.version read-units":
@@ -348,15 +366,22 @@ func (s *Service) Deliver(ctx context.Context, decision signing.Signed, envelope
 			}
 		}
 		if e.DocumentVersion != nil {
-			var originalObject *cryptowire.UUID
-			if err := tx.QueryRow(ctx, `SELECT state, original FROM document_versions WHERE tenant = $1 AND id = $2 FOR SHARE`,
-				rec.Tenant, *e.DocumentVersion).Scan(&state, &originalObject); err != nil {
+			var originalObject, head *cryptowire.UUID
+			if err := tx.QueryRow(ctx, `SELECT d.state, d.original, o.current_document_version FROM document_versions d
+			                             JOIN objects o ON o.tenant = d.tenant AND o.id = d.document
+			                             WHERE d.tenant = $1 AND d.id = $2 FOR SHARE`,
+				rec.Tenant, *e.DocumentVersion).Scan(&state, &originalObject, &head); err != nil {
 				return err
 			}
 			// The original's envelope only for the original operation, and
 			// never a unit's for it.
 			isOriginal := originalObject != nil && *originalObject == e.Object
 			if state != "LIVE" || isOriginal != original {
+				return ErrNotFound
+			}
+			// A plain release is for the document's current version only;
+			// a superseded one needs the history twin (DOC-009).
+			if !history && (head == nil || *head != *e.DocumentVersion) {
 				return ErrNotFound
 			}
 		}

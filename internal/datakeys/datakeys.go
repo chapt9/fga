@@ -437,13 +437,18 @@ func (s *Service) SealDocument(ctx context.Context, decision signing.Signed, doc
 // server-mode document version for a read (SSE-003, DOC-006). The decision
 // is for storage.key.release-unit (or release-entry) with read-units on
 // that document version and read on that unit at the exact unit version
-// the version holds. Inside the fence both must still be LIVE. Every
-// release is audited; the caller owns the key.
+// the version holds, or for its history twin, which adds read-history on
+// the document (DOC-009). Inside the fence both must still be LIVE, and
+// under the plain operation the version must still be its document's
+// current one (documentHead). Every release is audited; the caller owns
+// the key.
 func (s *Service) ReleaseUnit(ctx context.Context, decision signing.Signed, documentVersionID, unitID string) ([]byte, error) {
-	rec, err := s.verify(decision, registry.OpKeyReleaseUnit, registry.OpKeyReleaseEntry)
+	unitHistory, entryHistory := registry.HistoryOp(registry.OpKeyReleaseUnit), registry.HistoryOp(registry.OpKeyReleaseEntry)
+	rec, err := s.verify(decision, registry.OpKeyReleaseUnit, registry.OpKeyReleaseEntry, unitHistory, entryHistory)
 	if err != nil {
 		return nil, err
 	}
+	history := rec.Operation == unitHistory || rec.Operation == entryHistory
 	dv, err := cryptowire.ParseUUID(documentVersionID)
 	if err != nil {
 		return nil, ErrNotFound
@@ -486,6 +491,9 @@ func (s *Service) ReleaseUnit(ctx context.Context, decision signing.Signed, docu
 		if docState != "LIVE" || unitState != "LIVE" {
 			return ErrNotFound
 		}
+		if err := documentHead(ctx, tx, rec, dv, history); err != nil {
+			return err
+		}
 		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
 		ev.Targets[0].Type = rec.Checks[1].ResourceType
 		ev.Targets = append(ev.Targets, audit.Target{Type: "document.version", ID: documentVersionID})
@@ -503,14 +511,16 @@ func (s *Service) ReleaseUnit(ctx context.Context, decision signing.Signed, docu
 
 // ReleaseOriginal opens the data key of a LIVE server-mode document
 // version's original file (CNT-003, SSE-003). The decision is for
-// storage.key.release-original with raw-read on that document version;
-// extra are the complete-content decisions, raw-read on the version and
+// storage.key.release-original with raw-read on that document version, or
+// for its history twin with read-history on the document, as for units
+// (DOC-009); extra are the complete-content decisions, raw-read on the version and
 // read on every unit (internal/keycheck). All are single-use and admitted
 // in one fence with the release, so a change to any unit between the
 // storage role's checks and the release blocks it (review finding 3,
 // V-163). The release is audited; the caller owns the key.
 func (s *Service) ReleaseOriginal(ctx context.Context, decision signing.Signed, extra []signing.Signed, documentVersionID string) ([]byte, error) {
-	rec, err := s.verify(decision, registry.OpKeyReleaseOriginal)
+	originalHistory := registry.HistoryOp(registry.OpKeyReleaseOriginal)
+	rec, err := s.verify(decision, registry.OpKeyReleaseOriginal, originalHistory)
 	if err != nil {
 		return nil, err
 	}
@@ -558,6 +568,9 @@ func (s *Service) ReleaseOriginal(ctx context.Context, decision signing.Signed, 
 		}
 		if docState != "LIVE" || origState != "LIVE" {
 			return ErrNotFound
+		}
+		if err := documentHead(ctx, tx, rec, dv, rec.Operation == originalHistory); err != nil {
+			return err
 		}
 		ev := s.event(rec, "DATA_KEY_RELEASED", bnd, uint32(kekVersion))
 		ev.Targets[0].Type = "document.original"
@@ -656,6 +669,31 @@ func (s *Service) event(rec signing.Record, outcome string, b kek.Binding, kekVe
 // the fence as a decision that no longer authorizes the key. When the
 // authority it bound moved on in the meantime, that is also a conflict,
 // which the caller may begin again after (review v2, finding 3).
+// documentHead checks, inside a release's fence, the history rule of a
+// release from document version dv (DOC-009): under a plain release the
+// version must still be its document's current one, so a reader without
+// read-history loses it when a newer one arrives mid-read; under a history
+// twin, the twin's last check must be on that document.
+func documentHead(ctx context.Context, tx pgx.Tx, rec signing.Record, dv cryptowire.UUID, history bool) error {
+	var document cryptowire.UUID
+	var head *cryptowire.UUID
+	if err := tx.QueryRow(ctx, `SELECT o.id, o.current_document_version FROM document_versions d
+	                              JOIN objects o ON o.tenant = d.tenant AND o.id = d.document
+	                             WHERE d.tenant = $1 AND d.id = $2 FOR SHARE OF o`, rec.Tenant, dv).Scan(&document, &head); err != nil {
+		return err
+	}
+	if history {
+		if rec.Checks[len(rec.Checks)-1].ResourceID != document.String() {
+			return ErrDecision
+		}
+		return nil
+	}
+	if head == nil || *head != dv {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func classify(err error) error {
 	for _, e := range []error{ErrNotFound, ErrConflict, ErrUnavailable} {
 		if errors.Is(err, e) {

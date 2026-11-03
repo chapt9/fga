@@ -660,6 +660,14 @@ paths:
       responses:
         "200": { description: Visible versions, content: { application/json: { schema: { $ref: "#/components/schemas/VersionPage" } } } }
         default: { $ref: "#/components/responses/Error" }
+  /v1/buckets/{bucket}/document/versions:
+    get:
+      operationId: listDocumentVersions
+      description: A document's LIVE versions, newest first. Superseded entries need discover-history on the document, and every entry discover on its version; others are left out without a count (DOC-010).
+      parameters: [{ $ref: "#/components/parameters/bucket" }, { $ref: "#/components/parameters/key" }, { $ref: "#/components/parameters/limit" }, { $ref: "#/components/parameters/continuation" }]
+      responses:
+        "200": { description: Visible document versions, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentVersionPage" } } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/recipients:
     post:
       operationId: enrollRecipient
@@ -881,6 +889,18 @@ components:
               current: { type: boolean }
               delete_marker: { type: boolean }
               created_at: { type: string, format: date-time }
+        continuation: { type: string }
+    DocumentVersionPage:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              document_version_id: { type: string, format: uuid }
+              published_at: { type: string, format: date-time, description: Absent for versions published before it was recorded (DOC-011) }
+              current: { type: boolean }
         continuation: { type: string }
     DeleteOutcome:
       type: object

@@ -52,6 +52,9 @@ type docVersion struct {
 	manifest []byte
 	sig      string
 	units    unitTypes
+	// current is whether id was its document's current version when it was
+	// resolved; disclosing any other version needs read-history (DOC-009).
+	current bool
 }
 
 type member struct {
@@ -86,6 +89,7 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 	} else if d.id, err = cryptowire.ParseUUID(versionSel); err != nil {
 		return docVersion{}, ErrNotFound
 	}
+	d.current = current != nil && *current == d.id
 	var state string
 	err = s.d.Catalog.Pool().QueryRow(ctx, `SELECT state, manifest, coalesce(manifest_signature, '') FROM document_versions
 	                                         WHERE tenant = $1 AND id = $2 AND document = $3`, tenant, d.id, d.document).Scan(&state, &d.manifest, &d.sig)
@@ -93,6 +97,62 @@ func (s *Service) documentVersion(ctx context.Context, tenant, bucketName, key, 
 		return docVersion{}, ErrNotFound
 	}
 	return d, err
+}
+
+// historic returns the operation and checks of a disclosure of d
+// (DOC-009): op and checks as they are for its document's current version;
+// for any other version, op's history twin, whose last check is
+// read-history on the document.
+func (d docVersion) historic(op string, checks []check) (string, []check) {
+	if d.current {
+		return op, checks
+	}
+	return registry.HistoryOp(op), append(checks, d.historyCheck("read-history"))
+}
+
+// historyCheck is a history twin's check on d's document.
+func (d docVersion) historyCheck(action string) check {
+	return check{id: "history", role: registry.RoleHistory, action: action, ref: canonical("storage.object", d.document.String())}
+}
+
+// room is how many checks one decision about d holds besides a history
+// check: a superseded version's history check counts against the batch
+// limit too (DEC-009).
+func (d docVersion) room() int {
+	if d.current {
+		return maxBatch
+	}
+	return maxBatch - 1
+}
+
+// stillCurrent fails with ErrConflict when d was resolved as its
+// document's current version and a newer version has been published since,
+// so a reader without read-history gets only the current version, also
+// when one arrives mid-read (DOC-009); the reader reads again. q is the
+// fence's transaction where a read is admitted under one, and lock holds
+// the document's row there.
+func (s *Service) stillCurrent(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, tenant string, d docVersion, lock bool) error {
+	if !d.current {
+		return nil
+	}
+	sql := `SELECT current_document_version FROM objects WHERE tenant = $1 AND id = $2`
+	if lock {
+		sql += ` FOR SHARE`
+	}
+	var cur *cryptowire.UUID
+	err := q.QueryRow(ctx, sql, tenant, d.document).Scan(&cur)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if cur == nil || *cur != d.id {
+		return fmt.Errorf("%w: a newer version of the document was published; read it again", ErrConflict)
+	}
+	return nil
 }
 
 // members returns membership rows of a document version in document
@@ -158,8 +218,10 @@ func selectChecks(d docVersion, ms []member) []check {
 // returned. It always decides at least the version's read-units: an empty
 // ms is never permission by itself (review v3 F05).
 func (s *Service) allowed(ctx context.Context, c Caller, op string, d docVersion, ms []member) (bool, error) {
-	for start := 0; start == 0 || start < len(ms); start += maxBatch - 1 {
-		_, rec, err := s.decide(ctx, c, op, Audience, false, selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)]))
+	per := d.room() - 1
+	for start := 0; start == 0 || start < len(ms); start += per {
+		dop, checks := d.historic(op, selectChecks(d, ms[start:min(len(ms), start+per)]))
+		_, rec, err := s.decide(ctx, c, dop, Audience, false, checks)
 		if errors.Is(err, ErrNotFound) {
 			return false, nil
 		}
@@ -206,6 +268,9 @@ func (s *Service) SelectUnits(ctx context.Context, c Caller, bucketName, key, ve
 	if !ok {
 		return nil, ErrNotFound
 	}
+	if err := s.stillCurrent(ctx, s.d.Catalog.Pool(), c.Tenant, d, false); err != nil {
+		return nil, err
+	}
 	byID := map[string]UnitEntry{}
 	for _, m := range ms {
 		byID[m.entry.Unit] = m.entry
@@ -232,8 +297,12 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	// Nothing of a version is answered, not even that it exists or that a
 	// continuation is malformed, to a caller who may not discover it: a
 	// hidden document looks like an absent one (CNT-004).
-	_, rec, err := s.decide(ctx, c, registry.OpDocDiscover, Audience, false,
-		[]check{{id: "version", role: registry.RoleVersion, action: "discover", ref: canonical("document.version", d.id.String())}})
+	discoverOp, discover := registry.OpDocDiscover, []check{{id: "version", role: registry.RoleVersion, action: "discover",
+		ref: canonical("document.version", d.id.String())}}
+	if !d.current {
+		discoverOp, discover = registry.HistoryOp(discoverOp), append(discover, d.historyCheck("discover-history"))
+	}
+	_, rec, err := s.decide(ctx, c, discoverOp, Audience, false, discover)
 	if err != nil {
 		return UnitPage{}, err
 	}
@@ -299,6 +368,9 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 			return UnitPage{}, err
 		}
 	}
+	if err := s.stillCurrent(ctx, s.d.Catalog.Pool(), c.Tenant, d, false); err != nil {
+		return UnitPage{}, err
+	}
 	return page, nil
 }
 
@@ -320,6 +392,9 @@ func (s *Service) Manifest(ctx context.Context, c Caller, bucketName, key, versi
 	}
 	if !ok {
 		return nil, "", ErrNotFound
+	}
+	if err := s.stillCurrent(ctx, s.d.Catalog.Pool(), c.Tenant, d, false); err != nil {
+		return nil, "", err
 	}
 	return d.manifest, d.sig, nil
 }
@@ -366,7 +441,8 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
-	_, rec, err := s.decide(ctx, c, d.units.readOp, Audience, false, unitReadChecks(d, m))
+	readOp, readChecks := d.historic(d.units.readOp, unitReadChecks(d, m))
+	_, rec, err := s.decide(ctx, c, readOp, Audience, false, readChecks)
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
@@ -398,7 +474,8 @@ func (s *Service) UnitPackage(ctx context.Context, c Caller, bucketName, key, ve
 		check{id: "recipient-version", role: registry.RoleRecipientVersion, action: "read-units", ref: version, recipient: recipient},
 		check{id: "recipient-read", role: registry.RoleRecipientRead, action: "read", ref: unitRef, version: m.entry.UnitVersion, recipient: recipient},
 		check{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient})
-	signed, _, err := s.decide(ctx, c, d.units.envelopeOp, KeysAudience, true, checks)
+	envelopeOp, checks := d.historic(d.units.envelopeOp, checks)
+	signed, _, err := s.decide(ctx, c, envelopeOp, KeysAudience, true, checks)
 	if err != nil {
 		return UnitPackageOut{}, err
 	}
@@ -417,7 +494,8 @@ func (s *Service) ReadUnitCiphertext(ctx context.Context, c Caller, bucketName, 
 	if err != nil {
 		return nil, err
 	}
-	_, rec, err := s.decide(ctx, c, d.units.readOp, Audience, true, unitReadChecks(d, m))
+	op, checks := d.historic(d.units.readOp, unitReadChecks(d, m))
+	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
 		return nil, err
 	}
@@ -472,6 +550,9 @@ func (s *Service) admitUnitRead(ctx context.Context, c Caller, rec signing.Recor
 		if unitState != "LIVE" || docState != "LIVE" {
 			return ErrNotFound
 		}
+		if err := s.stillCurrent(ctx, tx, c.Tenant, d, true); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO read_admissions VALUES ($1, $2, $3, $4, $5)`,
 			c.Tenant, rec.DecisionID, versionID, s.d.Now(), rec.ValidUntil); err != nil {
 			return err
@@ -512,10 +593,12 @@ func (s *Service) completeContent(ctx context.Context, c Caller, d docVersion, s
 	}
 	var signed []signing.Signed
 	var recs []signing.Record
-	for start := 0; start == 0 || start < len(ms); start += maxBatch - 1 {
-		checks := selectChecks(d, ms[start:min(len(ms), start+maxBatch-1)])
+	per := d.room() - 1
+	for start := 0; start == 0 || start < len(ms); start += per {
+		checks := selectChecks(d, ms[start:min(len(ms), start+per)])
 		checks[0].action = "raw-read"
-		sg, rec, err := s.decide(ctx, c, registry.OpDocRawRead, audience, singleUse, checks)
+		op, checks := d.historic(registry.OpDocRawRead, checks)
+		sg, rec, err := s.decide(ctx, c, op, audience, singleUse, checks)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -559,12 +642,13 @@ func (s *Service) OriginalPackage(ctx context.Context, c Caller, bucketName, key
 		return Package{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	ref := canonical("document.version", d.id.String())
-	signed, _, err := s.decide(ctx, c, registry.OpDocGetOriginalEnvelope, KeysAudience, true, []check{
+	envelopeOp, checks := d.historic(registry.OpDocGetOriginalEnvelope, []check{
 		{id: "version", role: registry.RoleVersion, action: "raw-read", ref: ref},
 		{id: "envelope", role: registry.RoleEnvelope, action: "release", ref: canonical("crypto.envelope", envelopeID), version: v.ID.String()},
 		{id: "recipient-version", role: registry.RoleRecipientVersion, action: "raw-read", ref: ref, recipient: recipient},
 		{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient},
 	})
+	signed, _, err := s.decide(ctx, c, envelopeOp, KeysAudience, true, checks)
 	if err != nil {
 		return Package{}, err
 	}
@@ -634,6 +718,9 @@ func (s *Service) admitOriginal(ctx context.Context, c Caller, d docVersion, obj
 		}
 		if originalState != "LIVE" || docState != "LIVE" {
 			return ErrNotFound
+		}
+		if err := s.stillCurrent(ctx, tx, c.Tenant, d, true); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO read_admissions VALUES ($1, $2, $3, $4, $5)`,
 			c.Tenant, recs[0].DecisionID, v.ID, s.d.Now(), recs[0].ValidUntil); err != nil {

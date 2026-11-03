@@ -715,6 +715,24 @@ func StorageWith(svc *content.Service, tokens httpapi.TokenVerifier, ready func(
 		}
 		httpapi.WriteJSON(w, http.StatusOK, page)
 	}))
+	// A document's versions, newest first (DOC-010).
+	mux.HandleFunc("GET /v1/buckets/{bucket}/document/versions", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
+		q := r.URL.Query()
+		limit, err := strconv.Atoi(q.Get("limit"))
+		if q.Get("limit") == "" {
+			limit, err = 0, nil
+		}
+		if len(q["key"]) != 1 || !content.ValidKey(q.Get("key")) || err != nil {
+			httpapi.WriteError(w, http.StatusBadRequest, httpapi.CodeInvalid)
+			return
+		}
+		page, err := svc.ListDocumentVersions(r.Context(), c, r.PathValue("bucket"), q.Get("key"), limit, q.Get("continuation"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		httpapi.WriteJSON(w, http.StatusOK, page)
+	}))
 	mux.HandleFunc("GET /v1/buckets/{bucket}/document/manifest", auth(func(w http.ResponseWriter, r *http.Request, c content.Caller) {
 		b, k, v, ok := document(r)
 		if !ok {

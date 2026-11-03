@@ -58,11 +58,19 @@ func CompleteContent(ctx context.Context, q catalog.Querier, v *signing.Verifier
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// A superseded version's decisions are the history twin, which also
+	// names its document (DOC-009).
+	var document string
+	if err := q.QueryRow(ctx, `SELECT document::text FROM document_versions WHERE tenant = $1 AND id = $2`,
+		primary.Tenant, documentVersion).Scan(&document); err != nil {
+		return nil, err
+	}
+	history := registry.HistoryOp(registry.OpDocRawRead)
 	covered := map[string]bool{}
 	var out []fence.Binding
 	for _, x := range extra {
 		rec, err := v.Check(x)
-		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead || !SameAuthority(primary, rec) {
+		if err != nil || !rec.SingleUse || rec.Operation != registry.OpDocRawRead && rec.Operation != history || !SameAuthority(primary, rec) {
 			return nil, ErrDecision
 		}
 		version := false
@@ -74,6 +82,7 @@ func CompleteContent(ctx context.Context, q catalog.Querier, v *signing.Verifier
 				version = true
 			case c.ResourceType == "document.text_unit" && c.Action == "read" && members[c.ResourceID] == c.Version && !covered[c.ResourceID]:
 				covered[c.ResourceID] = true
+			case c.ResourceType == "storage.object" && c.Action == "read-history" && rec.Operation == history && c.ResourceID == document:
 			default:
 				return nil, ErrDecision
 			}

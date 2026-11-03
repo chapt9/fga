@@ -324,7 +324,8 @@ func (s *Service) ReadUnitPlain(ctx context.Context, c Caller, bucketName, key, 
 	if err != nil {
 		return nil, err
 	}
-	_, rec, err := s.decide(ctx, c, d.units.readOp, Audience, true, unitReadChecks(d, m))
+	op, checks := d.historic(d.units.readOp, unitReadChecks(d, m))
+	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +333,8 @@ func (s *Service) ReadUnitPlain(ctx context.Context, c Caller, bucketName, key, 
 	if err != nil {
 		return nil, err
 	}
-	signed, _, err := s.decide(ctx, c, d.units.releaseOp, KeysAudience, true, unitReadChecks(d, m))
+	releaseOp, releaseChecks := d.historic(d.units.releaseOp, unitReadChecks(d, m))
+	signed, _, err := s.decide(ctx, c, releaseOp, KeysAudience, true, releaseChecks)
 	if err != nil {
 		return nil, err
 	}

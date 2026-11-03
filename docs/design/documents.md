@@ -121,6 +121,14 @@ One `DOCUMENT_PUBLISHED` audit event names the document, the version and every u
 
 Entries carry the unit ID, unit version, ciphertext length and signed descriptor, never a position. `client.GetDocument` and `fga get-document` fetch the permitted units and verify each with `crypto.DecryptUnit`. A document key is never served by the object routes.
 
+## History (DOC-009 to DOC-011)
+
+Older versions of a document are a right of their own, as for objects ([mcp-data-tools.md](mcp-data-tools.md)):
+- **Checks.** Disclosing a version that is not the document's current one also needs `read-history` on the document, its `storage.object`. Every disclosure has a history twin, named after it with `-history`, that adds this check last: unit listings and selections, the manifest, unit reads and packages, the original, exports, and the keys role's releases and envelope deliveries, in both modes. A unit listing of an older version needs `discover-history` for its gate.
+- **Mid-read.** A read decided for the current version is admitted only while that version is still current: the storage role rechecks it in its admission fence (`409 CONFLICT`), and the keys role in its release fence. A history read binds the document, so a newer version makes it stale too, and the reader reads again.
+- **Listing.** `GET /v1/buckets/{b}/document/versions?key=&limit=&continuation=` lists LIVE versions newest first, each with `document_version_id`, `published_at` and `current`. `discover` on the current version admits it; every entry needs `discover` on its version, and older entries also `discover-history` on the document. Others are left out without a count. The continuation is sealed and bound as for object version listings, and the listing starts again when the head moves.
+- **Publication time.** Every new document version carries `published_at`, the server's commit time in RFC 3339 UTC, as a protected attribute. Rules may compare it with a fixed date, guarded with `has()`. A window relative to `request.now` is refused by the engine, which bounds a decision's validity only by timestamp literals (POL-008).
+
 ## Implementation (step 4: the original file, CNT-003)
 
 **Publication.** A document intent may reserve an original (`"original": true`): an upload intent of kind `original` staged like a unit. The manifest's `original` entry names its object, version, digest and length. Finalize carries its object descriptor (`fga.descriptor/v1`) and profile-2 envelopes, which name the document version and manifest. Per recipient, `document.share-original` decides:

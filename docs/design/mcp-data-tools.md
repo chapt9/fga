@@ -5,6 +5,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
 - Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
+- Stop 4, document history, is built. A rule can bound history by publication date, but a window relative to the current time needs an engine change, an open point under stop 4.
 - Order, 3 November 2026: the owner chose data tools first, so stop 4, document history, comes next. Both encryption modes stay required for sources and data tools, as the owner restated the same day. Whether client-mode ingestion, stop 3, comes before or after the server-mode data tools is settled after stop 4.
 
 ## Summary
@@ -275,11 +276,11 @@ Today a document version is read with `read-units` on the version and `read` on 
 - The continuation is sealed and bound as for object version listings. The listing starts again when the head moved, as `ListVersions` does.
 - Entries carry `document_version_id`, `published_at` and `current`.
 
-**DOC-011, publication time.** Every new document version carries `published_at`, the server's commit time in RFC 3339 UTC, as a protected attribute of its `document.version` resource. Policies can bound history by time with `request.now`. Older versions have no such attribute, so conditions must guard it (D-E).
+**DOC-011, publication time.** Every new document version carries `published_at`, the server's commit time in RFC 3339 UTC, as a protected attribute of its `document.version` resource. Policies can bound history by publication date, comparing `published_at` with a fixed date. A window relative to `request.now`, such as the last day, is refused by the engine, which bounds a decision's validity only by timestamp literals (POL-008); see stop 4. Older versions have no such attribute, so conditions must guard it (D-E).
 
-This changes existing behavior. A reader who reads superseded document versions today needs a `read-history` rule afterwards. The example bundle gains those rules, and bundles are re-signed because the operations change (D-D).
+This changes existing behavior. A reader who reads superseded document versions today needs a `read-history` rule afterwards. In the example bundle, documents follow objects: the owner and auditor history rules cover them, members read only current versions, and three sentinels check it. Bundles are re-signed because the operations change (D-D).
 
-A reader allowed only the current version can lose it mid-call when a newer reading arrives, because the keys role then refuses the release. Data tools start again from the new current version, at most three times.
+A reader allowed only the current version can lose it mid-call when a newer reading arrives, because the keys role then refuses the release. Data tools start again from the new current version, at most three times. A reader of history whose decision a newer version made stale reads again too, because the history check binds the document, as for objects.
 
 ## Data tools (DTL-001 to DTL-009)
 
@@ -486,9 +487,11 @@ Examples, all in the business set:
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
-  {"id":"viewers-last-day","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],
-   "when":"has(resource.attributes.published_at) && timestamp(resource.attributes.published_at) > request.now - duration('24h') && resource.attributes.project in principal.attributes.projects"}]}
+  {"id":"viewers-since-november","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],
+   "when":"has(resource.attributes.published_at) && timestamp(resource.attributes.published_at) >= timestamp('2026-11-01T00:00:00Z') && resource.attributes.project in principal.attributes.projects"}]}
 ```
+
+A window relative to the current time, such as `request.now - duration('24h')`, does not compile: the engine accepts `request.now` only compared directly with a timestamp literal, from which it bounds each decision's validity (POL-008). See stop 4.
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
@@ -650,9 +653,9 @@ Done when a posting client with a real token posts client-mode readings to the r
 | `TestClientReadingOpaque` | The catalog and blobs hold no value of a posted reading |
 | `TestClientReadingVectors` | The SDK splits like the vectors |
 
-### Stop 4: document history
+### Stop 4: document history (built)
 
-Build:
+Built on the local branch `data-tools` on 3 November 2026, as planned:
 - `published_at` at commit;
 - history twins in the registry for every document disclosure and key release; the storage and keys roles pick them;
 - the DOC-010 listing route;
@@ -663,11 +666,16 @@ Done when a reader without `read-history` gets only the current version on every
 
 | Test | Covers |
 |---|---|
-| `TestDocumentHistoryChecks` | Each disclosure route of a superseded version, in both modes |
-| `TestKeysReleaseHistory` | The keys role picks the twin in its fence; a version superseded between decisions |
-| `TestDocumentVersionListing` | Order, omission without count, continuation binding, a moved head |
-| `TestPublishedAtCondition` | A time window with `request.now` |
-| `TestDelegationWithoutHistory` | An agent gets the current version while its user reads history |
+| `registry` `TestDocumentTwins` | Every history twin has its disclosure's checks and then the history action on the document; every reading twin has post-reading |
+| `content` `TestDocumentHistoryChecks` | Each disclosure route of a superseded version, in both modes: a member without `read-history` gets only the current version, a reader of history and the owner both |
+| `content` `TestKeysReleaseHistory` | A newer version arriving after a plain decision: the storage role's admission and the keys role's release refuse; a stale history read reads again |
+| `content` `TestDocumentVersionListing` | Newest first with `published_at`, omission without count, continuation binding, a moved head |
+| `content` `TestPublishedAtCondition` | A rule on `published_at` from a fixed date; a version without it meets no guarded condition |
+| `content` `TestDelegationWithoutHistory` | An agent gets the current version while its user reads history |
+
+In the example bundle, documents follow objects: owners and auditors read history under the existing rules, and members read current versions only. The bundle has three new sentinels for it. The demo still runs `974d2fc` until it gets the new binaries and a bundle re-signed at epoch 5.
+
+Open point for the owner: a window relative to the current time, such as "the last 24 hours", does not compile. The engine accepts `request.now` only compared directly with a timestamp literal, because it bounds each decision's validity by those literals (POL-008). Allowing `timestamp(resource.attributes.published_at)` plus a duration literal would need the engine to compute that bound from the attribute, a change of its own. Until then, history tools bound age with their own `max_age`, a view limit, not an access rule.
 
 ### Stop 5: data tools in the storage role
 
@@ -746,14 +754,12 @@ On 3 November 2026, fga main `7a5c33f`:
 - `httpapi.Gateway.authenticate` accepts only decisions of the configured operation with one `agent.tool` check in namespace `mcp.tool`, and only on the routes `registry.MCPToolRoutes` lists for that tool.
 - `mcp enable` inserts `mcp.tool:<name>` resources with `ON CONFLICT DO NOTHING` (`internal/catalog/mcp.go`).
 - Objects have history twins (`withHistory`). Document unit reads and `storage.key.release-unit` have none, and no route lists document versions: `objectByKey`, which `ListVersions` uses, sees kind `object` only.
-- `internal/strictjson` refuses duplicate member names. Policy conditions have `request.now` (`internal/policy/engine`).
+- `internal/strictjson` refuses duplicate member names. Policy conditions have `request.now`, but only compared directly with a timestamp literal (`engine.ErrUnboundedTime`, POL-008), and `timestamp()` (`internal/policy/engine`).
 - fga-mcp may link no catalog, payload or key package, and fga-tools no storage content package (`allowed-imports.txt`).
 - The `storage` preset grants the client-mode actions that `source-client` adds to `source` (`adminops.Presets`).
 
 To verify while coding:
-- the CEL type of `request.now`, and whether `timestamp()` and `duration()` are in the environment, for the time-window rule;
 - whether the decision role lets the storage role's adapter request `mcp.tool.invoke` and `mcp.tool.discover`, for bearer callers and the listing;
-- where the keys role reads a version's currency inside its fence, for the history twins;
 - how the bridge recognises a data tool's encrypted answer, for stop 6.
 
 ## Documents to update with the code

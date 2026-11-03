@@ -91,8 +91,9 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 	versionRef := canonical("document.version", d.id.String())
 	// The storage role's own decisions, for disclosing the ciphertext.
 	var recs []signing.Record
-	for start := 0; start < len(ms); start += (maxBatch - 2) / 2 {
-		batch := ms[start:min(len(ms), start+(maxBatch-2)/2)]
+	per := (d.room() - 2) / 2
+	for start := 0; start < len(ms); start += per {
+		batch := ms[start:min(len(ms), start+per)]
 		checks := []check{{id: "version", role: registry.RoleVersion, action: "export", ref: versionRef},
 			{id: "version-read", role: registry.RoleVersionRead, action: "read-units", ref: versionRef}}
 		for i, m := range batch {
@@ -101,7 +102,8 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 				check{id: "unit-" + n, role: registry.RoleUnit, action: "read", ref: ref, version: m.entry.UnitVersion},
 				check{id: "unit-export-" + n, role: registry.RoleUnitExport, action: "export-key", ref: ref, version: m.entry.UnitVersion})
 		}
-		_, rec, err := s.decide(ctx, c, registry.OpDocExport, Audience, true, checks)
+		op, checks := d.historic(registry.OpDocExport, checks)
+		_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 		if err != nil {
 			return Export{}, err
 		}
@@ -124,7 +126,7 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 			return Export{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
 		ref := canonical("document.text_unit", m.entry.Unit)
-		signed, _, err := s.decide(ctx, c, registry.OpDocExportEnvelope, KeysAudience, true, []check{
+		envelopeOp, envelopeChecks := d.historic(registry.OpDocExportEnvelope, []check{
 			{id: "version", role: registry.RoleVersion, action: "export", ref: versionRef},
 			{id: "version-read", role: registry.RoleVersionRead, action: "read-units", ref: versionRef},
 			{id: "unit", role: registry.RoleUnit, action: "read", ref: ref, version: m.entry.UnitVersion},
@@ -133,6 +135,7 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 			{id: "recipient-version", role: registry.RoleRecipientVersion, action: "read-units", ref: versionRef, recipient: recipient},
 			{id: "recipient-read", role: registry.RoleRecipientRead, action: "read", ref: ref, version: m.entry.UnitVersion, recipient: recipient},
 			{id: "recipient-key", role: registry.RoleRecipientKey, action: "receive-key", ref: canonical("crypto.recipient", recipient), recipient: recipient}})
+		signed, _, err := s.decide(ctx, c, envelopeOp, KeysAudience, true, envelopeChecks)
 		if err != nil {
 			return Export{}, err
 		}
@@ -156,6 +159,9 @@ func (s *Service) ExportUnits(ctx context.Context, c Caller, bucketName, key, ve
 	}
 	versions := make([]version, len(ms))
 	err = mapFence(s.d.Fence.RunAll(ctx, bindings, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.stillCurrent(ctx, tx, c.Tenant, d, true); err != nil {
+			return err
+		}
 		targets := []audit.Target{{Type: "document.version", ID: d.id.String(), Recipient: recipient}}
 		for i, m := range ms {
 			id, _ := cryptowire.ParseUUID(m.entry.UnitVersion)
