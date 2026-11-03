@@ -27,8 +27,10 @@ import (
 // the values it was validated against, and an instance prepares only a
 // release that matches its own (REL-001, POL-010).
 const (
-	// EvaluatorVersion changes whenever evaluation semantics change.
-	EvaluatorVersion = "fga.evaluator/1"
+	// EvaluatorVersion changes whenever evaluation semantics change. Version
+	// 2 accepts request.now compared with a resource attribute's time
+	// (POL-008, docs/design/policy-format-v1.md, time conditions).
+	EvaluatorVersion = "fga.evaluator/2"
 	// ExpressionLibrary is the CEL implementation and its pinned version.
 	ExpressionLibrary = "cel.dev/cel-go v0.33.2"
 	// Functions names the function allowlist: CEL's standard definitions
@@ -65,8 +67,9 @@ type rule struct {
 	requires []string
 	outputs  map[string]any
 	program  cel.Program // nil when the rule has no condition
-	// times are the timestamp literals that request.now is compared with.
-	times []time.Time
+	// bounds are the instants at which the condition's comparisons of
+	// request.now may change their outcome.
+	bounds []timeBound
 }
 
 // Compile validates docs against schema and compiles every condition. The
@@ -108,12 +111,12 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 				outputs:  r.Outputs,
 			}
 			if r.When != "" {
-				prg, times, err := compileCondition(env, r.When, opts)
+				prg, bounds, err := compileCondition(env, r.When, opts)
 				if err != nil {
 					errs = append(errs, fmt.Errorf("rule %q: %w", r.ID, err))
 					continue
 				}
-				compiled.program, compiled.times = prg, times
+				compiled.program, compiled.bounds = prg, bounds
 			}
 			e.rules[key] = append(e.rules[key], compiled)
 		}
@@ -124,7 +127,7 @@ func Compile(digest string, docs []format.Document, schema format.Schema, opts O
 	return e, nil
 }
 
-func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, []time.Time, error) {
+func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, []timeBound, error) {
 	ast, issues := env.Compile(expr)
 	if issues.Err() != nil {
 		return nil, nil, issues.Err()
@@ -132,30 +135,68 @@ func compileCondition(env *cel.Env, expr string, opts Options) (cel.Program, []t
 	if !ast.OutputType().IsExactType(cel.BoolType) {
 		return nil, nil, fmt.Errorf("condition has type %s, want bool", ast.OutputType())
 	}
-	times, err := timeLiterals(ast)
+	bounds, err := timeBounds(ast)
 	if err != nil {
 		return nil, nil, err
 	}
 	prg, err := env.Program(ast, cel.CostLimit(opts.CostLimit), cel.InterruptCheckFrequency(100))
-	return prg, times, err
+	return prg, bounds, err
 }
 
 // ErrUnboundedTime rejects a use of request.now for which no sound
 // next-change bound exists (POL-008, "Policy format", time conditions).
-var ErrUnboundedTime = errors.New("request.now may only be compared directly with a timestamp literal")
+var ErrUnboundedTime = errors.New("request.now may only be compared directly with a timestamp literal or with a resource attribute's timestamp, " +
+	"either give or take a duration literal")
+
+// A timeBound is the instant at which one comparison of request.now may
+// change its outcome (POL-008): a timestamp literal, or the time a resource
+// attribute holds, plus offset.
+type timeBound struct {
+	at        time.Time
+	attribute string
+	offset    time.Duration
+}
+
+// instant is the bound for a request at now on a resource with attrs. An
+// absent attribute bounds nothing: a comparison with it cannot be evaluated,
+// so time does not change the outcome. An attribute that is present but not
+// an RFC 3339 time, as CEL's timestamp() reads it, bounds the decision at
+// now, so that it ends at once (fail closed).
+func (b timeBound) instant(attrs map[string]any, now time.Time) (time.Time, bool) {
+	if b.attribute == "" {
+		return b.at, true
+	}
+	v, ok := attrs[b.attribute]
+	if !ok {
+		return time.Time{}, false
+	}
+	str, ok := v.(string)
+	if !ok {
+		return now, true
+	}
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return now, true
+	}
+	return t.Add(b.offset), true
+}
 
 var comparisons = map[string]bool{
 	operators.Less: true, operators.LessEquals: true, operators.Greater: true,
 	operators.GreaterEquals: true, operators.Equals: true, operators.NotEquals: true,
 }
 
-// timeLiterals enforces the time rule: request.now appears only as one side
-// of a direct comparison whose other side is timestamp("<RFC 3339 literal>").
-// It returns those literals. The request variable itself may be used only
-// through field selection, so request.now cannot be reached another way.
-func timeLiterals(ast *cel.Ast) ([]time.Time, error) {
+// timeBounds enforces the time rule: request.now appears only as one side
+// of a direct comparison whose other side is an anchor, timestamp("<RFC 3339
+// literal>") or timestamp(resource.attributes.<name>), optionally plus or
+// minus duration("<literal>"). It returns each comparison's bound: for an
+// attribute, the decision role reads the attribute from the resource the
+// decision is bound to, so a change of it makes the decision stale anyway.
+// The request variable itself may be used only through field selection, so
+// request.now cannot be reached another way.
+func timeBounds(ast *cel.Ast) ([]timeBound, error) {
 	root := celast.NavigateAST(ast.NativeRep())
-	var times []time.Time
+	var bounds []timeBound
 	for _, ident := range celast.MatchDescendants(root, celast.KindMatcher(celast.IdentKind)) {
 		if ident.AsIdent() != "request" {
 			continue
@@ -175,23 +216,48 @@ func timeLiterals(ast *cel.Ast) ([]time.Time, error) {
 		if other.ID() == sel.ID() {
 			other = cmp.AsCall().Args()[1]
 		}
-		t, ok := timestampLiteral(other)
+		b, ok := anchor(other)
 		if !ok {
 			return nil, ErrUnboundedTime
 		}
-		times = append(times, t)
+		bounds = append(bounds, b)
 	}
-	return times, nil
+	return bounds, nil
+}
+
+// anchor reads the side request.now is compared with: a timestamp literal
+// or a resource attribute's timestamp, optionally plus or minus a duration
+// literal.
+func anchor(e celast.Expr) (timeBound, bool) {
+	var offset time.Duration
+	if e.Kind() == celast.CallKind && !e.AsCall().IsMemberFunction() && len(e.AsCall().Args()) == 2 {
+		name := e.AsCall().FunctionName()
+		if name != operators.Add && name != operators.Subtract {
+			return timeBound{}, false
+		}
+		d, ok := durationLiteral(e.AsCall().Args()[1])
+		if !ok {
+			return timeBound{}, false
+		}
+		if offset = d; name == operators.Subtract {
+			offset = -d
+		}
+		e = e.AsCall().Args()[0]
+	}
+	if t, ok := timestampLiteral(e); ok {
+		return timeBound{at: t.Add(offset)}, true
+	}
+	if a, ok := timestampAttribute(e); ok {
+		return timeBound{attribute: a, offset: offset}, true
+	}
+	return timeBound{}, false
 }
 
 // timestampLiteral reports the value of timestamp("...") with a constant
 // RFC 3339 argument.
 func timestampLiteral(e celast.Expr) (time.Time, bool) {
-	if e.Kind() != celast.CallKind || e.AsCall().FunctionName() != "timestamp" || e.AsCall().IsMemberFunction() || len(e.AsCall().Args()) != 1 {
-		return time.Time{}, false
-	}
-	arg := e.AsCall().Args()[0]
-	if arg.Kind() != celast.LiteralKind {
+	arg, ok := timestampArgument(e)
+	if !ok || arg.Kind() != celast.LiteralKind {
 		return time.Time{}, false
 	}
 	str, ok := arg.AsLiteral().Value().(string)
@@ -200,6 +266,49 @@ func timestampLiteral(e celast.Expr) (time.Time, bool) {
 	}
 	t, err := time.Parse(time.RFC3339Nano, str)
 	return t, err == nil
+}
+
+// timestampAttribute reports the name in timestamp(resource.attributes.<name>).
+func timestampAttribute(e celast.Expr) (string, bool) {
+	arg, ok := timestampArgument(e)
+	if !ok || arg.Kind() != celast.SelectKind || arg.AsSelect().IsTestOnly() {
+		return "", false
+	}
+	attrs := arg.AsSelect().Operand()
+	if attrs.Kind() != celast.SelectKind || attrs.AsSelect().IsTestOnly() || attrs.AsSelect().FieldName() != "attributes" {
+		return "", false
+	}
+	res := attrs.AsSelect().Operand()
+	if res.Kind() != celast.IdentKind || res.AsIdent() != "resource" {
+		return "", false
+	}
+	return arg.AsSelect().FieldName(), true
+}
+
+// timestampArgument is the single argument of a global timestamp() call.
+func timestampArgument(e celast.Expr) (celast.Expr, bool) {
+	if e.Kind() != celast.CallKind || e.AsCall().FunctionName() != "timestamp" || e.AsCall().IsMemberFunction() || len(e.AsCall().Args()) != 1 {
+		return nil, false
+	}
+	return e.AsCall().Args()[0], true
+}
+
+// durationLiteral reports the value of duration("...") with a constant
+// argument.
+func durationLiteral(e celast.Expr) (time.Duration, bool) {
+	if e.Kind() != celast.CallKind || e.AsCall().FunctionName() != "duration" || e.AsCall().IsMemberFunction() || len(e.AsCall().Args()) != 1 {
+		return 0, false
+	}
+	arg := e.AsCall().Args()[0]
+	if arg.Kind() != celast.LiteralKind {
+		return 0, false
+	}
+	str, ok := arg.AsLiteral().Value().(string)
+	if !ok {
+		return 0, false
+	}
+	d, err := time.ParseDuration(str)
+	return d, err == nil
 }
 
 func sortedKeys(m map[string]bool) []string {
@@ -261,8 +370,8 @@ func (e *Engine) evaluateAction(ctx context.Context, req policy.Request, vars ma
 			}
 			// Every rule that lists the action bounds validity, whether or
 			// not its roles or condition match (DEC-005).
-			for _, t := range r.times {
-				if !t.Before(req.Now) && (next.IsZero() || t.Before(next)) {
+			for _, b := range r.bounds {
+				if t, ok := b.instant(req.Resource.Attributes, req.Now); ok && !t.Before(req.Now) && (next.IsZero() || t.Before(next)) {
 					next = t
 				}
 			}

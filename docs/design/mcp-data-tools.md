@@ -5,7 +5,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
 - Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
-- Stop 4, document history, is built. A rule can bound history by publication date, but a window relative to the current time needs an engine change, an open point under stop 4.
+- Stop 4, document history, is built, with two fixes the owner asked for the same day: a history read holds across a newer version, and a rule can bound history to a window such as the last day (evaluator `fga.evaluator/2`). The specification erratum for the window waits for the next specification version.
 - Order, 3 November 2026: the owner chose data tools first, so stop 4, document history, comes next. Both encryption modes stay required for sources and data tools, as the owner restated the same day. Whether client-mode ingestion, stop 3, comes before or after the server-mode data tools is settled after stop 4.
 
 ## Summary
@@ -276,7 +276,7 @@ Today a document version is read with `read-units` on the version and `read` on 
 - The continuation is sealed and bound as for object version listings. The listing starts again when the head moved, as `ListVersions` does.
 - Entries carry `document_version_id`, `published_at` and `current`.
 
-**DOC-011, publication time.** Every new document version carries `published_at`, the server's commit time in RFC 3339 UTC, as a protected attribute of its `document.version` resource. Policies can bound history by publication date, comparing `published_at` with a fixed date. A window relative to `request.now`, such as the last day, is refused by the engine, which bounds a decision's validity only by timestamp literals (POL-008); see stop 4. Older versions have no such attribute, so conditions must guard it (D-E).
+**DOC-011, publication time.** Every new document version carries `published_at`, the server's commit time in RFC 3339 UTC, as a protected attribute of its `document.version` resource. Policies can bound history by time with `request.now`, for example to the last day: the engine bounds each decision's validity at the attribute's time plus the window (POL-008 as amended, policy-format-v1.md). Older versions have no such attribute, so conditions must guard it (D-E).
 
 This changes existing behavior. A reader who reads superseded document versions today needs a `read-history` rule afterwards. In the example bundle, documents follow objects: the owner and auditor history rules cover them, members read only current versions, and three sentinels check it. Bundles are re-signed because the operations change (D-D).
 
@@ -487,11 +487,11 @@ Examples, all in the business set:
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"document.version","scope":"","rules":[
-  {"id":"viewers-since-november","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],
-   "when":"has(resource.attributes.published_at) && timestamp(resource.attributes.published_at) >= timestamp('2026-11-01T00:00:00Z') && resource.attributes.project in principal.attributes.projects"}]}
+  {"id":"viewers-last-day","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],
+   "when":"has(resource.attributes.published_at) && request.now < timestamp(resource.attributes.published_at) + duration('24h') && resource.attributes.project in principal.attributes.projects"}]}
 ```
 
-A window relative to the current time, such as `request.now - duration('24h')`, does not compile: the engine accepts `request.now` only compared directly with a timestamp literal, from which it bounds each decision's validity (POL-008). See stop 4.
+`request.now` stays bare: the window is written on the attribute's side. A decision under this rule is valid at most until the window closes.
 
 ```json
 {"format":"fga.policy/v1","set":"business","resource":"agent.tool","scope":"","rules":[
@@ -671,12 +671,20 @@ Done when a reader without `read-history` gets only the current version on every
 | `content` `TestKeysReleaseHistory` | A newer version arriving after a plain decision: the storage role's admission and the keys role's release refuse; a history read holds across it |
 | `content` `TestHistoryReadAcrossOverwrite`, `fence` `TestAnyGeneration` | A history read of an object holds across an overwrite on every history route; a metadata change still makes it stale, and a resource cannot be bound both ways |
 | `content` `TestDocumentVersionListing` | Newest first with `published_at`, omission without count, continuation binding, a moved head |
-| `content` `TestPublishedAtCondition` | A rule on `published_at` from a fixed date; a version without it meets no guarded condition |
+| `content` `TestPublishedAtCondition` | A last-day window on `published_at`: read within it, refused after it, a decision valid only until it closes; a version without `published_at` meets no guarded condition |
+| `engine` `TestTimeRule`, `TestNextChangeFromAttribute` | The accepted and rejected forms of `request.now`; the bound read from a resource attribute, past, absent, malformed and non-string |
 | `content` `TestDelegationWithoutHistory` | An agent gets the current version while its user reads history |
 
 In the example bundle, documents follow objects: owners and auditors read history under the existing rules, and members read current versions only. The bundle has three new sentinels for it. The demo still runs `974d2fc` until it gets the new binaries and a bundle re-signed at epoch 5.
 
-Open point for the owner: a window relative to the current time, such as "the last 24 hours", does not compile. The engine accepts `request.now` only compared directly with a timestamp literal, because it bounds each decision's validity by those literals (POL-008). Allowing `timestamp(resource.attributes.published_at)` plus a duration literal would need the engine to compute that bound from the attribute, a change of its own. Until then, history tools bound age with their own `max_age`, a view limit, not an access rule.
+Two fixes the owner asked for on 3 November 2026, after stop 4 was first built:
+- **History reads across a newer version.** A history check holds for every version, so it binds its resource's metadata revision only (`registry.CheckSpec.AnyGeneration`, signed as `any_generation`). A newer version no longer interrupts a history read, of documents or objects, while a change of labels, owner or grants still does. Exporting an old object version still binds the generation, since one operation serves both current and old versions.
+- **Time windows.** The engine accepts `request.now` compared with a resource attribute's time, give or take a duration literal, and bounds each decision's validity at that instant, read from the bound resource (evaluator `fga.evaluator/2`, policy-format-v1.md). `request.now` itself stays bare.
+
+Pending specification erratum, for the next version after 2.6.2 (TEST-003: normative text changes only with a version):
+- p01, "Time conditions": "`request.now` may appear in a condition only as one side of a direct comparison whose other side is a timestamp literal or `timestamp(resource.attributes.<name>)`, either optionally plus or minus a duration literal; any other use, such as arithmetic on `request.now`, a comparison with a principal's attribute or a non-literal duration, is rejected at bundle validation. The `valid_until` of a decision is then bounded by the earliest such instant not before the request time, reading an attribute from the resource the decision binds."
+- V-154: the given becomes "uses request.now in arithmetic, or compares it with anything other than a timestamp literal or a resource attribute's timestamp, give or take a duration literal".
+- A new case: a comparison with a resource attribute's time bounds `valid_until` at that time plus the duration.
 
 ### Stop 5: data tools in the storage role
 
@@ -755,7 +763,7 @@ On 3 November 2026, fga main `7a5c33f`:
 - `httpapi.Gateway.authenticate` accepts only decisions of the configured operation with one `agent.tool` check in namespace `mcp.tool`, and only on the routes `registry.MCPToolRoutes` lists for that tool.
 - `mcp enable` inserts `mcp.tool:<name>` resources with `ON CONFLICT DO NOTHING` (`internal/catalog/mcp.go`).
 - Objects have history twins (`withHistory`). Document unit reads and `storage.key.release-unit` have none, and no route lists document versions: `objectByKey`, which `ListVersions` uses, sees kind `object` only.
-- `internal/strictjson` refuses duplicate member names. Policy conditions have `request.now`, but only compared directly with a timestamp literal (`engine.ErrUnboundedTime`, POL-008), and `timestamp()` (`internal/policy/engine`).
+- `internal/strictjson` refuses duplicate member names. Policy conditions have `request.now`, then only compared directly with a timestamp literal (`engine.ErrUnboundedTime`, POL-008), and `timestamp()` (`internal/policy/engine`); stop 4 extended the comparison to a resource attribute's time.
 - fga-mcp may link no catalog, payload or key package, and fga-tools no storage content package (`allowed-imports.txt`).
 - The `storage` preset grants the client-mode actions that `source-client` adds to `source` (`adminops.Presets`).
 
@@ -765,4 +773,4 @@ To verify while coding:
 
 ## Documents to update with the code
 
-admin-api.md, native-api.md and native-api.openapi.yaml, documents.md, server-documents.md, server-visible-metadata.md, labels-and-approvals.md, mcp-role.md, mcp-gateway.md, mcp-bridge.md, delegated-agents.md, and the next specification errata with ING-001 to ING-012, DTL-001 to DTL-009, DOC-009 to DOC-011 and MCP-009.
+admin-api.md, native-api.md and native-api.openapi.yaml, documents.md, server-documents.md, server-visible-metadata.md, labels-and-approvals.md, mcp-role.md, mcp-gateway.md, mcp-bridge.md, delegated-agents.md, and the next specification errata with the POL-008 amendment above, ING-001 to ING-012, DTL-001 to DTL-009, DOC-009 to DOC-011 and MCP-009.

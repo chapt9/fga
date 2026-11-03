@@ -222,9 +222,11 @@ func TestExpressionLibraryMatchesModule(t *testing.T) {
 	}
 }
 
-// TestTimeRule covers V-154: request.now is accepted only as one side of a
-// direct comparison with a timestamp literal; every other use is rejected
-// at compilation because no sound next-change bound exists for it.
+// TestTimeRule covers V-154 as amended: request.now is accepted only as one
+// side of a direct comparison whose other side is a timestamp literal or a
+// resource attribute's timestamp, either give or take a duration literal;
+// every other use is rejected at compilation because no sound next-change
+// bound exists for it.
 func TestTimeRule(t *testing.T) {
 	doc := func(when string) []string {
 		return []string{`{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
@@ -246,6 +248,10 @@ func TestTimeRule(t *testing.T) {
 		`request.now < timestamp("2027-01-15T09:00:00Z")`,
 		`timestamp("2027-01-15T09:00:00Z") >= request.now && resource.attributes.state == "LIVE"`,
 		`request.now != timestamp("2027-01-15T09:00:00.5Z") || request.operation.size < 10`,
+		`request.now < timestamp(resource.attributes.end)`,
+		`has(resource.attributes.published_at) && request.now < timestamp(resource.attributes.published_at) + duration("24h")`,
+		`timestamp(resource.attributes.published_at) - duration("30m") <= request.now`,
+		`request.now >= timestamp("2027-01-15T09:00:00Z") - duration("1h30m")`,
 	} {
 		if err := compile(when); err != nil {
 			t.Errorf("%s: rejected: %v", when, err)
@@ -255,7 +261,13 @@ func TestTimeRule(t *testing.T) {
 		`request.now + duration("1h") < timestamp("2027-01-15T09:00:00Z")`,
 		`request.now < resource.attributes.expires_at`,
 		`request.now.getHours() < 9`,
-		`request.now < timestamp(resource.attributes.end)`,
+		`request.now < timestamp(principal.attributes.end)`,
+		`request.now < timestamp(resource.attributes.end) + duration(resource.attributes.window)`,
+		`request.now < timestamp(resource.attributes.end) + duration("1h") + duration("1h")`,
+		`request.now < timestamp(resource.attributes["end"])`,
+		`request.now < timestamp(resource.attributes.end.at)`,
+		`request.now < duration("1h") + timestamp(resource.attributes.end)`,
+		`timestamp(resource.attributes.end) - request.now > duration("1h")`,
 		`has(request.now)`,
 		`request["now"] < timestamp("2027-01-15T09:00:00Z")`,
 		`[request.now].size() == 1`,
@@ -287,5 +299,40 @@ func TestNextChange(t *testing.T) {
 	got := res.Actions["read"]
 	if got.Effect != policy.EffectAllow || !got.NextChange.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("read = %+v, want ALLOW with next change at +10m (rule b, whose role does not match)", got)
+	}
+}
+
+// TestNextChangeFromAttribute covers the time bound of a comparison with a
+// resource attribute's time (POL-008 as amended): the decision role reads
+// the attribute from the resource and bounds validity at its time plus the
+// offset, when that is not before the request time. A past bound bounds
+// nothing, an absent attribute bounds nothing, and one that is not an RFC
+// 3339 string bounds at the request time, so the decision ends at once.
+func TestNextChangeFromAttribute(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	e := compileBundle(t, []string{`{"format":"fga.policy/v1","set":"business","resource":"document.text_unit","scope":"","rules":[
+	  {"id":"last-day","effect":"allow","actions":["read"],"roles":["reviewer"],
+	   "when":"has(resource.attributes.published_at) && request.now < timestamp(resource.attributes.published_at) + duration('24h')"}]}`})
+	for name, c := range map[string]struct {
+		attrs  map[string]any
+		effect policy.Effect
+		next   time.Time
+	}{
+		"published 23 hours ago":  {map[string]any{"published_at": now.Add(-23 * time.Hour).Format(time.RFC3339Nano)}, policy.EffectAllow, now.Add(time.Hour)},
+		"published 25 hours ago":  {map[string]any{"published_at": now.Add(-25 * time.Hour).Format(time.RFC3339)}, policy.EffectDeny, time.Time{}},
+		"no publication time":     {map[string]any{}, policy.EffectDeny, time.Time{}},
+		"a malformed publication": {map[string]any{"published_at": "yesterday"}, policy.EffectDeny, now},
+		// CEL reads a number as Unix seconds and allows; the bound ends the
+		// decision at once rather than guess the attribute's meaning.
+		"a publication not a string": {map[string]any{"published_at": 1_799_999_000}, policy.EffectAllow, now},
+	} {
+		req := request(policy.SetBusiness, "user-42", []string{"reviewer"}, "", c.attrs, "read")
+		res, err := e.Evaluate(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Actions["read"]; got.Effect != c.effect || !got.NextChange.Equal(c.next) {
+			t.Errorf("%s: %+v, want %v with next change %v", name, got, c.effect, c.next)
+		}
 	}
 }

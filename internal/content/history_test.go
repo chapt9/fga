@@ -1,6 +1,8 @@
 package content_test
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"maps"
@@ -294,38 +296,71 @@ func TestDocumentVersionListing(t *testing.T) {
 	}
 }
 
-// TestPublishedAtCondition covers DOC-011: a rule can bound history by the
-// server's published_at, here from a fixed date on, and a version without
-// published_at meets no guarded condition. A window relative to request.now
-// is refused by the engine, which bounds a decision's validity only by
-// timestamp literals (POL-008).
+// TestPublishedAtCondition covers DOC-011 and POL-008 as amended: a rule
+// bounds history to the last day with the server's published_at and
+// request.now, and each decision under it is valid only until the window
+// closes; a version without published_at meets no guarded condition.
 func TestPublishedAtCondition(t *testing.T) {
-	cutoff := r1test.Now.Add(time.Hour).UTC().Format(time.RFC3339)
-	since := `has(resource.attributes.published_at) && timestamp(resource.attributes.published_at) >= timestamp('` + cutoff + `') && ` +
+	window := `has(resource.attributes.published_at) && request.now < timestamp(resource.attributes.published_at) + duration('24h') && ` +
 		`resource.attributes.project in principal.attributes.projects`
 	st := r1test.NewWith(t, r1test.Options{Policies: historyPolicies(map[string]string{
-		"documents.json": `{"id":"viewers-since","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],"when":"` + since + `"}`,
+		"documents.json": `{"id":"viewers-last-day","effect":"allow","actions":["read-units","discover"],"roles":["viewer"],"when":"` + window + `"}`,
 		"units.json": `{"id":"viewers-read-units","effect":"allow","actions":["read"],"roles":["viewer"],
 		  "when":"resource.attributes.project in principal.attributes.projects"}`,
 	})})
 	st.ModeBucket("vault", "p1", "internal", "server")
 	alice := st.Client("alice", []string{"member"}, "p1")
 	st.User("vic", []string{"viewer"}, "p1")
-	putText(t, st, alice.Caller, "notes", "n-1", "Before.")
-	early := st.UnitIDs(alice.Caller, "vault", "notes", "")[0]
-	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", early); !errors.Is(err, content.ErrNotFound) {
-		t.Fatalf("a viewer reads a version published before the date: %v", err)
+	p := putText(t, st, alice.Caller, "notes", "n-1", "Today.")
+	unit := st.UnitIDs(alice.Caller, "vault", "notes", "")[0]
+	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", unit); err != nil {
+		t.Fatalf("a viewer reads a version published within the day: %v", err)
 	}
-	*st.Clock = st.Clock.Add(2 * time.Hour)
-	p := putText(t, st, st.CallerFor("alice", content.Audience), "notes", "n-2", "After.")
-	late := st.UnitIDs(st.CallerFor("alice", content.Audience), "vault", "notes", "")[0]
-	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", late); err != nil {
-		t.Fatalf("a viewer reads a version published after the date: %v", err)
+	var published string
+	if err := st.Pool.QueryRow(ctx, `SELECT attributes->>'published_at' FROM resources WHERE id = $1`, p.DocumentVersion).Scan(&published); err != nil {
+		t.Fatal(err)
 	}
+	at, err := time.Parse(time.RFC3339, published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ten seconds before the window closes, a decision is valid until it
+	// closes, not for its usual age.
+	*st.Clock = at.Add(24*time.Hour - 10*time.Second)
+	vic := st.Caller("vic")
+	id, err := st.Catalog.GetIdentity(ctx, r1test.Tenant, "vic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := st.Decisions.Decide(ctx, r1test.StorageAdapter, decisionsvc.Request{RequestID: "r", Tenant: r1test.Tenant, Operation: registry.OpDocDiscover,
+		OperationID: "op-window", OperationDigest: "sha256:t", Audience: content.Audience, Actor: decisionsvc.Ref{ID: "vic", Revision: id.Revision},
+		Evidence: vic.Token, Checks: []decisionsvc.Check{{ID: "version", Role: registry.RoleVersion, Action: "discover",
+			Resource: decisionsvc.Alias{Type: "document.version", ID: p.DocumentVersion}}}})
+	if resp.Outcome != "ALLOW" {
+		t.Fatalf("a viewer's decision just before the window closes: %s %s", resp.Outcome, resp.Reason)
+	}
+	payload, err := base64.StdEncoding.DecodeString(resp.Signed.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec struct {
+		ValidUntil time.Time `json:"valid_until"`
+	}
+	if err := json.Unmarshal(payload, &rec); err != nil || !rec.ValidUntil.Equal(at.Add(24*time.Hour)) {
+		t.Fatalf("the decision is valid until %v (%v), want the window's close %v", rec.ValidUntil, err, at.Add(24*time.Hour))
+	}
+	*st.Clock = at.Add(25 * time.Hour)
+	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", unit); !errors.Is(err, content.ErrNotFound) {
+		t.Fatalf("a viewer reads a version published more than a day ago: %v", err)
+	}
+	if _, err := readUnitPlain(st, st.Caller("alice"), "vault", "notes", "", unit); err != nil {
+		t.Fatalf("the owner reads it: %v", err)
+	}
+	*st.Clock = at.Add(time.Hour)
 	if _, err := st.Pool.Exec(ctx, `UPDATE resources SET attributes = attributes - 'published_at' WHERE id = $1`, p.DocumentVersion); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", late); !errors.Is(err, content.ErrNotFound) {
+	if _, err := readUnitPlain(st, st.Caller("vic"), "vault", "notes", "", unit); !errors.Is(err, content.ErrNotFound) {
 		t.Fatalf("a viewer reads a version without published_at: %v", err)
 	}
 }

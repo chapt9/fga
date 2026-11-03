@@ -65,6 +65,12 @@ The proposal is CEL, through the cel-go library (Google, Apache-2.0), with these
 
 Expressions are pure, compiled once per bundle and run under a cost limit (POL-009). The alternative is a small expression language of our own (comparison, `in`, `and`, `or`, `not`): no dependency, but less expressive and more code to own.
 
+**Time conditions (POL-008, evaluator `fga.evaluator/2`).** `request.now` may appear only as one side of a direct comparison. The other side is an anchor: a timestamp literal, `timestamp("2027-01-15T09:00:00Z")`, or a resource attribute's time, `timestamp(resource.attributes.published_at)`, either optionally plus or minus a duration literal. Every other use is rejected at bundle load, including arithmetic on `request.now` itself, a principal's attribute, or a duration that is not a literal. A decision is valid at most until the earliest anchor instant not before the request time, among all rules that list the action, whether or not they matched (DEC-005). For an attribute, that instant is read from the resource the decision is bound to, so a change of the attribute makes the decision stale anyway. An absent attribute bounds nothing, since no comparison with it can be evaluated. A value that is not an RFC 3339 string ends the decision at once. Example, the last day of a document's versions:
+
+```
+has(resource.attributes.published_at) && request.now < timestamp(resource.attributes.published_at) + duration("24h")
+```
+
 ## Validation at bundle load
 
 A bundle is rejected if any of these hold:
