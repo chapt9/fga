@@ -5,6 +5,7 @@ Status: design record, 3 November 2026. Our own design; no upstream mapping. It 
 - The owner accepted every recommended decision, D-A to D-I, on 3 November 2026.
 - The same day the owner asked for client-side encryption as an option, as for objects, and accepted the client-mode decisions D-J to D-L as recommended.
 - Stops 1 and 2 are built: the profile, and sources with server-mode ingestion. Stop 2 was checked against the running demo on 3 November 2026. The check found two points, listed under stop 2. For the first, the owner chose a permission of its own for posting, `post-reading`, now built. The second is still open.
+- Order, 3 November 2026: the owner chose data tools first, so stop 4, document history, comes next. Both encryption modes stay required for sources and data tools, as the owner restated the same day. Whether client-mode ingestion, stop 3, comes before or after the server-mode data tools is settled after stop 4.
 
 ## Summary
 
@@ -580,7 +581,7 @@ New IDs, free in `docs` as of 3 November 2026; to confirm against the specificat
 
 ## Stops
 
-Each stop is explained and agreed before coding, built on its own branch, tested, checked against the running demo, and documented in the same commit. Nothing is pushed without the owner's OK.
+Each stop is explained and agreed before coding, built on its own branch, tested, checked against the running demo, and documented in the same commit. Nothing is pushed without the owner's OK. Stop 4 comes next; stop 3's place before or after stops 5 and 6 is settled after it, and stops 5 and 6 are done only once they serve both encryption modes.
 
 ### Stop 1: the profile (built)
 
