@@ -90,6 +90,7 @@ func (s *Service) List(ctx context.Context, c Caller, bucketName, prefix string,
 	page := Page{Entries: []Entry{}}
 	scanned := 0
 	exhausted := false
+	singles := s.d.Limits.ListSingleChecks
 	for len(page.Entries) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted {
 		candidates, err := s.candidates(ctx, c.Tenant, b.ID, prefix, cur.After, min(discoverBatch, s.d.Limits.ListScanBudget-scanned))
 		if err != nil {
@@ -101,11 +102,11 @@ func (s *Service) List(ctx context.Context, c Caller, bucketName, prefix string,
 		if len(candidates) == 0 {
 			break
 		}
-		visible, err := s.discoverable(ctx, c, candidates)
+		visible, decided, err := s.discoverable(ctx, c, candidates, &singles)
 		if err != nil {
 			return Page{}, err
 		}
-		for i, cand := range candidates {
+		for i, cand := range candidates[:decided] {
 			scanned++
 			cur.After = cand.key
 			if visible[i] {
@@ -115,6 +116,13 @@ func (s *Service) List(ctx context.Context, c Caller, bucketName, prefix string,
 					break
 				}
 			}
+		}
+		if decided < len(candidates) {
+			// The single checks of this request are spent: the page ends
+			// here, and the continuation resumes after the last candidate
+			// decided.
+			exhausted = false
+			break
 		}
 	}
 	if !exhausted {
@@ -160,48 +168,55 @@ func (s *Service) candidates(ctx context.Context, tenant string, bucket cryptowi
 }
 
 // discoverable decides discover for each candidate (eachAllowed).
-func (s *Service) discoverable(ctx context.Context, c Caller, cands []candidate) ([]bool, error) {
+func (s *Service) discoverable(ctx context.Context, c Caller, cands []candidate, singles *int) ([]bool, int, error) {
 	checks := make([]check, len(cands))
 	for i, cand := range cands {
 		checks[i] = check{id: "object-" + strconv.Itoa(i), role: registry.RoleObject, action: "discover",
 			ref: canonical("storage.object", cand.object.String()), version: cand.entry.Version}
 	}
-	return s.eachAllowed(ctx, c, registry.OpDiscover, checks)
+	return s.eachAllowed(ctx, c, registry.OpDiscover, checks, singles)
 }
 
 // eachAllowed decides op with checks in one batch and reports which checks
 // are allowed. The batch is denied as a whole if any check is, so a denial
 // is narrowed down by deciding the checks one by one; a failed item never
-// grants its peers (DEC-004).
-func (s *Service) eachAllowed(ctx context.Context, c Caller, op string, checks []check) ([]bool, error) {
+// grants its peers (DEC-004). Each single check spends one of singles, the
+// request's remaining single checks; when they are spent, the checks after
+// the last one decided are left undecided, and the count of decided checks
+// says how many were (security review of 4 November 2026, finding 2).
+func (s *Service) eachAllowed(ctx context.Context, c Caller, op string, checks []check, singles *int) ([]bool, int, error) {
 	allowed := make([]bool, len(checks))
 	_, rec, err := s.decide(ctx, c, op, Audience, false, checks)
 	if err == nil {
 		if err := s.checked(ctx, rec); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		for i := range allowed {
 			allowed[i] = true
 		}
-		return allowed, nil
+		return allowed, len(checks), nil
 	}
 	if !errors.Is(err, ErrNotFound) {
-		return nil, err
+		return nil, 0, err
 	}
 	for i := range checks {
+		if *singles <= 0 {
+			return allowed, i, nil
+		}
+		*singles--
 		_, rec, err := s.decide(ctx, c, op, Audience, false, checks[i:i+1])
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if err := s.checked(ctx, rec); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		allowed[i] = true
 	}
-	return allowed, nil
+	return allowed, len(checks), nil
 }
 
 // VersionEntry is one visible version of a key.
@@ -541,25 +556,36 @@ func (s *Service) listDocumentVersions(ctx context.Context, c Caller, bucketName
 	if more {
 		cands = cands[:limit]
 	}
+	singles := s.d.Limits.ListSingleChecks
 	for start := 0; start < len(cands); start += discoverBatch {
 		batch := cands[start:min(len(cands), start+discoverBatch)]
 		results := make([]SearchResult, len(batch))
 		for i, x := range batch {
 			results[i] = SearchResult{DocumentVersion: x.id}
 		}
-		visible, err := s.discoverVersions(ctx, c, results)
+		visible, decided, err := s.discoverVersions(ctx, c, results, &singles)
 		if err != nil {
 			return DocumentVersionPage{}, err
 		}
-		for i, x := range batch {
+		for i, x := range batch[:decided] {
 			if visible[i] {
 				page.Versions = append(page.Versions, DocumentVersionEntry{DocumentVersion: x.id, PublishedAt: x.publishedAt, Current: x.id == d.id.String()})
 			}
 		}
+		if decided < len(batch) {
+			// The single checks of this request are spent (finding 2 of the
+			// security review of 4 November 2026): the page ends after the
+			// last version decided.
+			cands, more = cands[:start+decided], true
+			break
+		}
 	}
 	if more {
-		last := cands[len(cands)-1]
-		cur.After, cur.Expires = last.createdAt.Format(time.RFC3339Nano)+"|"+last.id, s.d.Now().Add(s.d.Limits.TokenLifetime)
+		if n := len(cands); n > 0 {
+			last := cands[n-1]
+			cur.After = last.createdAt.Format(time.RFC3339Nano) + "|" + last.id
+		}
+		cur.Expires = s.d.Now().Add(s.d.Limits.TokenLifetime)
 		if page.Continuation, err = s.sealToken(cur); err != nil {
 			return DocumentVersionPage{}, err
 		}

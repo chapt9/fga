@@ -319,6 +319,7 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	}
 	page := UnitPage{Units: []UnitEntry{}, DocumentVersion: d.id.String(), Kind: d.units.kind()}
 	scanned, exhausted := 0, false
+	singles := s.d.Limits.ListSingleChecks
 	for len(page.Units) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted {
 		n := min(maxBatch-1, s.d.Limits.ListScanBudget-scanned)
 		ms, err := s.members(ctx, c.Tenant, d.id, after, n, nil)
@@ -334,14 +335,23 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 		if err != nil {
 			return UnitPage{}, err
 		}
+		// After a denied batch each unit is decided alone, at most
+		// ListSingleChecks per request; the rest wait for the next page
+		// (security review of 4 November 2026, finding 2).
+		decided := len(ms)
 		for i := range ms {
 			if visible[i] = all; !all {
+				if singles <= 0 {
+					decided = i
+					break
+				}
+				singles--
 				if visible[i], err = s.allowed(ctx, c, d.units.selectOp, d, ms[i:i+1]); err != nil {
 					return UnitPage{}, err
 				}
 			}
 		}
-		for i, m := range ms {
+		for i, m := range ms[:decided] {
 			scanned++
 			after = m.position
 			if visible[i] {
@@ -351,6 +361,10 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 					break
 				}
 			}
+		}
+		if decided < len(ms) {
+			exhausted = false
+			break
 		}
 	}
 	if !exhausted {

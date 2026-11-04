@@ -277,6 +277,7 @@ func (s *Service) SearchDocuments(ctx context.Context, c Caller, bucketName stri
 	}
 	page := SearchPage{Results: []SearchResult{}}
 	scanned, exhausted := 0, false
+	singles := s.d.Limits.ListSingleChecks
 	for len(page.Results) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted {
 		n := min(maxBatch, s.d.Limits.ListScanBudget-scanned)
 		rows, err := s.d.Catalog.Pool().Query(ctx, `
@@ -308,11 +309,11 @@ func (s *Service) SearchDocuments(ctx context.Context, c Caller, bucketName stri
 		if len(cands) == 0 {
 			break
 		}
-		visible, err := s.discoverVersions(ctx, c, cands)
+		visible, decided, err := s.discoverVersions(ctx, c, cands, &singles)
 		if err != nil {
 			return SearchPage{}, err
 		}
-		for i, r := range cands {
+		for i, r := range cands[:decided] {
 			scanned++
 			cur.After = r.Key
 			if r2, _ := labels.Rank(order, candLabels[i]); visible[i] && (maxRank < 0 || r2 <= maxRank) {
@@ -323,6 +324,12 @@ func (s *Service) SearchDocuments(ctx context.Context, c Caller, bucketName stri
 					break
 				}
 			}
+		}
+		if decided < len(cands) {
+			// The single checks of this request are spent (finding 2 of the
+			// security review of 4 November 2026): the page ends here.
+			exhausted = false
+			break
 		}
 	}
 	if !exhausted {
@@ -336,13 +343,13 @@ func (s *Service) SearchDocuments(ctx context.Context, c Caller, bucketName stri
 
 // discoverVersions decides discover on each candidate's document version
 // (eachAllowed).
-func (s *Service) discoverVersions(ctx context.Context, c Caller, cands []SearchResult) ([]bool, error) {
+func (s *Service) discoverVersions(ctx context.Context, c Caller, cands []SearchResult, singles *int) ([]bool, int, error) {
 	checks := make([]check, len(cands))
 	for i, r := range cands {
 		checks[i] = check{id: "version-" + strconv.Itoa(i), role: registry.RoleVersion, action: "discover",
 			ref: canonical("document.version", r.DocumentVersion)}
 	}
-	return s.eachAllowed(ctx, c, registry.OpDocSearch, checks)
+	return s.eachAllowed(ctx, c, registry.OpDocSearch, checks, singles)
 }
 
 // ObjectExport is an encrypted remote export of one object version: its

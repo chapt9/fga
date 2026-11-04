@@ -278,6 +278,9 @@ type Options struct {
 	FenceMargin *time.Duration
 	// ObligationMapping, if set, is the release's obligation mapping.
 	ObligationMapping *release.ObligationMapping
+	// Limits, if set, are the content service's limits; nil keeps the
+	// defaults with the fixture's lease interval.
+	Limits *content.Limits
 }
 
 // New builds the stack.
@@ -383,7 +386,7 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		Verifier: st.Verifier(content.Audience),
 		Keys: deliveryFunc(func(ctx context.Context, d signing.Signed, id string, extra ...signing.Signed) (content.Delivered, error) {
 			return st.Keys.Deliver(ctx, d, id, extra...)
-		}), DataKeys: dataKeys{st}, Journal: st.Journal, TokenKey: tokenKey, Limits: limits(), Now: now})
+		}), DataKeys: dataKeys{st}, Journal: st.Journal, TokenKey: tokenKey, Limits: limits(opts), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +589,10 @@ func (st *Stack) ModeBucket(name, project, label, mode string) {
 // shorter than production's so tests run quickly.
 var LeaseCheckEvery = 200 * time.Millisecond
 
-func limits() content.Limits {
+func limits(opts Options) content.Limits {
+	if opts.Limits != nil {
+		return *opts.Limits
+	}
 	l := content.DefaultLimits
 	l.LeaseCheckEvery = LeaseCheckEvery
 	return l

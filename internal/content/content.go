@@ -111,18 +111,23 @@ type DataKeys interface {
 // Limits bound requests (CNT-009, AVL-006). D-10 is open; these are
 // configuration values.
 type Limits struct {
-	MaxCiphertext   int64
-	MaxEnvelopes    int
-	IntentLifetime  time.Duration
-	ListPageMax     int
-	ListScanBudget  int
-	TokenLifetime   time.Duration
-	LeaseCheckEvery time.Duration
+	MaxCiphertext  int64
+	MaxEnvelopes   int
+	IntentLifetime time.Duration
+	ListPageMax    int
+	ListScanBudget int
+	// ListSingleChecks is the most checks a listing decides one by one per
+	// request after a denied batch; the page ends there with a
+	// continuation, so one request cannot cost the decision role a decision
+	// per item scanned (security review of 4 November 2026, finding 2).
+	ListSingleChecks int
+	TokenLifetime    time.Duration
+	LeaseCheckEvery  time.Duration
 }
 
 // DefaultLimits are the values of the native API design record.
 var DefaultLimits = Limits{MaxCiphertext: 256 << 20, MaxEnvelopes: 16, IntentLifetime: time.Hour, ListPageMax: 1000,
-	ListScanBudget: 5000, TokenLifetime: 15 * time.Minute, LeaseCheckEvery: 5 * time.Second}
+	ListScanBudget: 5000, ListSingleChecks: 200, TokenLifetime: 15 * time.Minute, LeaseCheckEvery: 5 * time.Second}
 
 // Audiences of the storage and keys roles.
 const (

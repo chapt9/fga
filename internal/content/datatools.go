@@ -132,7 +132,9 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 	}
 	page := DataToolPage{Tools: []DataToolEntry{}}
 	exhausted := false
+	singles := s.d.Limits.ListSingleChecks
 	for scanned := 0; len(page.Tools) < limit && scanned < s.d.Limits.ListScanBudget && !exhausted; {
+		before := cur.After
 		tools, err := s.d.Catalog.ListDataTools(ctx, c.Tenant, "", cur.After, discoverBatch)
 		if err != nil {
 			return DataToolPage{}, err
@@ -153,9 +155,20 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 		if len(listed) == 0 {
 			continue
 		}
-		visible, err := s.eachAllowed(ctx, c, registry.OpMCPDiscover, checks)
+		visible, decided, err := s.eachAllowed(ctx, c, registry.OpMCPDiscover, checks, &singles)
 		if err != nil {
 			return DataToolPage{}, err
+		}
+		spent := decided < len(listed)
+		if spent {
+			// The single checks of this request are spent (finding 2 of the
+			// security review of 4 November 2026): the page ends after the
+			// last tool decided, and the next one goes on from there.
+			exhausted, listed = false, listed[:decided]
+			cur.After = before
+			if decided > 0 {
+				cur.After = listed[decided-1].Name
+			}
 		}
 		for i, t := range listed {
 			if !visible[i] {
@@ -173,6 +186,9 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 				cur.After = t.Name
 				break
 			}
+		}
+		if spent {
+			break
 		}
 	}
 	if !exhausted {
