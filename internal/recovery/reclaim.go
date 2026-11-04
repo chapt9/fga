@@ -42,8 +42,9 @@ const (
 // when, and the sealed keys of aborted uploads are destroyed too
 // (SSE-006). It also prunes rows that served their purpose (fga-audit
 // F-08): consumption records of decisions past their validity, read
-// admissions past their lease, expired enrollment challenges and
-// delivered audit events.
+// admissions past their lease, expired enrollment challenges, delivered
+// audit events and expired approvals (security review of 4 November 2026,
+// finding 4).
 func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now time.Time) (Reclaimed, error) {
 	out := Reclaimed{At: now}
 	type item struct {
@@ -167,6 +168,9 @@ func Reclaim(ctx context.Context, pool *pgxpool.Pool, blobs *blob.Store, now tim
 		{`DELETE FROM enrollment_challenges WHERE expires_at < $1`, now},
 		{`DELETE FROM signing_challenges WHERE expires_at < $1`, now},
 		{`DELETE FROM audit_outbox WHERE delivered_at < $1`, now.Add(-DeliveredKept)},
+		// A decision that names an approval is valid for minutes, so an
+		// approval expired for PruneMargin is never needed again.
+		{`DELETE FROM approvals WHERE expires_at < $1`, now.Add(-PruneMargin)},
 	} {
 		tag, err := pool.Exec(ctx, p.sql, p.before)
 		if err != nil {
