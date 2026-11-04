@@ -299,11 +299,22 @@ func (s *Service) readingEnvelopes(ctx context.Context, tenant string, in stored
 // activeSource returns an enabled source with an active version and that
 // version's record. Any other source is not found.
 func (s *Service) activeSource(ctx context.Context, tenant, id string) (catalog.Source, sources.Definition, error) {
+	src, def, err := s.reviewedSource(ctx, tenant, id)
+	if err == nil && src.Disabled {
+		return catalog.Source{}, sources.Definition{}, ErrNotFound
+	}
+	return src, def, err
+}
+
+// reviewedSource returns a source with an active version and that
+// version's record, also when the source is disabled: its readings stay
+// readable, by data tools too. Any other source is not found.
+func (s *Service) reviewedSource(ctx context.Context, tenant, id string) (catalog.Source, sources.Definition, error) {
 	if !sources.ValidID(id) {
 		return catalog.Source{}, sources.Definition{}, ErrNotFound
 	}
 	src, err := s.d.Catalog.Source(ctx, tenant, id)
-	if errors.Is(err, catalog.ErrNoRow) || err == nil && (src.Disabled || src.Active == nil) {
+	if errors.Is(err, catalog.ErrNoRow) || err == nil && src.Active == nil {
 		return catalog.Source{}, sources.Definition{}, ErrNotFound
 	}
 	if err != nil {

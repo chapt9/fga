@@ -137,28 +137,28 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 		if err != nil {
 			return DataToolPage{}, err
 		}
-		exhausted = len(tools) < discoverBatch
+		exhausted, scanned = len(tools) < discoverBatch, scanned+len(tools)
+		if len(tools) > 0 {
+			cur.After = tools[len(tools)-1].Name
+		}
+		var listed []catalog.DataTool
 		var checks []check
 		for _, t := range tools {
 			if !t.Disabled && t.Active != nil {
-				checks = append(checks, check{id: "tool-" + strconv.Itoa(len(checks)), role: registry.RoleTool, action: "discover",
+				checks = append(checks, check{id: "tool-" + strconv.Itoa(len(listed)), role: registry.RoleTool, action: "discover",
 					ref: canonical("agent.tool", registry.MCPToolNamespace+":"+t.Name)})
+				listed = append(listed, t)
 			}
 		}
-		visible := []bool{}
-		if len(checks) > 0 {
-			if visible, err = s.eachAllowed(ctx, c, registry.OpMCPDiscover, checks); err != nil {
-				return DataToolPage{}, err
-			}
+		if len(listed) == 0 {
+			continue
 		}
-		k := 0
-		for i, t := range tools {
-			scanned++
-			cur.After = t.Name
-			if t.Disabled || t.Active == nil {
-				continue
-			}
-			if k++; !visible[k-1] {
+		visible, err := s.eachAllowed(ctx, c, registry.OpMCPDiscover, checks)
+		if err != nil {
+			return DataToolPage{}, err
+		}
+		for i, t := range listed {
+			if !visible[i] {
 				continue
 			}
 			def, err := datatools.Parse(t.Active.Definition)
@@ -168,7 +168,9 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 			page.Tools = append(page.Tools, DataToolEntry{Name: t.Name, Version: t.Active.Version, Description: def.Description,
 				Encryption: t.Encryption, InputSchema: def.InputSchema(), OutputSchema: def.OutputSchema()})
 			if len(page.Tools) == limit {
-				exhausted = exhausted && i == len(tools)-1
+				// The page ends here; the next one goes on after this tool.
+				exhausted = exhausted && t.Name == cur.After
+				cur.After = t.Name
 				break
 			}
 		}
@@ -222,7 +224,7 @@ func (s *Service) CallDataTool(ctx context.Context, c Caller, name string, r Dat
 	if err != nil || def.Name != name {
 		return DataToolAnswer{}, fmt.Errorf("%w: data tool %s cannot be read", ErrUnavailable, name)
 	}
-	src, srcDef, err := s.toolSource(ctx, c.Tenant, def.Source)
+	src, srcDef, err := s.reviewedSource(ctx, c.Tenant, def.Source)
 	if err == nil && def.Fit(srcDef) != nil {
 		err = fmt.Errorf("%w: the tool no longer fits its source; a new version must be reviewed", ErrConflict)
 	}
@@ -244,7 +246,7 @@ func (s *Service) PreviewDataTool(ctx context.Context, c Caller, raw json.RawMes
 	if err != nil {
 		return DataToolAnswer{}, errors.Join(ErrInvalid, err)
 	}
-	src, srcDef, err := s.toolSource(ctx, c.Tenant, def.Source)
+	src, srcDef, err := s.reviewedSource(ctx, c.Tenant, def.Source)
 	if err != nil {
 		return DataToolAnswer{}, err
 	}
@@ -264,23 +266,6 @@ func (s *Service) PreviewDataTool(ctx context.Context, c Caller, raw json.RawMes
 		return DataToolAnswer{}, err
 	}
 	return s.runTool(ctx, c, rec, def, 0, digest, src, srcDef, r)
-}
-
-// toolSource returns a tool's source with its active version, also when
-// the source is disabled: its readings stay readable.
-func (s *Service) toolSource(ctx context.Context, tenant, id string) (catalog.Source, sources.Definition, error) {
-	src, err := s.d.Catalog.Source(ctx, tenant, id)
-	if errors.Is(err, catalog.ErrNoRow) || err == nil && src.Active == nil {
-		return catalog.Source{}, sources.Definition{}, ErrNotFound
-	}
-	if err != nil {
-		return catalog.Source{}, sources.Definition{}, err
-	}
-	def, err := sources.Parse(src.Active.Definition)
-	if err != nil || def.ID != id {
-		return catalog.Source{}, sources.Definition{}, fmt.Errorf("%w: the source's active version cannot be read", ErrUnavailable)
-	}
-	return src, def, nil
 }
 
 // toolRun is one run of a tool's reads for a caller.
