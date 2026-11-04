@@ -82,10 +82,10 @@ func generateKeys(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out+".key", []byte(base64.StdEncoding.EncodeToString(priv)+"\n"), 0o600); err != nil {
+	if err := writeNew(*out+".key", []byte(base64.StdEncoding.EncodeToString(priv)+"\n"), 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(*out+".pub", []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644)
+	return writeNew(*out+".pub", []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644)
 }
 
 // validate prepares the bundle as an instance would, without a signature
@@ -201,4 +201,18 @@ func (noEpochs) RequiredEpoch(context.Context, string) (uint64, error) { return 
 
 func httpClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// writeNew writes a file that must not exist yet: a key pair is never
+// overwritten (security review of 4 November 2026, finding 8).
+func writeNew(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
