@@ -281,7 +281,8 @@ func Encrypt(dst io.Writer, src io.Reader, p Params, recipients []Recipient, sig
 	desc := cryptowire.Descriptor{TenantID: p.Tenant.String(), ObjectID: p.Object.String(), LogicalVersionID: p.LogicalVersion.String(),
 		CryptoVersionID: p.CryptoVersion.String(), BlobID: p.Blob.String(), AttemptID: p.Attempt.String(),
 		Suite: cryptowire.Suite1, Format: cryptowire.Format1, CiphertextSHA256: sealed.CiphertextSHA256.String(),
-		CiphertextLength: sealed.CiphertextLength, Signer: signer.Fingerprint.String(), CreatedAt: now}
+		CiphertextLength: sealed.CiphertextLength, Signer: signer.Fingerprint.String(), CreatedAt: now,
+		KeyCommitment: cryptowire.KeyCommitment(pkg).String()}
 	if sealed.Descriptor, err = desc.Marshal(); err != nil {
 		return Sealed{}, err
 	}
@@ -431,12 +432,21 @@ func Decrypt(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *Recipien
 	if !contextMatches(ctx, desc) || ctx.Recipient != key.fingerprint {
 		return ErrBinding
 	}
-	return open(dst, ciphertext, pkg.Envelope, ctx, key)
+	return open(dst, ciphertext, pkg.Envelope, ctx, key, desc.KeyCommitment)
 }
 
-// open unwraps an envelope whose context was checked and decrypts the
+// committed reports whether keyPackage is the one a signed descriptor
+// commits to. A descriptor from before the commitment (an empty one) is
+// opened without the check; the server requires the commitment of every
+// new publication.
+func committed(keyPackage []byte, commitment string) bool {
+	return commitment == "" || cryptowire.KeyCommitment(keyPackage).String() == commitment
+}
+
+// open unwraps an envelope whose context was checked, checks the key
+// package, then its commitment in the descriptor, and decrypts the
 // complete ciphertext with its single-key keyset (KEY-006).
-func open(dst io.Writer, ciphertext io.ReadSeeker, env Envelope, ctx cryptowire.EnvelopeContext, key *RecipientKey) error {
+func open(dst io.Writer, ciphertext io.ReadSeeker, env Envelope, ctx cryptowire.EnvelopeContext, key *RecipientKey, commitment string) error {
 	dec, err := hybrid.NewHybridDecrypt(key.handle)
 	if err != nil {
 		return err
@@ -457,6 +467,9 @@ func open(dst io.Writer, ciphertext io.ReadSeeker, env Envelope, ctx cryptowire.
 	aead, err := payloadAEAD(ks)
 	if err != nil {
 		return err
+	}
+	if !committed(keyPackage, commitment) {
+		return ErrBinding
 	}
 	if _, err := ciphertext.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -579,6 +592,9 @@ func Reshare(pkg Package, key *RecipientKey, trust TrustStore, target Recipient,
 	}
 	if _, err := payloadAEAD(ks); err != nil {
 		return Envelope{}, err
+	}
+	if !committed(keyPackage, desc.KeyCommitment) {
+		return Envelope{}, ErrBinding
 	}
 	next := ctx
 	next.Recipient, next.RecipientKeyVersion, next.Generation = target.Fingerprint, target.KeyVersion, generation

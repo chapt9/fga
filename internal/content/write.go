@@ -714,6 +714,12 @@ func (s *Service) checkDescriptor(ctx context.Context, c Caller, in storedIntent
 		d.AttemptID != in.Attempt.String() || d.CiphertextSHA256 != in.ciphertextSHA256 || int64(d.CiphertextLength) != in.ciphertextLength {
 		return cryptowire.Descriptor{}, "", fmt.Errorf("%w: descriptor does not match the intent", ErrInvalid)
 	}
+	// Every new publication commits to its key (security review of 4
+	// November 2026, finding 5); the server cannot check the commitment
+	// itself, every recipient does.
+	if d.KeyCommitment == "" {
+		return cryptowire.Descriptor{}, "", fmt.Errorf("%w: descriptor commits to no key", ErrInvalid)
+	}
 	return d, signer, nil
 }
 

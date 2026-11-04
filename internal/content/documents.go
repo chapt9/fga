@@ -666,8 +666,9 @@ func (s *Service) checkUnits(ctx context.Context, c Caller, in storedDocIntent, 
 		d, err := cryptowire.ParseUnitDescriptor(f.Descriptor)
 		if err != nil || d.TenantID != in.Tenant || d.DocumentID != in.Document || d.DocumentVersionID != in.DocumentVersion ||
 			d.ManifestDigest != digest.String() || d.UnitID != u.Unit || d.UnitVersionID != u.UnitVersion || d.CryptoVersionID != u.CryptoVersion ||
-			d.BlobID != u.Blob || d.CiphertextSHA256 != sum || int64(d.CiphertextLength) != length || d.Signer != signer {
-			return nil, fmt.Errorf("%w: unit %d descriptor does not match", ErrInvalid, i)
+			d.BlobID != u.Blob || d.CiphertextSHA256 != sum || int64(d.CiphertextLength) != length || d.Signer != signer ||
+			d.KeyCommitment == "" {
+			return nil, fmt.Errorf("%w: unit %d descriptor does not match, or commits to no key", ErrInvalid, i)
 		}
 		cu.descriptor = d
 		if len(f.Envelopes) == 0 || len(f.Envelopes) > s.d.Limits.MaxEnvelopes {
@@ -1072,8 +1073,8 @@ func (s *Service) checkOriginal(ctx context.Context, c Caller, in storedDocInten
 	d, err := cryptowire.ParseDescriptor(f.Descriptor)
 	if err != nil || d.TenantID != in.Tenant || d.ObjectID != o.Unit || d.LogicalVersionID != o.UnitVersion || d.CryptoVersionID != o.CryptoVersion ||
 		d.BlobID != o.Blob || d.AttemptID != o.Attempt || d.CiphertextSHA256 != st.ciphertextSHA256 || int64(d.CiphertextLength) != st.ciphertextLength ||
-		d.Signer != signer {
-		return nil, fmt.Errorf("%w: original descriptor does not match", ErrInvalid)
+		d.Signer != signer || d.KeyCommitment == "" {
+		return nil, fmt.Errorf("%w: original descriptor does not match, or commits to no key", ErrInvalid)
 	}
 	cu := &checkedUnit{UnitIntent: *o, staged: st}
 	tenant, _ := cryptowire.ParseUUID(in.Tenant)

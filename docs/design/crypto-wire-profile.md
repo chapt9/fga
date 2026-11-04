@@ -73,11 +73,13 @@ Strict JSON (unknown fields, duplicate fields and trailing data reject), at most
 ```json
 {"version":"fga.descriptor/v1","tenant_id":"…","object_id":"…","logical_version_id":"…",
  "crypto_version_id":"…","blob_id":"…","attempt_id":"…","suite":1,"format":1,
- "ciphertext_sha256":"sha256:…","ciphertext_length":1234,"signer":"sha256:…",
+ "ciphertext_sha256":"sha256:…","ciphertext_length":1234,"key_commitment":"sha256:…","signer":"sha256:…",
  "created_at":"2026-10-31T12:00:00Z"}
 ```
 
 The server checks every identifier against the upload intent, the digest and length against the durable receipt, and the signer against the content-signing registry (RCP-008, RCP-011). It cannot check the AEAD tag or the plaintext (KEY-003, BKD-005).
+
+`key_commitment`, in object and unit descriptors alike, is SHA-256(`"fga.key-commitment/v1"` ‖ `0x00` ‖ key package). The payload cipher is not key-committing, so every recipient checks the key package its envelope holds against the signed commitment before it decrypts; one signed version then decrypts to one plaintext for every recipient (security review of 4 November 2026, finding 5). The server requires it of every new publication; descriptors from before it carry none and are opened without the check.
 
 ## Delivery receipt
 

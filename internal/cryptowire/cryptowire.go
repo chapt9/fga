@@ -145,6 +145,15 @@ func PayloadAAD(tenant, object, cryptoVersion UUID, suite, format uint16) []byte
 	return binary.BigEndian.AppendUint16(b, format)
 }
 
+// KeyCommitment is the commitment a signed descriptor makes to a key
+// package: a recipient checks the package its envelope holds against it
+// before decrypting, so one signed version decrypts to one plaintext for
+// every recipient although the payload cipher is not key-committing
+// (security review of 4 November 2026, finding 5).
+func KeyCommitment(keyPackage []byte) Digest {
+	return domainHash("fga.key-commitment/v1", keyPackage)
+}
+
 // EncodeKeyPackage frames one serialized keyset with its payload binding
 // (KEY-006): format 1, binding length 60, binding, keyset length, keyset.
 func EncodeKeyPackage(binding, keyset []byte) ([]byte, error) {

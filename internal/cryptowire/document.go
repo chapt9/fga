@@ -185,6 +185,9 @@ type UnitDescriptor struct {
 	Format            uint16    `json:"format"`
 	Signer            string    `json:"signer"`
 	CreatedAt         time.Time `json:"created_at"`
+	// KeyCommitment is KeyCommitment of the unit's key package, as in
+	// Descriptor.
+	KeyCommitment string `json:"key_commitment,omitempty"`
 }
 
 // Marshal encodes d once for signing.
@@ -215,6 +218,11 @@ func ParseUnitDescriptor(b []byte) (UnitDescriptor, error) {
 	}
 	for _, s := range []string{d.ManifestDigest, d.CiphertextSHA256, d.Signer} {
 		if _, err := ParseDigest(s); err != nil {
+			return d, err
+		}
+	}
+	if d.KeyCommitment != "" {
+		if _, err := ParseDigest(d.KeyCommitment); err != nil {
 			return d, err
 		}
 	}

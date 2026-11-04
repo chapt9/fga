@@ -196,7 +196,8 @@ func sealDocument(p DocumentParams, units []*SealedUnit, perUnit [][]Recipient, 
 		d := cryptowire.UnitDescriptor{TenantID: p.Tenant.String(), DocumentID: p.Document.String(), DocumentVersionID: p.DocumentVersion.String(),
 			ManifestDigest: out.ManifestDigest.String(), UnitID: u.Params.Unit.String(), UnitVersionID: u.Params.UnitVersion.String(),
 			CryptoVersionID: u.Params.CryptoVersion.String(), BlobID: u.Params.Blob.String(), CiphertextSHA256: u.CiphertextSHA256.String(),
-			CiphertextLength: u.CiphertextLength, Suite: cryptowire.Suite1, Format: cryptowire.Format1, Signer: signer.Fingerprint.String(), CreatedAt: now}
+			CiphertextLength: u.CiphertextLength, Suite: cryptowire.Suite1, Format: cryptowire.Format1, Signer: signer.Fingerprint.String(), CreatedAt: now,
+			KeyCommitment: cryptowire.KeyCommitment(u.pkg).String()}
 		var f SealedUnitFinal
 		if f.Descriptor, err = d.Marshal(); err != nil {
 			return SealedDocument{}, err
@@ -222,7 +223,8 @@ func sealDocument(p DocumentParams, units []*SealedUnit, perUnit [][]Recipient, 
 		d := cryptowire.Descriptor{TenantID: p.Tenant.String(), ObjectID: o.Params.Object.String(), LogicalVersionID: o.Params.Version.String(),
 			CryptoVersionID: o.Params.CryptoVersion.String(), BlobID: o.Params.Blob.String(), AttemptID: o.Params.Attempt.String(),
 			Suite: cryptowire.Suite1, Format: cryptowire.Format1, CiphertextSHA256: o.CiphertextSHA256.String(),
-			CiphertextLength: o.CiphertextLength, Signer: signer.Fingerprint.String(), CreatedAt: now}
+			CiphertextLength: o.CiphertextLength, Signer: signer.Fingerprint.String(), CreatedAt: now,
+			KeyCommitment: cryptowire.KeyCommitment(o.pkg).String()}
 		f := SealedUnitFinal{}
 		if f.Descriptor, err = d.Marshal(); err != nil {
 			return SealedDocument{}, err
@@ -277,7 +279,7 @@ func DecryptOriginal(dst io.Writer, ciphertext io.ReadSeeker, pkg Package, key *
 	if ctx.Profile() != 2 || !contextMatches(c, desc) || ctx.Recipient != key.fingerprint {
 		return cryptowire.EnvelopeContext{}, ErrBinding
 	}
-	return ctx, open(dst, ciphertext, pkg.Envelope, ctx, key)
+	return ctx, open(dst, ciphertext, pkg.Envelope, ctx, key, desc.KeyCommitment)
 }
 
 // UnitPackage is what a recipient receives for one unit: its signed
@@ -317,7 +319,7 @@ func DecryptUnit(dst io.Writer, ciphertext io.ReadSeeker, pkg UnitPackage, key *
 	if !unitContextMatches(ctx, d) || ctx.Recipient != key.fingerprint {
 		return cryptowire.UnitDescriptor{}, ErrBinding
 	}
-	return d, open(dst, ciphertext, pkg.Envelope, ctx, key)
+	return d, open(dst, ciphertext, pkg.Envelope, ctx, key, d.KeyCommitment)
 }
 
 func unitContextMatches(c cryptowire.EnvelopeContext, d cryptowire.UnitDescriptor) bool {
@@ -372,6 +374,10 @@ func UnitFromPackage(pkg UnitPackage, key *RecipientKey, trust TrustStore) (*Sea
 	if _, err := payloadAEAD(ks); err != nil {
 		clear(keyPackage)
 		return nil, err
+	}
+	if !committed(keyPackage, d.KeyCommitment) {
+		clear(keyPackage)
+		return nil, ErrBinding
 	}
 	blob, _ := cryptowire.ParseUUID(d.BlobID)
 	return &SealedUnit{Params: UnitParams{Unit: ctx.Object, UnitVersion: ctx.LogicalVersion, CryptoVersion: ctx.CryptoVersion, Blob: blob},

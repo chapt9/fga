@@ -88,6 +88,11 @@ type Descriptor struct {
 	CiphertextLength uint64    `json:"ciphertext_length"`
 	Signer           string    `json:"signer"`
 	CreatedAt        time.Time `json:"created_at"`
+	// KeyCommitment is KeyCommitment of the key package every envelope of
+	// the version wraps, so one signed version decrypts to one plaintext
+	// for every recipient (security review of 4 November 2026, finding 5).
+	// Descriptors from before it carry none.
+	KeyCommitment string `json:"key_commitment,omitempty"`
 }
 
 // DescriptorVersion is the only supported Descriptor.Version.
@@ -127,6 +132,11 @@ func ParseDescriptor(b []byte) (Descriptor, error) {
 	}
 	if _, err := ParseDigest(d.Signer); err != nil {
 		return d, err
+	}
+	if d.KeyCommitment != "" {
+		if _, err := ParseDigest(d.KeyCommitment); err != nil {
+			return d, err
+		}
 	}
 	if d.Version != DescriptorVersion || !SupportedProfile(d.Suite, d.Format) || d.CiphertextLength == 0 || d.CreatedAt.IsZero() {
 		return d, formatErr("descriptor version, profile or length")
