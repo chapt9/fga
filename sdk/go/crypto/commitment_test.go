@@ -2,8 +2,10 @@ package crypto
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"testing"
 
 	"fga/internal/cryptowire"
@@ -66,5 +68,28 @@ func TestKeyCommitment(t *testing.T) {
 	if err := Decrypt(&out, bytes.NewReader(ct), Package{Descriptor: legacy, DescriptorSignature: sig, Envelope: sealed.Envelopes[1]}, f.bob, f.trust); err != nil ||
 		!bytes.Equal(out.Bytes(), plaintext) {
 		t.Fatalf("a descriptor from before the commitment: %v", err)
+	}
+}
+
+// TestKeyCommitmentVector pins the commitment of the shared vectors' key
+// package, which the console's browser implementation checks too
+// (fga-console test/profile1.test.mjs): both compute the same bytes.
+func TestKeyCommitmentVector(t *testing.T) {
+	raw, err := os.ReadFile(vectorFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Exact struct {
+			KeyPackage struct {
+				Bytes []byte `json:"bytes"`
+			} `json:"key_package"`
+		} `json:"exact"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil || len(v.Exact.KeyPackage.Bytes) == 0 {
+		t.Fatalf("vectors: %v", err)
+	}
+	if got := cryptowire.KeyCommitment(v.Exact.KeyPackage.Bytes).String(); got != "sha256:241f14d54445f6c810d434dea6156c848cb99be0ff479f22537f4cd42ed7f645" {
+		t.Fatalf("commitment %s", got)
 	}
 }
