@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"fga/internal/cryptowire"
 	"fga/internal/keyfile"
@@ -413,7 +414,7 @@ func clientCommand(cmd string, args []string) error {
 			return err
 		}
 		for _, r := range results {
-			fmt.Printf("%s\t%s\t%s\n", r.Key, r.DocumentVersion, r.CreatedAt.Format(time.RFC3339))
+			fmt.Printf("%s\t%s\t%s\n", printable(r.Key), r.DocumentVersion, r.CreatedAt.Format(time.RFC3339))
 		}
 		return nil
 	case "get-derived":
@@ -749,7 +750,7 @@ func clientCommand(cmd string, args []string) error {
 				return err
 			}
 			for _, e := range entries {
-				fmt.Printf("%s\t%d\t%s\n", e.Key, e.CiphertextLength, e.Version)
+				fmt.Printf("%s\t%d\t%s\n", printable(e.Key), e.CiphertextLength, e.Version)
 			}
 			if next == "" {
 				return nil
@@ -823,4 +824,17 @@ func serverMode(ctx context.Context, c *client.Client, bucket string) bool {
 func serverVersion(ctx context.Context, c *client.Client, bucket, key, version string) bool {
 	info, err := c.Stat(ctx, bucket, key, version)
 	return err == nil && info.Encryption == "server"
+}
+
+// printable returns key as it is when every character prints, else quoted:
+// a key is any UTF-8, so one may hold terminal escapes or bidi controls
+// that the terminal would act on (security review of 4 November 2026,
+// finding 7).
+func printable(key string) string {
+	for _, r := range key {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(key)
+		}
+	}
+	return key
 }
