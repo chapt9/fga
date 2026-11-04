@@ -78,7 +78,7 @@ func Readings(t *testing.T, d *Deployment, alice, bob *r1test.Client) {
 			t.Fatal(err)
 		}
 		tool, err := datatools.Parse([]byte(`{"format":"fga.data-tool/v1","name":"` + map[string]string{"server": "read_climate", "client": "private_climate"}[mode] +
-			`","description":"Latest climate of one sensor.","source":"` + id + `","operation":"latest","on_unreadable":"skip_fields",
+			`","title":"Climate: latest reading","description":"Latest climate of one sensor.","source":"` + id + `","operation":"latest","on_unreadable":"skip_fields",
 			 "arguments":[{"name":"sensor","type":"string"}],"select":{"argument":"sensor"},"outputs":[` + outputs + `]}`))
 		if err != nil {
 			t.Fatal(err)

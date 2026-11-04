@@ -38,6 +38,7 @@ const MaxToolAnswer = 1 << 20
 type DataToolEntry struct {
 	Name         string          `json:"name"`
 	Version      int             `json:"version"`
+	Title        string          `json:"title,omitempty"`
 	Description  string          `json:"description"`
 	Encryption   string          `json:"encryption"`
 	InputSchema  json.RawMessage `json:"input_schema"`
@@ -178,7 +179,7 @@ func (s *Service) ListDataTools(ctx context.Context, c Caller, limit int, contin
 			if err != nil {
 				return DataToolPage{}, fmt.Errorf("%w: data tool %s cannot be read", ErrUnavailable, t.Name)
 			}
-			page.Tools = append(page.Tools, DataToolEntry{Name: t.Name, Version: t.Active.Version, Description: def.Description,
+			page.Tools = append(page.Tools, DataToolEntry{Name: t.Name, Version: t.Active.Version, Title: def.Title, Description: def.Description,
 				Encryption: t.Encryption, InputSchema: def.InputSchema(), OutputSchema: def.OutputSchema()})
 			if len(page.Tools) == limit {
 				// The page ends here; the next one goes on after this tool.

@@ -28,9 +28,16 @@ func TestRecord(t *testing.T) {
 	if err != nil || d.Check() != nil || d.Fit(src) != nil {
 		t.Fatalf("the record: %v, %v, %v", err, d.Check(), d.Fit(src))
 	}
+	// A title is optional, one line for people (MCP Tool.title).
+	if titled, err := Parse([]byte(strings.Replace(tool, `"description":`, `"title":"Temperature: past readings","description":`, 1))); err != nil ||
+		titled.Check() != nil || titled.Title != "Temperature: past readings" {
+		t.Fatalf("a titled record: %+v, %v, %v", titled, err, titled.Check())
+	}
 	for name, change := range map[string][2]string{
 		"a dotted name":        {`"name":"history_t"`, `"name":"data.list"`},
 		"a long description":   {`"Past temperatures."`, `"` + strings.Repeat("x", 1001) + `"`},
+		"a long title":         {`"description":`, `"title":"` + strings.Repeat("x", 101) + `","description":`},
+		"a two-line title":     {`"description":`, `"title":"Climate:\nlatest","description":`},
 		"a control character":  {`"Past temperatures."`, `"Past\u0007"`},
 		"an unknown operation": {`"operation":"history"`, `"operation":"sum"`},
 		"history bounds":       {`"max_readings":5`, `"max_readings":500`},

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -46,6 +47,8 @@ const (
 const (
 	MaxArguments   = 8
 	MaxDescription = 1000
+	// MaxTitle bounds a tool's title.
+	MaxTitle = 100
 	// DefaultReadings and MaxReadings bound a history call's readings.
 	DefaultReadings = 50
 	MaxReadings     = 200
@@ -67,8 +70,12 @@ func ValidName(s string) bool { return registry.IsDataToolName(s) }
 
 // Definition is a data tool record as submitted and stored.
 type Definition struct {
-	Format       string             `json:"format"`
-	Name         string             `json:"name"`
+	Format string `json:"format"`
+	Name   string `json:"name"`
+	// Title is a short name for people, shown by MCP clients as the tool's
+	// title (MCP Tool.title); optional, plain text of up to MaxTitle
+	// characters.
+	Title        string             `json:"title,omitempty"`
 	Description  string             `json:"description"`
 	Source       string             `json:"source"`
 	Operation    string             `json:"operation"`
@@ -130,9 +137,12 @@ func Parse(b []byte) (Definition, error) {
 }
 
 // plain reports whether s is plain text of 1 to MaxDescription characters.
-func plain(s string) bool {
+func plain(s string) bool { return plainOf(s, MaxDescription) }
+
+// plainOf reports whether s is plain text of 1 to max characters.
+func plainOf(s string, max int) bool {
 	n := utf8.RuneCountInString(s)
-	return utf8.ValidString(s) && n > 0 && n <= MaxDescription &&
+	return utf8.ValidString(s) && n > 0 && n <= max &&
 		!slices.ContainsFunc([]rune(s), func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' })
 }
 
@@ -145,6 +155,8 @@ func (d Definition) Check() error {
 		return invalid("format %q, want %q", d.Format, Format)
 	case !ValidName(d.Name):
 		return invalid("tool name %q: a lower-case letter, then up to 63 lower-case letters, digits and underscores", d.Name)
+	case d.Title != "" && (!plainOf(d.Title, MaxTitle) || strings.ContainsAny(d.Title, "\n\t")):
+		return invalid("the title is one line of plain text of at most %d characters", MaxTitle)
 	case !plain(d.Description):
 		return invalid("the description is plain text of 1 to %d characters", MaxDescription)
 	case !sources.ValidID(d.Source):

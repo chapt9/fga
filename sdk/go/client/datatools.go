@@ -21,6 +21,7 @@ import (
 type DataTool struct {
 	Name         string          `json:"name"`
 	Version      int             `json:"version"`
+	Title        string          `json:"title,omitempty"`
 	Description  string          `json:"description"`
 	Encryption   string          `json:"encryption"`
 	InputSchema  json.RawMessage `json:"input_schema"`

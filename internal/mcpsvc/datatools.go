@@ -45,6 +45,7 @@ func (s *Service) dataTools(ctx context.Context, c caller) []*mcp.Tool {
 		var page struct {
 			Tools []struct {
 				Name         string         `json:"name"`
+				Title        string         `json:"title"`
 				Description  string         `json:"description"`
 				InputSchema  map[string]any `json:"input_schema"`
 				OutputSchema map[string]any `json:"output_schema"`
@@ -62,7 +63,7 @@ func (s *Service) dataTools(ctx context.Context, c caller) []*mcp.Tool {
 			if !dataToolName.MatchString(t.Name) {
 				return nil
 			}
-			out = append(out, &mcp.Tool{Name: t.Name, Description: t.Description + dataNote, InputSchema: t.InputSchema,
+			out = append(out, &mcp.Tool{Name: t.Name, Title: t.Title, Description: t.Description + dataNote, InputSchema: t.InputSchema,
 				OutputSchema: t.OutputSchema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(bool)}})
 		}
 		if continuation = page.Continuation; continuation == "" {
