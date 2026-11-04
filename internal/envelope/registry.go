@@ -387,28 +387,45 @@ func (s *Service) Publish(ctx context.Context, c enforce.Caller, bucketName, key
 	if err != nil {
 		return EnvelopeRef{}, err
 	}
+	// A refusal that depends on the version's or the recipient key's state
+	// is answered only once the caller is authorized, so a denied caller
+	// learns nothing about either (CNT-004; security review of 4 November
+	// 2026, finding 1). The check for it carries no plan, so it opens no
+	// approval.
+	var refusal error
 	if ctxv.Tenant != tenantID || ctxv.Object != objectID || ctxv.LogicalVersion.String() != versionID || ctxv.CryptoVersion != cryptoVersion ||
 		ctxv.CiphertextSHA256.String() != sum || int64(ctxv.CiphertextLength) != length {
-		return EnvelopeRef{}, fmt.Errorf("%w: envelope bindings", ErrInvalid)
+		refusal = fmt.Errorf("%w: envelope bindings", ErrInvalid)
 	}
 	fp := ctxv.Recipient.String()
 	var keyVersion uint64
 	if err := s.d.Catalog.Pool().QueryRow(ctx, `SELECT key_version FROM recipient_keys WHERE tenant = $1 AND fingerprint = $2 AND status = 'ACTIVE'`,
-		c.Tenant, fp).Scan(&keyVersion); err != nil || keyVersion != ctxv.RecipientKeyVersion {
-		return EnvelopeRef{}, fmt.Errorf("%w: recipient key", ErrInvalid)
+		c.Tenant, fp).Scan(&keyVersion); (err != nil || keyVersion != ctxv.RecipientKeyVersion) && refusal == nil {
+		refusal = fmt.Errorf("%w: recipient key", ErrInvalid)
 	}
 	id := cryptowire.NewUUID()
 	obj := canonical("storage.object", objectID.String())
+	checks := []enforce.Check{
+		{ID: "share", Role: registry.RoleShare, Action: "share", Resource: obj, Version: versionID},
+		{ID: "envelope", Role: registry.RoleEnvelope, Action: "create", Resource: alias(registry.PlannedEnvelope, objectID.String()+"|"+fp+"|"+id.String())},
+		{ID: "recipient-read", Role: registry.RoleRecipientRead, Action: "read", Resource: obj, Version: versionID, Recipient: fp},
+		{ID: "recipient-key", Role: registry.RoleRecipientKey, Action: "receive-key", Resource: canonical("crypto.recipient", fp), Recipient: fp},
+	}
+	if refusal != nil {
+		_, _, err := enforce.Authorize(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, registry.OpPublishEnvelope, enforce.KeysAudience, false, checks)
+		switch {
+		case errors.Is(err, enforce.ErrNotFound):
+			return EnvelopeRef{}, ErrNotFound
+		case err != nil:
+			return EnvelopeRef{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		return EnvelopeRef{}, refusal
+	}
 	// The share carries a plan, so a policy can make it subject to an
 	// approval (APR-001); the plan names the version, recipient and
 	// generation, not the per-attempt envelope.
 	_, rec, err := enforce.AuthorizeWith(ctx, s.d.Decider, s.d.Verifier, s.d.Catalog, c, registry.OpPublishEnvelope, enforce.KeysAudience, true,
-		[]enforce.Check{
-			{ID: "share", Role: registry.RoleShare, Action: "share", Resource: obj, Version: versionID},
-			{ID: "envelope", Role: registry.RoleEnvelope, Action: "create", Resource: alias(registry.PlannedEnvelope, objectID.String()+"|"+fp+"|"+id.String())},
-			{ID: "recipient-read", Role: registry.RoleRecipientRead, Action: "read", Resource: obj, Version: versionID, Recipient: fp},
-			{ID: "recipient-key", Role: registry.RoleRecipientKey, Action: "receive-key", Resource: canonical("crypto.recipient", fp), Recipient: fp},
-		}, enforce.Options{Plan: &opplan.Summary{Action: "share",
+		checks, enforce.Options{Plan: &opplan.Summary{Action: "share",
 			Targets: []opplan.Target{{Role: registry.RoleShare, Type: "storage.object", ID: objectID.String(), Version: versionID}},
 			Changes: map[string]string{"recipient": fp, "generation": strconv.FormatUint(ctxv.Generation, 10)},
 			Details: mustJSON(map[string]string{"bucket": bucketName, "key": key})}})

@@ -102,6 +102,12 @@ func (s *Service) SetUnitLabel(ctx context.Context, c Caller, bucketName, key, v
 		return LabelOutcome{}, err
 	}
 	if d.units != textUnits {
+		// That the key is a collection is answered only to a caller who may
+		// discover its version, as the unit listing answers it (CNT-004;
+		// security review of 4 November 2026, finding 1).
+		if err := s.discoverGate(ctx, c, d); err != nil {
+			return LabelOutcome{}, err
+		}
 		return LabelOutcome{}, fmt.Errorf("%w: text entries take their collection's label", ErrInvalid)
 	}
 	return s.labelResource(ctx, c, bucketName, "document.text_unit", m.entry.Unit, registry.RoleUnit, registry.OpUnitLabel, registry.OpUnitRelabel,
@@ -154,7 +160,7 @@ type labelTarget struct {
 // metadata revision, so every decision and lease bound to the old one
 // fails (LAB-005); ciphertext and envelopes are unchanged.
 func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label string) (LabelOutcome, error) {
-	if len(label) > 64 {
+	if label == "" || len(label) > 64 {
 		return LabelOutcome{}, ErrInvalid
 	}
 	orderGen, order, err := catalog.LabelOrder(ctx, s.d.Catalog.Pool(), false)
@@ -165,6 +171,14 @@ func (s *Service) setLabel(ctx context.Context, c Caller, t labelTarget, label s
 		return LabelOutcome{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	if err := checkLabel(order, label, t.bucket.Label); err != nil {
+		// The refusal names the bucket's floor and that the resource exists,
+		// so it is answered only to a caller who may label the resource
+		// (CNT-004; security review of 4 November 2026, finding 1). The
+		// check carries no plan, so it opens no approval.
+		if _, _, perr := s.decide(ctx, c, t.labelOp, Audience, false,
+			[]check{{id: t.role, role: t.role, action: "label", ref: planned(registry.ChangeLabel, t.id+"|"+label)}}); perr != nil {
+			return LabelOutcome{}, perr
+		}
 		return LabelOutcome{}, err
 	}
 	previous, _ := t.attrs["label"].(string)

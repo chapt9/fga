@@ -166,6 +166,11 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 
 	in.kind = "object"
 	o, err := s.objectByKey(ctx, s.d.Catalog.Pool(), c.Tenant, b.ID, r.Key)
+	// A refusal that depends on the key's state (its kind, its label) is
+	// answered only once the caller is authorized, so a denied caller learns
+	// nothing about the key (CNT-004; security review of 4 November 2026,
+	// finding 1). The first refusal found is the one answered.
+	var refusal error
 	if r.Derived {
 		// A derived output is a key of its own kind: a new key, or a new
 		// version of an existing derived output.
@@ -181,8 +186,11 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 			err = ErrNotFound
 		case qerr != nil:
 			return storedIntent{}, qerr
-		case kind != "derived" || r.IfMatch != "":
-			return storedIntent{}, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
+		case kind != "derived":
+			// Decided as a new key of the bucket, then refused.
+			err, refusal = ErrNotFound, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
+		case r.IfMatch != "":
+			err, refusal = nil, fmt.Errorf("%w: the key holds an object or document", ErrConflict)
 		default:
 			err = nil
 		}
@@ -199,8 +207,8 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 			in.attributes["kind"] = "derived"
 		}
 		if r.Label != "" {
-			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
-				return storedIntent{}, err
+			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil && refusal == nil {
+				refusal = err
 			}
 			if !r.Derived {
 				in.attributes["label"] = r.Label
@@ -217,8 +225,8 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 		// A new version of a derived output; a proposed label may only
 		// raise its label.
 		if r.Label != "" {
-			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil {
-				return storedIntent{}, err
+			if err := s.labelAllowed(ctx, r.Label, b.Label); err != nil && refusal == nil {
+				refusal = err
 			}
 		}
 		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
@@ -226,7 +234,7 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 		checks = []check{{id: "output", role: registry.RoleOutput, action: "new-version", ref: canonical("document.derived", o.ID.String())}}
 	default:
 		if current, _ := o.Attributes["label"].(string); r.Label != "" && r.Label != current {
-			return storedIntent{}, fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
+			refusal = fmt.Errorf("%w: an existing key changes its label with the label operation", ErrInvalid)
 		}
 		in.label = ""
 		in.Object, in.expectedGen, in.scope, in.attributes = o.ID, o.Generation, o.Scope, o.Attributes
@@ -236,6 +244,9 @@ func (s *Service) begin(ctx context.Context, c Caller, r BeginRequest, mode stri
 	_, rec, err := s.decide(ctx, c, op, Audience, true, checks)
 	if err != nil {
 		return storedIntent{}, err
+	}
+	if refusal != nil {
+		return storedIntent{}, refusal
 	}
 	// Each route uploads in its own mode only (ENC-002), and no object is
 	// begun in a source's bucket (ING-002).

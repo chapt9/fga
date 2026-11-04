@@ -296,6 +296,9 @@ func TestPostingNeedsItsOwnRight(t *testing.T) {
 		"a member under the device's key":  {mia, `{"sensor":"gh-north-1","temperature":99}`},
 		"the owner under a new key":        {owner, `{"sensor":"owner-made","temperature":99}`},
 		"the owner under the device's key": {owner, `{"sensor":"gh-north-1","temperature":99}`},
+		// A payload that does not fit the layout is refused only to a caller
+		// who may post (CNT-004; security review of 4 November 2026, finding 1).
+		"a member with a payload that does not fit": {mia, `[1]`},
 	} {
 		if _, err := r.post(c.caller, "greenhouse-climate", "m-"+name, c.payload); !errors.Is(err, content.ErrNotFound) {
 			t.Errorf("%s posts: %v", name, err)

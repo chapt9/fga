@@ -63,6 +63,12 @@ func (s *Service) PutReading(ctx context.Context, c Caller, r ReadingRequest, pa
 	if err != nil {
 		return ReadingPublished{}, err
 	}
+	// Nothing of the layout is answered, not even that a payload does not
+	// fit it, to a caller who may not post (CNT-004; security review of 4
+	// November 2026, finding 1).
+	if err := s.postGate(ctx, c, src); err != nil {
+		return ReadingPublished{}, err
+	}
 	splitter, err := def.Layout().Compile()
 	if err != nil {
 		return ReadingPublished{}, fmt.Errorf("%w: the source's active version: %v", ErrUnavailable, err)

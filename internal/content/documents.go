@@ -209,8 +209,13 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 	                                         JOIN resources r ON r.tenant = o.tenant AND r.id = o.id::text
 	                                        WHERE o.tenant = $1 AND o.bucket = $2 AND o.key = $3 AND o.kind IN ('object', 'document')`,
 		c.Tenant, b.ID, r.Key).Scan(&in.Document, &kind, &current, &in.expectedGen, &in.scope, &in.attributes)
+	// A refusal that depends on the key's state (its kind, its current
+	// version) is answered only once the caller is authorized, so a denied
+	// caller learns nothing about the key (CNT-004; security review of 4
+	// November 2026, finding 1). The first refusal found is the one answered.
+	var refusal error
 	if (err == nil || errors.Is(err, pgx.ErrNoRows)) && r.BaseVersion != "" && r.BaseVersion != current {
-		return storedDocIntent{}, fmt.Errorf("%w: the document has a newer version than the one its units were selected from", ErrConflict)
+		refusal = fmt.Errorf("%w: the document has a newer version than the one its units were selected from", ErrConflict)
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -228,17 +233,27 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		}
 	case err != nil:
 		return storedDocIntent{}, err
-	case kind != "document":
-		return storedDocIntent{}, fmt.Errorf("%w: the key holds an object", ErrConflict)
+	case kind != "document" && refusal == nil:
+		// Decided as a new version of what the key holds, then refused.
+		refusal = fmt.Errorf("%w: the key holds an object", ErrConflict)
 	}
 	docLabel, _ := in.attributes["label"].(string)
 	docKind, _ := in.attributes["kind"].(string)
 	types := unitsOf(docKind)
-	if r.Collection != (docKind == "collection") || types == textEntries && r.Original {
-		return storedDocIntent{}, fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
+	if (r.Collection != (docKind == "collection") || types == textEntries && r.Original) && refusal == nil {
+		refusal = fmt.Errorf("%w: a key keeps its kind, and a collection has no original", ErrInvalid)
 	}
-	if types == textEntries && !in.newDocument && r.BaseVersion == "" && slices.ContainsFunc(r.Units, func(u DocumentUnitSpec) bool { return u.ReuseUnit != "" }) {
-		return storedDocIntent{}, fmt.Errorf("%w: a collection version that keeps entries names the version it extends", ErrInvalid)
+	if types == textEntries && !in.newDocument && r.BaseVersion == "" && refusal == nil &&
+		slices.ContainsFunc(r.Units, func(u DocumentUnitSpec) bool { return u.ReuseUnit != "" }) {
+		refusal = fmt.Errorf("%w: a collection version that keeps entries names the version it extends", ErrInvalid)
+	}
+	op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
+	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
+	if err != nil {
+		return storedDocIntent{}, err
+	}
+	if refusal != nil {
+		return storedDocIntent{}, refusal
 	}
 	var reused []UnitIntent
 	for i, u := range r.Units {
@@ -283,11 +298,6 @@ func (s *Service) beginDocument(ctx context.Context, c Caller, r DocumentBeginRe
 		in.Original = &UnitIntent{Position: -1, IntentID: cryptowire.NewUUID().String(), Unit: cryptowire.NewUUID().String(),
 			UnitVersion: cryptowire.NewUUID().String(), CryptoVersion: cryptowire.NewUUID().String(), Blob: cryptowire.NewUUID().String(),
 			Attempt: cryptowire.NewUUID().String()}
-	}
-	op, ch := docChecks(in, registry.OpDocBeginCreate, registry.OpDocBeginVersion)
-	_, rec, err := s.decide(ctx, c, op, Audience, true, []check{ch})
-	if err != nil {
-		return storedDocIntent{}, err
 	}
 	// Each route publishes in its own mode only (ENC-002), and only the
 	// source routes begin in a source's bucket (ING-002).

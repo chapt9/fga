@@ -297,16 +297,7 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 	// Nothing of a version is answered, not even that it exists or that a
 	// continuation is malformed, to a caller who may not discover it: a
 	// hidden document looks like an absent one (CNT-004).
-	discoverOp, discover := registry.OpDocDiscover, []check{{id: "version", role: registry.RoleVersion, action: "discover",
-		ref: canonical("document.version", d.id.String())}}
-	if !d.current {
-		discoverOp, discover = registry.HistoryOp(discoverOp), append(discover, d.historyCheck("discover-history"))
-	}
-	_, rec, err := s.decide(ctx, c, discoverOp, Audience, false, discover)
-	if err != nil {
-		return UnitPage{}, err
-	}
-	if err := s.checked(ctx, rec); err != nil {
+	if err := s.discoverGate(ctx, c, d); err != nil {
 		return UnitPage{}, err
 	}
 	id, err := s.d.Catalog.GetIdentity(ctx, c.Tenant, c.Principal)
@@ -372,6 +363,21 @@ func (s *Service) ListUnits(ctx context.Context, c Caller, bucketName, key, vers
 		return UnitPage{}, err
 	}
 	return page, nil
+}
+
+// discoverGate decides discover on d (with discover-history for an older
+// version) and rechecks it, before anything of d is answered.
+func (s *Service) discoverGate(ctx context.Context, c Caller, d docVersion) error {
+	discoverOp, discover := registry.OpDocDiscover, []check{{id: "version", role: registry.RoleVersion, action: "discover",
+		ref: canonical("document.version", d.id.String())}}
+	if !d.current {
+		discoverOp, discover = registry.HistoryOp(discoverOp), append(discover, d.historyCheck("discover-history"))
+	}
+	_, rec, err := s.decide(ctx, c, discoverOp, Audience, false, discover)
+	if err != nil {
+		return err
+	}
+	return s.checked(ctx, rec)
 }
 
 // Manifest returns a document version's signed manifest only if the
