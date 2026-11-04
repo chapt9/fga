@@ -114,6 +114,12 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	if err := releases.Activate(ctx, bundle); err != nil {
 		return nil, err
 	}
+	// The catalog remembers the highest epoch activated, so a restart with
+	// an older bundle is refused (security review of 4 November 2026,
+	// finding 6).
+	if err := store.RecordActivatedEpoch(ctx, bundle.Epoch); err != nil {
+		return nil, err
+	}
 	// Enforcing roles read the active label order from the catalog to tell
 	// a raise from a lowering; decisions bind its generation (D-06).
 	if err := store.SetLabelOrder(ctx, bundle.Info.LabelGeneration, bundle.Info.LabelOrder); err != nil {

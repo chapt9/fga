@@ -77,6 +77,24 @@ func (s *Store) RaiseEpoch(ctx context.Context, tenant string, epoch uint64) err
 	return nil
 }
 
+// RecordActivatedEpoch records that fga-decision activated a release of
+// epoch. An epoch below the highest one recorded is refused, so a restart
+// with an older bundle does not roll policy back: a rollback is a new
+// release with a higher epoch (REL-003; security review of 4 November
+// 2026, finding 6).
+func (s *Store) RecordActivatedEpoch(ctx context.Context, epoch uint64) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE authority_state SET activated_epoch = $1 WHERE id = 1 AND activated_epoch <= $1`, epoch)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var recorded uint64
+		_ = s.pool.QueryRow(ctx, `SELECT activated_epoch FROM authority_state WHERE id = 1`).Scan(&recorded)
+		return fmt.Errorf("catalog: epoch %d is below the activated epoch %d; a rollback is a new release with a higher epoch", epoch, recorded)
+	}
+	return nil
+}
+
 // SetAdmission opens or closes admission and, when incarnation is not 0,
 // moves to that recovery incarnation, which must be higher than the
 // current one (AVL-008).
