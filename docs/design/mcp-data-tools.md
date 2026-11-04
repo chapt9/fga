@@ -755,6 +755,19 @@ Changes to the demo's directory, all through `fga-admin`:
 
 Found and fixed: the sources table pushed its buttons out of sight at the console's usual width, and reviews were confirmed with the danger style (fga-console 82ba93d). Before the check, a code read found that client-mode tool packages carried Go's default field names instead of the unit package's wire shape (fixed in 5c01eee).
 
+### Console builder and titles (4 November 2026)
+
+The owner asked for a more intuitive builder: the fields received under the device's own names, the fields kept, and those published on MCP, with a way to tell which kind of data a tool serves, within the MCP standard and without a per-kind MCP path. Built as fga `data-tool-builder` 4a9eea6 (stop 3, `title`) and fga-console `data-builder` cf2b162 (stop 1, receive and keep) and 2d6404e (stop 2, publish and who may use it). The console's browser client also writes and checks `key_commitment` (7f60041), which the storage role requires since the security review of 4 November 2026; both implementations pin the same commitment of the shared vectors (d1d8d04).
+
+A kind of data is its source: rules can name it (`resource.attributes.source`, which a bundle with such a rule validates with), the title shows it to people, and every caller still sees only the tools its rules allow on the one MCP endpoint. Open: fga-mcp announces that its tool list can change but sends no `notifications/tools/list_changed` when a data tool is published or turned off; clients see the change when they list again.
+
+The demo moved to these commits the same day (migration 0032 applied, `activated_epoch` 6 recorded, no bundle change; a snapshot from before is in the session's scratchpad, `demo-before-main`, temporary). Checked against the running roles:
+- **Stop 1.** In the built-in browser, a pasted sample with a nested `gps` member listed `/gps/lat` and `/gps/lon` as fields; setting them Restricted and leaving `/observed_at` out formed the groups internal (3 fields) and restricted (2), and chose `/sensor` to name the device. Not saved.
+- **Stop 2.** The new tool form listed every field of `greenhouse-climate` with its name on MCP, suggested the name `greenhouse_climate_latest` and the title "Greenhouse climate: latest reading", and showed alice, bob, lena and rita as allowed under `members-use-data-tools`, carl not.
+- **Stop 3.** root gave `read_climate` that title as draft version 2 and published it. With the official MCP Go SDK as client (protocol 2026-07-28), lena listed the five data tools, `read_climate` with its title; agent-7 for lena listed `read_climate` and `read_climate_strict`; carl listed none. Calling `read_climate` for `gh-north-1`, lena got temperature and humidity, alice temperature only, carl an error; the client accepted every answer against the tool's output schema.
+
+Changes to the demo: `read_climate` version 2, which adds the title.
+
 ## Decisions
 
 The owner accepted every recommendation of D-A to D-I on 3 November 2026. The alternatives stay here for the record.
