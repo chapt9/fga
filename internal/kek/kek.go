@@ -22,8 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"sync"
 	"time"
 
@@ -149,9 +147,6 @@ func (r *Ring) Versions(tenant string) []uint32 {
 	}
 	return out
 }
-
-// Tenants returns the tenants that have KEKs.
-func (r *Ring) Tenants() []string { return slices.Sorted(maps.Keys(r.tenants)) }
 
 func (r *Ring) cipher(tenant string, version uint32) (tink.AEAD, error) {
 	versions := r.tenants[tenant]

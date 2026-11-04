@@ -109,13 +109,6 @@ func (f *Fixture) check(t *testing.T, observed map[string]any) {
 	t.Logf("CASE %s fixture %s %s", f.CaseID, f.digest, result)
 }
 
-// unbound reports a case this implementation cannot express.
-func (f *Fixture) unbound(t *testing.T, reason string) {
-	t.Helper()
-	t.Logf("CASE %s fixture %s UNBOUND: %s", f.CaseID, f.digest, reason)
-	t.Skipf("UNBOUND: %s", reason)
-}
-
 func mustTime(t *testing.T, s any) time.Time {
 	t.Helper()
 	ts, err := time.Parse(time.RFC3339, s.(string))

@@ -28,7 +28,6 @@ var (
 	ErrSelfApproval = errors.New("the requester or acting agent cannot approve")
 	ErrNotPending   = errors.New("approval is no longer pending")
 	ErrExpired      = errors.New("approval expired")
-	ErrNotUsable    = errors.New("approval is not approved for this operation")
 )
 
 // State of an approval.

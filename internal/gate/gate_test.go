@@ -22,25 +22,18 @@ func (c capabilityTable) Allows(_ context.Context, _, actor, rt, action string) 
 	return c[[3]string{actor, rt, action}], nil
 }
 
-type epochs map[string]uint64
-
-func (e epochs) RequiredEpoch(_ context.Context, tenant string) (uint64, error) {
-	return e[tenant], nil
-}
-
 type fixture struct {
 	gate        *Gate
 	identities  *identity.MemoryStore
 	delegations *delegation.MemoryStore
 	catalog     *registry.MemoryCatalog
-	epochs      epochs
 	clock       *time.Time
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{identities: identity.NewMemoryStore(), delegations: delegation.NewMemoryStore(),
-		catalog: registry.NewMemoryCatalog(), epochs: epochs{"t-acme": 5}}
+		catalog: registry.NewMemoryCatalog()}
 	now := start
 	f.clock = &now
 	f.identities.Put(identity.Identity{ID: "user-42", Tenant: "t-acme", Revision: 88, Roles: []string{"reviewer"},

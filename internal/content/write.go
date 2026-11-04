@@ -554,9 +554,6 @@ type Prepared struct {
 	rec  signing.Record
 }
 
-// Decision is the signed record the commit will enforce.
-func (p Prepared) Decision() signing.Record { return p.rec }
-
 // PreparePublish is the first half of Finalize: it validates the
 // descriptor and initial envelopes and obtains the publication decision,
 // without committing. CommitPublish completes it. An authority change in

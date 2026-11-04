@@ -141,9 +141,6 @@ func keysError(err error) error {
 	return err
 }
 
-// ErrDelivery is returned when the keys role refuses a delivery.
-var ErrDelivery = errors.New("rpc: the keys role refused the delivery")
-
 // Deliver implements content.EnvelopeDelivery.
 func (c KeysClient) Deliver(ctx context.Context, d signing.Signed, envelopeID string, extra ...signing.Signed) (envelope.Delivered, error) {
 	var out keysapi.DeliveredBody

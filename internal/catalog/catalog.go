@@ -172,11 +172,6 @@ type grantJSON struct {
 	Actions      []string `json:"actions"`
 }
 
-// GetDelegation reads one delegation of a tenant.
-func (s *Store) GetDelegation(ctx context.Context, tenant string, id delegation.ID) (delegation.Delegation, error) {
-	return getDelegation(ctx, s.pool, tenant, id)
-}
-
 func getDelegation(ctx context.Context, q Querier, tenant string, id delegation.ID) (delegation.Delegation, error) {
 	d := delegation.Delegation{ID: id, Tenant: tenant}
 	var grants []grantJSON
