@@ -115,7 +115,7 @@ func (c IssuerConfig) Verifier(now func() time.Time) (*Verifier, error) {
 		}
 		v.keys = func(kid string) (any, bool) { k, ok := set[kid]; return k, ok }
 	default:
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: refuseRedirect}
 		if c.JWKSCAFile != "" {
 			pem, err := os.ReadFile(c.JWKSCAFile)
 			if err != nil {
@@ -255,3 +255,7 @@ func (r *RemoteJWKS) fetch() (map[string]any, error) {
 	}
 	return parseJWKS(raw)
 }
+
+// refuseRedirect: the key set is read at its configured URL only
+// (security review of 4 November 2026, finding 9).
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

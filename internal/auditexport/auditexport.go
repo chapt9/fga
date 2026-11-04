@@ -141,6 +141,9 @@ func New(pool *pgxpool.Pool, dir string, o Options) (*Exporter, error) {
 		if c.HTTP == nil {
 			c.HTTP = &http.Client{Timeout: 30 * time.Second}
 		}
+		if c.HTTP.CheckRedirect == nil {
+			c.HTTP.CheckRedirect = refuseRedirect
+		}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -606,3 +609,8 @@ func Backlog(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_outbox WHERE delivered_at IS NULL`).Scan(&n)
 	return n, err
 }
+
+// refuseRedirect makes a redirect the collector's answer, not a step: Go
+// would repeat the POST as a GET without the file and forward the token
+// (security review of 4 November 2026, finding 9).
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
