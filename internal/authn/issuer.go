@@ -181,6 +181,9 @@ type RemoteJWKS struct {
 	mu      sync.Mutex
 	keys    map[string]any
 	fetched time.Time
+	// fetching is closed when the fetch in flight ends; nil when there is
+	// none. One fetch runs at a time, outside the lock.
+	fetching chan struct{}
 }
 
 // JWKS refresh: hourly, and on an unknown key ID at most once a minute.
@@ -194,19 +197,46 @@ func NewRemoteJWKS(url string, client *http.Client, now func() time.Time) *Remot
 	return &RemoteJWKS{url: url, client: client, now: now}
 }
 
-// Key returns the key for kid.
-func (r *RemoteJWKS) Key(kid string) (any, bool) {
+// Key returns the key for kid. A fetch runs outside the lock, so tokens
+// under the keys at hand are verified meanwhile; a token under an unknown
+// key waits for the set a fetch in flight brings (security review of 4
+// November 2026, finding 3).
+func (r *RemoteJWKS) Key(kid string) (k any, ok bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	k, ok := r.keys[kid]
-	since := r.now().Sub(r.fetched)
-	if r.fetched.IsZero() || since >= jwksRefresh || !ok && since >= jwksMinFetch {
-		r.fetched = r.now()
-		if keys, err := r.fetch(); err == nil {
-			r.keys = keys
-			k, ok = keys[kid]
+	k, ok = r.keys[kid]
+	if done := r.fetching; done != nil {
+		r.mu.Unlock()
+		if ok {
+			return k, true
 		}
+		<-done
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		k, ok = r.keys[kid]
+		return k, ok
 	}
+	since := r.now().Sub(r.fetched)
+	if !(r.fetched.IsZero() || since >= jwksRefresh || !ok && since >= jwksMinFetch) {
+		r.mu.Unlock()
+		return k, ok
+	}
+	done := make(chan struct{})
+	r.fetching, r.fetched = done, r.now()
+	r.mu.Unlock()
+	// The fetch is finished even if it panics, so no caller waits forever.
+	var keys map[string]any
+	var err error
+	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if err == nil {
+			r.keys = keys
+		}
+		r.fetching = nil
+		close(done)
+		k, ok = r.keys[kid]
+	}()
+	keys, err = r.fetch()
 	return k, ok
 }
 
