@@ -56,7 +56,7 @@ The decision role checks the limits after resolving the targets and before the r
 - **A removal is journaled first** (`journal.SignInKeyRemoved`), and reconcile removes the key again after a restore. A removed key is never registered again.
 - **Admin API**, for administrators only (ADM-002):
   - `GET /v1/admin/identities/{id}/sign-in-keys`;
-  - `POST …/sign-in-keys` with `{"public_key", "label", "limits"}`, answering the fingerprint;
+  - `POST …/sign-in-keys` with `{"public_key", "label", "limits"}`, answering the fingerprint; the label is one line of plain text of at most 100 characters, without control or invisible characters (`internal/plaintext`);
   - `POST …/sign-in-keys/{fp}/remove`.
 - **`fga-admin sign-in-key add|remove|list`**, for the first administrator and on the server. The administrator checks the key's fingerprint with its owner before registering it.
 

@@ -17,12 +17,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"fga/internal/jsonunits"
+	"fga/internal/plaintext"
 	"fga/internal/registry"
 	"fga/internal/sources"
 	"fga/internal/strictjson"
@@ -136,15 +134,9 @@ func Parse(b []byte) (Definition, error) {
 	return d, nil
 }
 
-// plain reports whether s is plain text of 1 to MaxDescription characters.
-func plain(s string) bool { return plainOf(s, MaxDescription) }
-
-// plainOf reports whether s is plain text of 1 to max characters.
-func plainOf(s string, max int) bool {
-	n := utf8.RuneCountInString(s)
-	return utf8.ValidString(s) && n > 0 && n <= max &&
-		!slices.ContainsFunc([]rune(s), func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' })
-}
+// plain reports whether s is plain text of 1 to MaxDescription characters,
+// in lines (package plaintext).
+func plain(s string) bool { return plaintext.Text(s, MaxDescription) }
 
 // Check applies the record's own rules: the format, the name, a plain
 // description, the source's ID, the operation, the arguments, one way to
@@ -155,8 +147,8 @@ func (d Definition) Check() error {
 		return invalid("format %q, want %q", d.Format, Format)
 	case !ValidName(d.Name):
 		return invalid("tool name %q: a lower-case letter, then up to 63 lower-case letters, digits and underscores", d.Name)
-	case d.Title != "" && (!plainOf(d.Title, MaxTitle) || strings.ContainsAny(d.Title, "\n\t")):
-		return invalid("the title is one line of plain text of at most %d characters", MaxTitle)
+	case d.Title != "" && !plaintext.Line(d.Title, MaxTitle):
+		return invalid("the title is one line of plain text of at most %d characters, without control or invisible characters", MaxTitle)
 	case !plain(d.Description):
 		return invalid("the description is plain text of 1 to %d characters", MaxDescription)
 	case !sources.ValidID(d.Source):

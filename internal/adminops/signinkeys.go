@@ -4,16 +4,17 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"regexp"
 
 	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/cryptowire"
+	"fga/internal/plaintext"
 )
 
-// A label names where a sign-in key is used, such as "Dana's laptop,
-// browser" or "greenhouse sensor 1".
-var keyLabel = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,100}$`)
+// MaxKeyLabel bounds a sign-in key's label, which names where the key is
+// used, such as "Dana's laptop, browser" or "greenhouse sensor 1": one
+// line of plain text (package plaintext).
+const MaxKeyLabel = 100
 
 // AddSignInKey registers an Ed25519 public key as a sign-in key of an
 // account, with limits below the account's rights
@@ -26,8 +27,8 @@ func (o Ops) AddSignInKey(ctx context.Context, who Who, tenant, principal string
 	if len(public) != ed25519.PublicKeySize || !cryptowire.ValidEd25519PublicKey(public) {
 		return "", invalid("not a usable Ed25519 public key")
 	}
-	if !keyLabel.MatchString(label) {
-		return "", invalid("a key's label is 1 to 100 printable characters")
+	if !plaintext.Line(label, MaxKeyLabel) {
+		return "", invalid("a key's label is one line of 1 to %d characters, without control or invisible characters", MaxKeyLabel)
 	}
 	if err := limits.Validate(); err != nil {
 		return "", invalid("%v", err)

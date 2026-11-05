@@ -34,19 +34,26 @@ func TestRecord(t *testing.T) {
 		t.Fatalf("a titled record: %+v, %v, %v", titled, err, titled.Check())
 	}
 	for name, change := range map[string][2]string{
-		"a dotted name":        {`"name":"history_t"`, `"name":"data.list"`},
-		"a long description":   {`"Past temperatures."`, `"` + strings.Repeat("x", 1001) + `"`},
-		"a long title":         {`"description":`, `"title":"` + strings.Repeat("x", 101) + `","description":`},
-		"a two-line title":     {`"description":`, `"title":"Climate:\nlatest","description":`},
-		"a control character":  {`"Past temperatures."`, `"Past\u0007"`},
-		"an unknown operation": {`"operation":"history"`, `"operation":"sum"`},
-		"history bounds":       {`"max_readings":5`, `"max_readings":500`},
-		"a reserved argument":  {`"name":"sensor"`, `"name":"limit"`},
-		"an unused argument":   {`"select":{"argument":"sensor"}`, `"select":{"fixed":"sensor/a"}`},
-		"enum without keys":    {`"type":"string"`, `"type":"enum","values":["a"]`},
-		"two ways to select":   {`"select":{"argument":"sensor"}`, `"select":{"argument":"sensor","fixed":"sensor/a"}`},
-		"no outputs":           {`"outputs":[{"name":"t","group":"climate","field":"/t","type":"number"}]`, `"outputs":[]`},
-		"an unknown member":    {`"history":`, `"extra":1,"history":`},
+		"a dotted name":       {`"name":"history_t"`, `"name":"data.list"`},
+		"a long description":  {`"Past temperatures."`, `"` + strings.Repeat("x", 1001) + `"`},
+		"a long title":        {`"description":`, `"title":"` + strings.Repeat("x", 101) + `","description":`},
+		"a two-line title":    {`"description":`, `"title":"Climate:\nlatest","description":`},
+		"a control character": {`"Past temperatures."`, `"Past\u0007"`},
+		// Security review of 5 November 2026, finding 4: text that reads
+		// as other text, or looks like another tool's.
+		"a reversed title":                  {`"description":`, `"title":"Climate \u202elatest","description":`},
+		"an invisible character in a title": {`"description":`, `"title":"Climate\u200b","description":`},
+		"a line separator in a title":       {`"description":`, `"title":"Climate\u2028latest","description":`},
+		"a C1 control in the description":   {`"Past temperatures."`, `"Past\u0085temperatures."`},
+		"an isolate in an argument":         {`"description":"Sensor ID"`, `"description":"Sensor \u2067ID\u2069"`},
+		"an unknown operation":              {`"operation":"history"`, `"operation":"sum"`},
+		"history bounds":                    {`"max_readings":5`, `"max_readings":500`},
+		"a reserved argument":               {`"name":"sensor"`, `"name":"limit"`},
+		"an unused argument":                {`"select":{"argument":"sensor"}`, `"select":{"fixed":"sensor/a"}`},
+		"enum without keys":                 {`"type":"string"`, `"type":"enum","values":["a"]`},
+		"two ways to select":                {`"select":{"argument":"sensor"}`, `"select":{"argument":"sensor","fixed":"sensor/a"}`},
+		"no outputs":                        {`"outputs":[{"name":"t","group":"climate","field":"/t","type":"number"}]`, `"outputs":[]`},
+		"an unknown member":                 {`"history":`, `"extra":1,"history":`},
 	} {
 		d, err := Parse([]byte(strings.Replace(tool, change[0], change[1], 1)))
 		if err == nil {

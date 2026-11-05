@@ -30,6 +30,10 @@ fga/internal/sources
 # Reviewed 2026-11-04 (DTL-001 to DTL-009): the data tool record, whose
 # calls the storage role resolves and projects; parsing only.
 fga/internal/datatools
+# Reviewed 2026-11-06 (security review of 5 November 2026, finding 4): the
+# plain-text check of data tool titles and descriptions, linked through
+# datatools; the standard library's unicode tables only.
+fga/internal/plaintext
 # Reviewed 2026-10-31 (S4b): decision checks for key releases, linked
 # through the envelope package; verification only, no key material.
 fga/internal/keycheck

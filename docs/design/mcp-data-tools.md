@@ -318,6 +318,7 @@ A reader allowed only the current version can lose it mid-call when a newer read
 | `version` | None in the record: the catalog numbers versions, as for sources. A call uses the active version unless it pins one |
 | `title` | Optional: one line of plain text, at most 100 characters, for people. MCP clients show it as the tool's `title`; agents call the tool by `name` |
 | `description` | Plain text, at most 1,000 characters |
+| Plain text | Valid UTF-8 without control or format characters: no bidirectional overrides or isolates, no zero-width or other invisible characters; a description may hold line feeds and tabs, a title no line breaks of any kind (`internal/plaintext`, security review of 5 November 2026, finding 4). Argument descriptions follow the same rule |
 | `source` | An active source. The tool is checked against the source's active version at review |
 | `operation` | `latest` or `history` |
 | `arguments` | At most 8, and each one the key selection uses: `enum` with `values`, or `string`. Names follow the tool name pattern and are none of the reserved names. Other types wait for a use: tool arguments visible to policy are left open |
