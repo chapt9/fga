@@ -7,6 +7,8 @@
 //	fga dev-token -key FILE -key-id ID -sub ID -tenant T -aud A [-ttl D]
 //	                                         print a development access token
 //	fga sign-in-key new [-dir D] [-protect]  make the account's sign-in key (signin.go)
+//	fga box init|unlock-key|add-unlock-key|import|show|remove-unlocker
+//	                                         the person's key box, shared with the add-on (box.go)
 //
 // and the client commands of client.go (keys init, keys enroll, trust add,
 // put, get, ls, rm, share).
@@ -41,7 +43,8 @@ const usage = "usage: fga keys generate -out PREFIX | fga policy validate DIR | 
 	" | fga keys init|keys enroll|keys enroll-signer|keys protect|keys unprotect|trust add|put|put-document|append|post-reading|data-tool|get|get-document|get-original|get-derived|search|ls|rm|share|finalize|label|set-encryption|propose-label|approvals [flags]" +
 	" | fga approve|reject [flags] ID (see cmd/fga/client.go)" +
 	" | fga mcp-bridge [-dir DIR] [-mcp-url URL] (MCP over stdio; see cmd/fga/bridge.go)" +
-	" | fga sign-in-key new|token [-dir DIR] (see cmd/fga/signin.go)"
+	" | fga sign-in-key new|token [-dir DIR] (see cmd/fga/signin.go)" +
+	" | fga box init|unlock-key|add-unlock-key|import|show|remove-unlocker [-dir DIR] (see cmd/fga/box.go)"
 
 func run(args []string) error {
 	if len(args) >= 1 && args[0] == "dev-token" {
@@ -66,6 +69,8 @@ func run(args []string) error {
 		return clientCommand(args[0]+" "+args[1], args[2:])
 	case "keys generate":
 		return generateKeys(args[2:])
+	case "box init", "box unlock-key", "box add-unlock-key", "box import", "box show", "box remove-unlocker":
+		return boxCommand(args[1], args[2:])
 	case "sign-in-key new":
 		return signInKeyNew(args[2:])
 	case "sign-in-key token":

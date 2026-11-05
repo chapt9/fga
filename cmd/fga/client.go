@@ -187,6 +187,32 @@ func keysInit(dir string, passphrase []byte) error {
 }
 
 func loadClient(dir string, passphrase func() ([]byte, error)) (*client.Client, error) {
+	// A key directory in box mode holds the person's keys in their key box
+	// (box.go).
+	if boxMode(dir) {
+		return boxClient(dir, passphrase)
+	}
+	c, err := keyFilesClient(dir, passphrase)
+	if err != nil {
+		return nil, err
+	}
+	// Without fixed tokens, the account signs its own with its sign-in
+	// key, when the directory holds one (signin.go).
+	if c.StorageToken == "" && c.KeysToken == "" {
+		signer, err := loadSigner(dir, "fga", passphrase)
+		if err != nil {
+			return nil, err
+		}
+		if signer != nil {
+			c.Tokens = signer
+		}
+	}
+	return c, nil
+}
+
+// keyFilesClient reads a key directory without a box: recipient.key,
+// signing.key, trust.json and key_version.
+func keyFilesClient(dir string, passphrase func() ([]byte, error)) (*client.Client, error) {
 	raw, err := keyfile.Read(filepath.Join(dir, "recipient.key"), passphrase)
 	if err != nil {
 		return nil, err
@@ -217,21 +243,9 @@ func loadClient(dir string, passphrase func() ([]byte, error)) (*client.Client, 
 	if b, err := os.ReadFile(filepath.Join(dir, "key_version")); err == nil {
 		version, _ = strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 	}
-	c := &client.Client{StorageURL: os.Getenv("FGA_STORAGE_URL"), KeysURL: os.Getenv("FGA_KEYS_URL"), HTTP: httpClient(),
+	return &client.Client{StorageURL: os.Getenv("FGA_STORAGE_URL"), KeysURL: os.Getenv("FGA_KEYS_URL"), HTTP: httpClient(),
 		StorageToken: os.Getenv("FGA_TOKEN"), KeysToken: os.Getenv("FGA_KEYS_TOKEN"), Recipient: rk, KeyVersion: version,
-		Signer: crypto.SigningKeyFromPrivate(priv), Trust: trust, TempDir: dir}
-	// Without fixed tokens, the account signs its own with its sign-in
-	// key, when the directory holds one (signin.go).
-	if c.StorageToken == "" && c.KeysToken == "" {
-		signer, err := loadSigner(dir, "fga", passphrase)
-		if err != nil {
-			return nil, err
-		}
-		if signer != nil {
-			c.Tokens = signer
-		}
-	}
-	return c, nil
+		Signer: crypto.SigningKeyFromPrivate(priv), Trust: trust, TempDir: dir}, nil
 }
 
 func clientCommand(cmd string, args []string) error {
@@ -312,6 +326,9 @@ func clientCommand(cmd string, args []string) error {
 			}
 		}
 		return nil
+	}
+	if cmd == "trust add" && boxMode(*dir) {
+		return boxTrustAdd(*dir, *recipient, *signer, *principal, *keyVersion, passphrase)
 	}
 	if cmd == "trust add" {
 		tf, err := readTrust(*dir)

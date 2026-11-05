@@ -30,6 +30,7 @@ import (
 	"github.com/tink-crypto/tink-go/v2/insecurecleartextkeyset"
 	"github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess"
 	"github.com/tink-crypto/tink-go/v2/keyset"
+	"github.com/tink-crypto/tink-go/v2/secretdata"
 	"github.com/tink-crypto/tink-go/v2/streamingaead"
 	"github.com/tink-crypto/tink-go/v2/streamingaead/aesgcmhkdf"
 
@@ -145,6 +146,46 @@ func ParseRecipientKeyInsecure(b []byte) (*RecipientKey, error) {
 		return nil, err
 	}
 	return recipientFromHandle(h)
+}
+
+// RecipientKeyFromRawInsecure builds a recipient key from its raw 32-byte
+// X25519 private key, as the key box holds it (mosaic-key-store
+// docs/key-box.md).
+func RecipientKeyFromRawInsecure(raw []byte) (*RecipientKey, error) {
+	if len(raw) != 32 {
+		return nil, errors.New("crypto: a raw X25519 private key is 32 bytes")
+	}
+	params, err := hpkeParameters()
+	if err != nil {
+		return nil, err
+	}
+	priv, err := hpke.NewPrivateKey(secretdata.NewBytesFromData(bytes.Clone(raw), insecuresecretdataaccess.Token{}), 0, params)
+	if err != nil {
+		return nil, err
+	}
+	km := keyset.NewManager()
+	id, err := km.AddKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	if err := km.SetPrimary(id); err != nil {
+		return nil, err
+	}
+	h, err := km.Handle()
+	if err != nil {
+		return nil, err
+	}
+	return recipientFromHandle(h)
+}
+
+// RawPrivateInsecure returns the raw 32-byte X25519 private key, for the
+// key box.
+func (k *RecipientKey) RawPrivateInsecure() ([]byte, error) {
+	priv, err := hpkePrivateKey(k.handle)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.Clone(priv.PrivateKeyBytes().Data(insecuresecretdataaccess.Token{})), nil
 }
 
 // Prove answers an enrollment challenge (RCP-002): X25519 with the

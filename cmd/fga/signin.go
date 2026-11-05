@@ -117,6 +117,16 @@ func loadSigner(dir, client string, passphrase func() ([]byte, error)) (*keySign
 	if tenant == "" || subject == "" {
 		return nil, fmt.Errorf("%s signs tokens for $FGA_PRINCIPAL of $FGA_TENANT; set both", path)
 	}
+	return loadSignerFor(dir, tenant, subject, client, passphrase)
+}
+
+// loadSignerFor reads dir's sign-in key for subject of tenant; it is nil
+// when dir holds none.
+func loadSignerFor(dir, tenant, subject, client string, passphrase func() ([]byte, error)) (*keySigner, error) {
+	path := filepath.Join(dir, signInFile)
+	if _, err := os.Stat(path); err != nil {
+		return nil, nil
+	}
 	raw, err := keyfile.Read(path, passphrase)
 	if err != nil {
 		return nil, err
@@ -126,9 +136,13 @@ func loadSigner(dir, client string, passphrase func() ([]byte, error)) (*keySign
 	if err != nil || len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("%s does not hold a base64 Ed25519 private key", path)
 	}
-	key := ed25519.PrivateKey(priv)
+	return newKeySigner(ed25519.PrivateKey(priv), tenant, subject, client), nil
+}
+
+// newKeySigner signs tokens with key for subject of tenant.
+func newKeySigner(key ed25519.PrivateKey, tenant, subject, client string) *keySigner {
 	return &keySigner{priv: key, fingerprint: cryptowire.SignInKeyFingerprint(key.Public().(ed25519.PublicKey)).String(),
-		tenant: tenant, subject: subject, client: client, now: time.Now, cached: map[string]signedToken{}}, nil
+		tenant: tenant, subject: subject, client: client, now: time.Now, cached: map[string]signedToken{}}
 }
 
 func signInKeyToken(args []string) error {

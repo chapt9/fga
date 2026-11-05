@@ -1,0 +1,35 @@
+{
+  "about": "A key box made by mosaic-key-store's crypto module (crypto/examples/box_vector.rs) with fixed keys and randomness. Test keys only.",
+  "box": "ZmdhLmJyb3dzZXIta2V5cy92MQAABnQtYWNtZQAEZGFuYSC5PwhH8hPIEc+3egtdKLA0O2JZ+JR/rTkgkonrTo+axfWchJwvx2uo4GrJnRNJ/2UePajJmHHIXnrXNmdjIOUtLWBmpHnqUnzo81jMj6l6qhgNSp1i7BlPFyvesPc/qQIBAAlwYXNza2V5LTEFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBW9gzS1Gz9X33BlDdKHYaJN6xi9k+Lii/OkSn7JJCl5yRMV2X9baM2WpkqZj0PMF8AIAC2ZnYSBwcm9ncmFtV9tLNZ8jrl4Ubk4lEgVnBHIlBjSMFQwUdT0Mkz0E1CFB5hZwpDkLQDb6p8ACT8c2qF1icQq5GIHdJdXGUlaL0Fs1APbPjCsaHi33/QbBv98GBgYGBgYGBgYGBgYAAADMqjfyWvjCC0HB//AArIFx1HV4ZPx2MUXp2+PPwLgFotAj/AUAGBhbe8qBygravEZg0LyJaWP1Ljh3SOineLyrjmOJx3y7lFCkge3RANt87VIaECiUOr8Uqcx0lDYpKKrJMK8AlSWT9L622w8/gWglGuKYrMOAajwfZRKMhjI4yZtViu7wY26hVXcrJE9e/xAZHhf50vnnE/f4oBnWasHTpD6mz77olA3mZR7IEYvxgeahUpMPpPJpbS+qb2K6gCdhC1FrBZnJCR+P50Ch",
+  "box_key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+  "format": "mosaic.key-box-vector/v1",
+  "key_unlocker": {
+    "id": "fga program",
+    "unlock_private": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+    "unlock_public": "MdSras7slhE3kXA3k25gcW+sVzr+lNnahKgCBEjfwRI="
+  },
+  "principal": "dana",
+  "recipient_key_version": 3,
+  "recipient_private": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  "secret_unlocker": {
+    "id": "passkey-1",
+    "secret": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ="
+  },
+  "sign_in_seed": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+  "signing_seed": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+  "tenant": "t-acme",
+  "trust": [
+    {
+      "key_version": 2,
+      "kind": 1,
+      "owner": "lena",
+      "public": "ew1H2TQn+DERYHgcfHM/2J+IlwrvSQ2KoO4ZpMuKGxQ="
+    },
+    {
+      "key_version": 0,
+      "kind": 2,
+      "owner": "rita",
+      "public": "11l5O7wTooGagnx2rbb7qKSa7gB/SfLQmS2ZuCWtLEg="
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+ "format": "mosaic.key-box-vector/v1",
+ "about": "A key box made by fga's Go implementation (sdk/go/keybox TestGoBox -update). Test keys only.",
+ "box": "ZmdhLmJyb3dzZXIta2V5cy92MQAABnQtYWNtZQAEZGFuYZHJZtMuv310xZnXDRLZjbsS/68Xyl4S9t7FPfjjHUxVUjq13XbBJWaZsNtz3U9ge/+OjrynruLaeCiNj/RsnQ+i+edPAR7q3/dHtnQyaUAQzGWV5zI04/BXumwfEJBAtwIBAAlwYXNza2V5LTHZEY3ekVwH1793A5owJAF4orrl0jg+MtMqBYSiNd0D1gDivWpCDXlLJ4xCr0pFmMiII+aHjfFdYbC9Bl87eFJmpEFGE8cmHZp52AKAGRU4AwmkcWZrK18r/umwegIAC2ZnYSBwcm9ncmFt9Wtn2jXEp4nlP7FMOTO4jI5+yxanq+ksAQo/MJZvRTPyKEMQpFFlt2yRO3+Ba+FE0tu5i6n6B7izd2xpYq7M67ZF+9X8fWDEvnSpQmTYmAZkuiavgT5FkVGk7YEAAACh+d8t+rTNXURFExBV9BAHr4wQgexlMLXMxRwFeAjhSt14DSbmvHOx5KgKSUK+88P2JzHWVji09rtrp3n8Xc+7WkY2VbpfWRRVIDarrkvqfpCbqa85qgSmurrgHBYj7zudB7FKTzUC8WRMiuOmPBrk/L3LSPvV5M5A8B1b/7N5ZGlmLtCkro/RnAAuO75uOW5oydB4ktb7U0cIEkzcnzVOaCo=",
+ "box_key": "M9acL8hA3BKZQfTkBSk0lGNLv8ESDy9nzBlQk6gufrU=",
+ "tenant": "t-acme",
+ "principal": "dana",
+ "recipient_private": "JLWUU8oZwXFKZ8onmloKVKz1I0MLLssDpYDc8SjLf5o=",
+ "recipient_key_version": 4,
+ "signing_seed": "H5jrmMbY9aD43wHwzST8xGdN82iV4ip+9JD2kE3N1/8=",
+ "sign_in_seed": "nuDeVP+0/OvCfJfGKD3N7uJBEz0DFPMlGOtA34V9gmg=",
+ "secret_unlocker": {
+  "id": "passkey-1",
+  "secret": "WxSiAUEEV0DYdTuQmMdQDBeIAQ0pLZeUPqgh21BzUho="
+ },
+ "key_unlocker": {
+  "id": "fga program",
+  "unlock_private": "QYWPhFkiDxZbstCSJsSGDze7BMAoh0U/ILO22l4Gj+U=",
+  "unlock_public": "5vHyPKosMWP7Vtj6YMDjKHgFbxVj9v7Cmn3M9O5hS38="
+ },
+ "trust": [
+  {
+   "kind": 1,
+   "public": "beHMlhT7EMxgQaO/cTXUy3IEBgjPfQsW3hM4lmtQOic=",
+   "key_version": 2,
+   "owner": "lena"
+  }
+ ]
+}

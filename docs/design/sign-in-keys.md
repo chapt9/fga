@@ -65,6 +65,31 @@ The decision role checks the limits after resolving the targets and before the r
 - **Signing its own tokens.** With `$FGA_TOKEN` and `$FGA_KEYS_TOKEN` unset, the client commands sign tokens with `D/signin.key` as `$FGA_PRINCIPAL` of `$FGA_TENANT`. So does `fga mcp-bridge` with `$FGA_MCP_TOKEN` unset. One token per audience is reused until a minute before it expires (`sdk/go/client` `TokenSource`).
 - **`fga sign-in-key token -aud A`** prints a fresh token, for a tool such as `curl`.
 
+### A person's key box (stop 3)
+
+A person's fga program and browser add-on share one account and one set of keys: the sign-in, opening and content-signing keys and the trust list, in the person's key box. The layout is `fga.browser-keys/v1`, from mosaic-key-store `docs/key-box.md`.
+- **`sdk/go/keybox`** is the Go implementation of that layout, beside mosaic-key-store's Rust one. Each opens the other's files byte for byte (`testdata`).
+- **`sdk/go/crypto`** converts a Tink recipient key to and from the box's raw X25519 key (`RecipientKeyFromRawInsecure`, `RawPrivateInsecure`).
+
+In **box mode**, a key directory holds only three files:
+- `keybox`;
+- `unlock.key`, the program's X25519 unlock key, optionally passphrase-protected;
+- `unlock.id`, the ID of the box's unlocker for that key.
+
+Every client command then works from the box and signs its tokens as the box's owner, with no `$FGA_TENANT` or `$FGA_PRINCIPAL` (`cmd/fga/box.go`):
+
+| Command | Does |
+|---|---|
+| `fga box init -dir D [-id ID] [-protect]` | Puts an enrolled key directory's keys in a box opened by a new unlock key, checks that the box opens with the same keys, then removes the separate key files |
+| `fga box unlock-key -dir D -id ID` | Makes this program's unlock key, for the program that has the box; prints its public key and fingerprint |
+| `fga box add-unlock-key -dir D -id ID -public-key B64 -out FILE` | After the person compared the fingerprint, lets the other program's unlock key open the box, and writes the box for it to FILE |
+| `fga box import -dir D -in FILE` | Takes the box another program locked for this one's key |
+| `fga box show` | The owner, the three keys, the unlockers and the trust list |
+| `fga box remove-unlocker -dir D -id ID` | Removes another program's unlocker, for a lost computer |
+| `fga trust add` in box mode | Pins a key in the box's trust list; it needs `-principal`, whose key it is |
+
+MCP accounts and push accounts keep keys of their own, in a key directory with `signin.key`, never in a person's box. `fga mcp-bridge` signs its MCP tokens only with such a `signin.key`.
+
 ## Tests
 
 | Test | Covers |
@@ -75,6 +100,8 @@ The decision role checks the limits after resolving the targets and before the r
 | `internal/adminapi` `TestSignInKeyRoutes` | Register, list and remove; duplicates, unknown accounts, short keys, another account's key; non-administrators refused |
 | `internal/recovery` `TestBackupCoversEveryTable` | `sign_in_keys` is backed up |
 | `cmd/fga` `TestSignInKeyTokens` | The program's key file, its account variables, and reusing tokens per audience |
+| `sdk/go/keybox` `TestRustBox`, `TestGoBox`, `TestSealRefuses` | The box mosaic-key-store's Rust module made opens here byte for byte with both kinds of unlocker. The box made here opens too, and with `-update` it is written for the Rust module to open. Refusals: wrong secrets or keys, trailing bytes, a changed box, another name |
+| `cmd/fga` `TestKeyBox`, `TestImportRustBox` | Converting an enrolled key directory, then working from the box; pairing a second program by file; trust in the box; removing an unlocker; importing the Rust module's box |
 
 ## Checked against the running demo (5 November 2026)
 
@@ -87,11 +114,15 @@ The decision role checks the limits after resolving the targets and before the r
 
 Development tokens and the console kept working.
 
+Stop 3, the same evening:
+- **Alice's keys in a box.** Her test key directory enrolled its opening key (version 2) and signing key with her sign-in key, then `fga box init` put them in a box. From the box, with no account variables, the program listed `shared` and put a locked file in `reports` for her own key. Getting it back verified and decrypted it.
+- **Pairing with the add-on.** The program locked the box for an unlock key the Rust module made (`examples/pair.rs`, standing in for the add-on). The module opened it, found the same keys, and signed passes with the shared sign-in key. The storage role (which listed the new file) and the keys role accepted them.
+
 ## Not done
 
 - **Replay** within a token's 5 minutes (S-2): a pass ID could be accepted only once.
 - **The console's "Sign-in keys" part** on each account's page (mosaic-key-store stop 5).
-- **The key box** in the fga program, and pairing with the add-on (mosaic-key-store stop 3).
+- **A copy of the box in fga**, for a new device (decision A-1 in mosaic-key-store `docs/design.md`): the programs exchange the box as a file until it is decided.
 - **The specification:** the erratum below, which waits for the owner's approval of its text.
 
 ## Specification erratum (draft for the owner)
