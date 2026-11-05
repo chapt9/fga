@@ -67,6 +67,9 @@ func TestKeyBox(t *testing.T) {
 	if !ok || signer.subject != "dana" || signer.tenant != "t-acme" {
 		t.Fatalf("tokens: %#v", c.Tokens)
 	}
+	if err := signInKeyToken([]string{"-dir", dir, "-aud", "fga-admin"}); err != nil {
+		t.Fatalf("a token from the box: %v", err)
+	}
 
 	// A second program: its unlock key, the box locked for it, imported.
 	second := t.TempDir()

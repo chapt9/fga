@@ -156,14 +156,29 @@ func signInKeyToken(args []string) error {
 	if *dir == "" || *audience == "" {
 		return errors.New("sign-in-key token needs -dir or $FGA_KEY_DIR, and -aud")
 	}
-	signer, err := loadSigner(*dir, "fga", func() ([]byte, error) { return keyfile.Passphrase("FGA_KEY_PASSPHRASE", *passphraseFile) })
-	if err != nil {
-		return err
+	passphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_KEY_PASSPHRASE", *passphraseFile) }
+	var tokens interface{ Token(string) (string, error) }
+	if boxMode(*dir) {
+		// In box mode the sign-in key is in the person's box (box.go).
+		c, err := boxClient(*dir, passphrase)
+		if err != nil {
+			return err
+		}
+		if c.Tokens == nil {
+			return errors.New("unset $FGA_TOKEN and $FGA_KEYS_TOKEN to sign with the box's sign-in key")
+		}
+		tokens = c.Tokens
+	} else {
+		signer, err := loadSigner(*dir, "fga", passphrase)
+		if err != nil {
+			return err
+		}
+		if signer == nil {
+			return fmt.Errorf("%s holds no %s", *dir, signInFile)
+		}
+		tokens = signer
 	}
-	if signer == nil {
-		return fmt.Errorf("%s holds no %s", *dir, signInFile)
-	}
-	tok, err := signer.Token(*audience)
+	tok, err := tokens.Token(*audience)
 	if err != nil {
 		return err
 	}
