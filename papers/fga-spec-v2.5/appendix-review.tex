@@ -1,0 +1,37 @@
+\section{Revision decisions and review response}\label{app:review}
+\subsection{Version 2.5: reconciliation with project decisions}
+Version 2.5 restores decisions D-01 to D-03, which version 2.4 had reverted to the pre-2.2 positions, and closes the consistency and clarity gaps found when 2.4 was read against the existing implementation. No requirement identifier is added or removed.
+
+\begin{longtable}{@{}P{0.23\textwidth}P{0.48\textwidth}P{0.19\textwidth}@{}}
+\toprule Topic & Revised contract & Requirements\\\midrule\endhead
+Policy format and evaluator & D-01 restored: our own \code{fga.policy/v1} with deny-overrides across roles and scopes, and no upstream format, reference or oracle. The upstream-format listing, the role-path hazard and the oracle marks are removed, and vector V-005 expects DENY again. & \rr{POL-001}, \rr{POL-002}, \rr{POL-003}, \rr{POL-005}, \rr{POL-012}, \rr{POL-014}, \rr{TEST-004}\\
+Blob store and profiles & D-02 restored: our own single-node store in R1. A \code{local} profile (R1) and an \code{ha} profile (multi-node, when deployed) are distinguished, and non-guarantee N-08 states the local limits. & \rr{BKD-001}, \rr{BKD-002}, \rr{AVL-001}, \rr{AVL-005}\\
+Ceiling declaration and time bound & A manifest declares its ceiling set explicitly, so a missing set is not an empty one. Time conditions are accepted only against timestamp literals, which gives a sound \code{valid_until} bound. & \rr{POL-007}, \rr{POL-008}, \rr{DEC-005}\\
+Per-check principal & Check kinds \code{OPERATION} and \code{RECIPIENT_ELIGIBILITY}, and the meaning of \code{principal_binding}, are defined. & \rr{RES-009}, \rr{KEY-012}\\
+Test applicability & The R1-B exit tests now include T-01, T-03 and T-19, where requirements already cited them; ENF-006 is a review item. & \rr{ENF-003}, \rr{ENF-006}, \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-003}, \rr{RES-009}, \rr{DAT-006}, \rr{KEY-007}\\
+Clean-room posture & Inspiration, not transcription: the mechanism matrix is the SRC-002 record, and the first mechanism-table row records the rejected upstream precedence. & \rr{SRC-001}, \rr{SRC-002}\\
+\bottomrule
+\end{longtable}
+
+
+\subsection{Version 2.4: review corrections}
+Version 2.4 closes the review gaps in authentication propagation, public decision disclosure, document-unit reuse and qualification evidence. Existing requirement identifiers and the storage-first design are retained. The changes state required behavior and leave internal mechanisms to the implementation; test mechanics remain in the companion sources.
+
+\begin{longtable}{@{}P{0.23\textwidth}P{0.48\textwidth}P{0.19\textwidth}@{}}
+\toprule Review topic & Revised contract & Requirements\\\midrule\endhead
+First-hop identity & The authority verifies user authentication before issuing the first decision; adapter identity alone is insufficient. & \rr{TRU-003}, \rr{DEC-007}\\
+Public responses & Public decision metadata is an authorized projection; internal enforcers retain the complete signed obligations. & \rr{DEC-003}, \rr{DEC-010}\\
+Reused units & Each document context has client-created bound envelopes and descriptors; historical contexts coexist while retained. & \rr{DOC-002}, \rr{RCP-005}, \rr{KEY-016}\\
+Release evidence & Case and family records bind one release manifest and configuration, with feature-aware applicability. MCP session security does not depend on the optional managed-client profile. & \rr{TEST-003}, \rr{GATE-001}, \rr{MCP-007}\\
+Fixture readiness & Fault cases establish their successful prerequisites before checking rejection or interruption. & \rr{TEST-003}\\
+\bottomrule
+\end{longtable}
+
+The security protections added in Version 2.3 remain in force. The source bundle validates document consistency and checker behavior; it does not supply production conformance or cryptographic interoperability evidence. Open Phase 0 decisions and implementation qualification remain release gates.
+
+\subsection{Design decisions retained from earlier revisions}
+R1 delivers encrypted object storage and shared fine-grained authorization; document units are storage resources. R2 adds MCP as a separate client of those services, with model or external-tool execution separately enabled. S3 and custom replication remain R3 extensions. Clients alone hold payload keys and decrypt; the server stores ciphertext, opaque recipient envelopes and declared routing/policy metadata.
+
+The independently authored Go evaluator uses qualified general-purpose expression and cryptographic libraries. Upstream MinIO and Cerbos implementations are research references, not production dependencies. A matching deny overrides an allow, and always-run platform ceilings stay distinct from business policy. Our own single-node blob store is the R1 backend (D-02); publication requires durable bytes and an authorized catalog transition. External effects retain explicit UNKNOWN and ABANDONED outcomes. Client retention, malicious-client lineage and unmediated egress keep their stated limits.
+
+The detailed historical review responses remain in the preceding editions. Current requirement text governs; obsolete server-custody and upstream-runtime alternatives are not revived by historical mapping notes.

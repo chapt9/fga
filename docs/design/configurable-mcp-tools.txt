@@ -1,0 +1,72 @@
+CONFIGURABLE MCP DATA TOOLS FOR FGA
+High-level design overview
+Updated: 3 November 2026
+Status: Proposal only; no implementation changes.
+
+The idea
+
+Add a visual tool builder to FGA. External systems send JSON, FGA stores it
+securely, and users configure how AI applications can query it through MCP.
+The existing object store, access-control engine, and MCP endpoint remain the
+foundation.
+
+How it works
+
+1. Connect a source.
+   A script, cron job, device, or application posts JSON to an authenticated
+   endpoint. The source is assigned a bucket and publishing permissions.
+   Incoming readings become encrypted, versioned objects.
+
+2. Configure a tool in the browser.
+   Explore a sample payload and choose the data to expose. Set any valid,
+   available tool name and its description. Define custom input parameters,
+   map them to filters, and select and rename output fields. Choose a supported
+   operation, initially latest reading or bounded history.
+
+3. Preview and publish.
+   Test the mapping, inspect the result, and publish a versioned definition.
+   Live previews use the user's own data permissions. The application generates
+   the MCP schemas and internal configuration; users do not edit YAML or code.
+
+4. Use it from an AI application.
+   Connect to FGA's MCP endpoint. The application discovers permitted tools
+   and calls them with arguments. FGA checks tool permission and underlying
+   data access before returning the configured result.
+
+Example
+
+A payload contains sensor, temperature, humidity, and observed_at.
+
+In the UI, the user creates read_climate:
+  - Input greenhouse selects the source's sensor identifier.
+  - Output air_temperature reads temperature.
+  - Output relative_humidity reads humidity.
+  - Output measured_at reads observed_at.
+
+Names and descriptions are independently configurable. Multiple tools can use
+the same source with different mappings and operations.
+
+Where it fits
+
+  Cron/device -> JSON ingestion -> FGA encrypted object store
+  Web UI      -> versioned source and tool definitions
+  AI client   -> fga-mcp -> authorized storage query -> mapped result
+x  
+Ingestion and queries extend fga-storage. Configuration extends the admin API
+and existing web console. fga-mcp stays a thin adapter using the existing Go SDK.
+The decision service remains responsible for permissions.
+
+Access control
+
+Publishing a tool does not grant access to its data. Every call preserves the
+user or delegated-agent identity and follows normal FGA checks. Administrators
+do not gain data-reading rights through the editor. Mapping a JSON field does
+not create field-level permissions; independently protected fields require
+separate protected objects/units or an explicit extension.
+
+Initial scope
+
+Start with server-encrypted JSON, visual mappings, latest/history queries,
+versioned publication, and per-caller authorization. Client-encrypted payload
+processing would require client-side support. Aggregations, saved derived
+results with lineage, and OpenAPI import can follow as separate extensions.

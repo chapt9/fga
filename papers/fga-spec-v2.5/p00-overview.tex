@@ -1,0 +1,167 @@
+\section{Overview, guarantees and threat model}\label{sec:overview}
+\subsection{Product statement and scope boundary}
+The product is an object-storage and fine-grained access-control platform. It owns the logical namespace, immutable object versions, protected metadata, document and text-unit identities, publication, disclosure and audit. A shared decision authority determines who may perform each operation on those resources. The default is deny: every route and resource needs an explicit complete allow, and every production object uses client-side authenticated encryption without an opt-out. Storage services enforce the result at ciphertext read, encrypted-key-envelope delivery, write and publication boundaries. Clients encrypt payload before upload and alone decrypt after download; TLS termination does not reveal document or object plaintext to any server role. This foundation serves ordinary applications, people and workloads without requiring an AI model, agent runtime or MCP connection.
+
+MCP is a later service that communicates with this foundation through its authenticated service API. It exposes selected storage and document operations as MCP tools and resources; it does not own the stored content or become the authorization authority. S3 is another protocol adapter. An AI proxy or external tool executor is an optional application of the platform, built after the storage foundation and baseline MCP service are qualified.
+
+``Access for everything'' means one resource/action vocabulary and a shared enforcement contract wherever the platform mediates access. It does not mean control over arbitrary operating-system calls, third-party credentials, databases or files outside those paths. Fine granularity includes a bucket, object, immutable version, protected metadata, document or individual text unit. A resource is protected only when every relevant route is mediated or independently restricted.
+
+\textbf{Implementation direction.} Coding has started in \path{/Volumes/workdata/new_idea}. This revision clarifies design contracts and qualification only; it does not assess, modify or claim conformance for that implementation. Existing work is to be evaluated against these boundaries before further feature work: complete storage and access control first, then implement MCP as their client. The project is a separate storage product; an AI-firewall deployment is one later use case.
+
+\reqn{OVR-001}{P0}{REV}{Every release publishes an enforcement coverage matrix that lists each access route to protected resources (adapter, operation, resource type, action, mediation point, verifying test). A route that is absent from the matrix \mustnot\ be described as protected.}
+\reqn{OVR-002}{P0}{LINT}{Each threat in Table~\ref{tab:threats} maps to at least one requirement and one test, and each guarantee in Table~\ref{tab:guarantees} maps to at least one requirement and one test. The specification check fails when a mapping is missing or names an undefined identifier.}
+\reqn{OVR-003}{P0}{REV}{Product documentation and external claims \mustnot\ state more than the guarantees in Table~\ref{tab:guarantees} and \must\ repeat the non-guarantees in Table~\ref{tab:nonguarantees} wherever revocation, model-output control, encryption or storage durability is described.}
+
+\textbf{Out of scope for this specification:} attribute-based and proxy re-encryption, erasure-coded storage, compiling policy into database queries, general file-content redaction, FTP/SFTP, S3 Select, tiering, site replication, and mediation of unrestricted local shells or direct local file reads.
+
+\subsection{Releases and exit gates}\label{sec:releases}
+Delivery follows the dependency order: client-encrypted durable storage plus access control and recipient-envelope delivery; MCP access to that storage; optional model and external-tool services. R1 is a usable storage product, not a policy-only prototype. The blob backend (our own single-node store in R1) holds private immutable ciphertext; the platform still owns the namespace, permissions, version lifecycle, document structure and user-facing API. The server retains only the declared policy/routing metadata in readable form; content and sensitive descriptive fields remain client-encrypted. A release is accepted only when its applicable exit tests (Section~\ref{sec:testmatrix}) pass.
+\begin{longtable}{@{}P{0.08\textwidth}P{0.50\textwidth}P{0.30\textwidth}@{}}
+\toprule Phase & Delivers & Exit tests\\\midrule\endhead
+R1-A & \textbf{Shared access authority.} Identity and delegation, resource registry, policy evaluation, signed decisions, policy releases, catalog schema and audit outbox. & T-01, T-02, T-03, T-06 (registry), T-13 (admission), T-14, T-15 (audit), T-19, T-20\\
+R1-B & \textbf{Usable object storage.} Native HTTP/service API for create, write, read, stat, list, versions and delete; shared enforcement, conditional publication, private durable backend, mandatory client SDK encryption/decryption, encrypted-envelope service, backup and client-key recovery (authority HA is the later multi-node topology of Section~\ref{sec:availability}). & T-01 (adapter parity), T-03 (recipient enrollment), T-04, T-05 (approvals), T-06, T-08--T-13, T-15, T-16 (multi-node cases need the ha profile), T-18, T-19, T-20, T-22 (object/custody cases)\\
+R1-C & \textbf{Fine-grained documents and text.} Client-created manifests and independently encrypted units, labels, authorized metadata discovery and client-local text search. Lineage from participating clients is tracked without claiming server inspection of plaintext. R1 is accepted with MCP, models and external tools absent. & T-06, T-08--T-13, T-18, T-20, T-21 (classification), T-22 (document cases)\\
+R2 & \textbf{MCP over encrypted storage.} A separate MCP service returns authorized encrypted packages. A compatible client or local bridge decrypts. Model-context assembly and optional plaintext tools run on authorized clients; server extensions have no payload decryption path. & T-03, T-06, T-09--T-11, T-13, T-20, T-22 (MCP); T-04, T-05, T-09, T-21 only for enabled optional execution\\
+R3 & \textbf{Storage extensions.} S3 compatibility facade; an optional custom replicated backend, repair and evacuation. These extend the same storage product. & T-07, T-08, T-15, T-16, T-17, T-18, T-20\\
+\bottomrule
+\end{longtable}
+Phase P0 labels process requirements that apply from the first commit. Payload encryption, per-object data keys, client-only decryption and recipient-bound encrypted-envelope delivery are R1-B prerequisites. Independently encrypted document units are R1-C. Backend, catalog, audit and backup encryption at rest is additional defence, not a substitute for client encryption. No server-managed plaintext profile is offered. S3 compatibility and a custom replication engine are deferred engineering work, not prerequisites for being an object-storage product; R1 backup and restore qualification remain mandatory, and multi-node redundancy is qualified only when that topology is deployed. Everything runs locally for now (D-02): the R1 profile is one node with our own single-node blob store.
+
+R1-A, R1-B and R1-C are subphases of one release: none is deployed to production alone (\rr{GATE-003}). MCP implementation follows acceptance of that encrypted storage foundation. Baseline MCP retrieval needs a compatible decrypting client but no model provider, general tool executor or downstream connector. Optional surfaces remain disabled until their requirements and cases pass. Shared tests contribute cases with explicit phase and feature applicability. Structural checks validate those declarations; release qualification also requires applicable concrete fixtures and recorded execution evidence. This is one evolving evidence corpus, not a duplicate suite per release or adapter.
+
+\textbf{Security priority.} Security and correctness take precedence over implementation speed, convenience and line count. Missing authority fails closed; every enabled alternate route obeys the same resource checks; no role receives credentials beyond its boundary; and recovery is proven against the declared failures. Small code and tests mean fewer mechanisms and fewer duplicates, never omitted validation, cryptographic binding or recovery evidence. No implementation is called secure merely because this specification compiles.
+
+\subsection{Guarantees and non-guarantees}\label{sec:guarantees}
+Table~\ref{tab:guarantees} is the complete list of what the platform promises. Each row applies only to the released surfaces covered by its requirements and passing tests; later MCP and managed-client flow guarantees are not R1 claims. Table~\ref{tab:nonguarantees} lists limits that recur throughout the document; they are stated here once.
+\begin{longtable}{@{}P{0.07\textwidth}P{0.46\textwidth}P{0.24\textwidth}P{0.12\textwidth}@{}}
+\caption{Guarantees}\label{tab:guarantees}\\
+\toprule ID & Guarantee & Requirements & Tests\\\midrule\endfirsthead
+\toprule ID & Guarantee & Requirements & Tests\\\midrule\endhead
+G-01 & Fail closed. A protected operation runs only on an explicit, complete \code{ALLOW} bound to the exact operation. & \rr{DEC-002}, \rr{ENF-001}, \rr{ENF-003} & T-01, T-04\\
+G-02 & One decision, many routes. The same normalized request gets the same business decision through every adapter. & \rr{RES-002}, \rr{RES-003}, \rr{CNT-001}, \rr{MCP-002} & T-01, T-06\\
+G-03 & Fresh authority. Decisions honor current authority and policy time bounds at the defined admission or commit ordering point. Recovery cannot silently restore revoked grants. & \rr{DEC-005}, \rr{DEC-006}, \rr{REL-003}, \rr{AVL-008} & T-13, T-14, T-18\\
+G-04 & Platform ceilings. No principal, role or tenant-scope policy result can override a platform ceiling or tenant isolation. & \rr{POL-007}, \rr{DAT-001} & T-01, T-02\\
+G-05 & Bound approvals and budgets. Approvals and reservations are single-use, bound to the exact operation, and consumed atomically. & \rr{APR-001}, \rr{APR-002}, \rr{APR-004} & T-04, T-05\\
+G-06 & No assumed outcomes. An external effect with an unknown result is held as \code{UNKNOWN} and resolved by a recorded action; it is never treated as success or failure. & \rr{INV-003}, \rr{INV-006}, \rr{INV-007} & T-05\\
+G-07 & Unit-level delivery. A denied unit or usable recipient envelope is not delivered through any supported server route. Client plaintext processing and derived lineage carry the trust limits below. & \rr{DSC-001}, \rr{DSC-002}, \rr{DRV-002} & T-09\\
+G-08 & Durable evidence. Decisions, key releases, mutations and approval consumption leave audit records that do not silently drop. & \rr{AUD-001}, \rr{AUD-002} & T-15\\
+\bottomrule
+\end{longtable}
+\begin{longtable}{@{}P{0.07\textwidth}P{0.55\textwidth}P{0.27\textwidth}@{}}
+\caption{Non-guarantees}\label{tab:nonguarantees}\\
+\toprule ID & Limit & Requirements\\\midrule\endfirsthead
+\toprule ID & Limit & Requirements\\\midrule\endhead
+N-01 & Revocation does not recall bytes already emitted, exported keys, retained plaintext or context already received by a model provider. Exposure on a live stream is bounded by the stream lease. & \rr{KEY-010}, \rr{CNT-008}\\
+N-02 & Client-only decryption prevents the server from inspecting content, verifying claimed semantic labels or observing offline use. Plaintext search, model calls, lineage and flow guarantees require a separately trusted participating client. Malicious clients, retained keys and unmediated egress are outside those guarantees. & \rr{FLW-001}, \rr{FLW-003}, \rr{FLW-005}, \rr{FLW-008}\\
+N-03 & Readable policy/routing metadata, identifiers, sizes and timing remain visible to the server. Payload confidentiality assumes authentic client software, authenticated recipient keys and uncompromised client private keys; client or organization custodian compromise can expose its authorized content. & \rr{CRY-001}\\
+N-04 & A malicious server operator can alter policy enforcement, withhold content or disclose ciphertext and visible metadata. Payload encryption does not prove server honesty or availability. Clients verify payload bindings and recipient identity; server control alone supplies no payload decryption key. & \rr{ADM-003}, \rr{KEY-007}\\
+N-05 & No exactly-once guarantee across arbitrary external APIs. & \rr{INV-005}\\
+N-06 & No claim that a policy expresses its owner's intent. The platform enforces what the policy says and reports effect changes on the conformance corpus. & \rr{REL-005}\\
+N-07 & No regulatory WORM claim, universal document parsing, server plaintext search or transparent plaintext S3/MCP compatibility. Decryption requires a qualified client. & \rr{PUB-009}, \rr{DOC-004}, \rr{S3P-001}\\
+N-08 & Under the \code{local} profile (D-02) the platform makes no zero-loss or failure-domain claim: losing the node loses blobs and catalog changes written since the last backup. & \rr{AVL-005}\\
+\bottomrule
+\end{longtable}
+
+\subsection{Threat model}\label{sec:threats}
+\textbf{Assets.} A1 encrypted content and plaintext held only by authorized clients; A2 client private keys and data keys, opaque recipient envelopes and separate server signing keys; A3 policy bundles, identity, delegation and other authority state; A4 approvals, budgets and invocation state; A5 audit evidence; A6 credentials for downstream tools.
+
+\textbf{Adversaries.} E1 malicious or curious tenant user; E2 manipulated agent or model (prompt injection, hostile retrieved content); E3 compromised or malicious tool server, connector or downstream service; E4 compromised gateway, content-service or encrypted-envelope process; E5 reader of storage disks or backups; E6 compromised client or organization key custodian; E7 over-privileged or malicious administrator, including a policy author; E8 network attacker; E9 recipient that retains exported keys or plaintext. A host operator able to replace server software (E10) can defeat server enforcement but does not obtain client-held payload keys merely by doing so. Protection against compromised client software, malicious key custodians and colluding authorized recipients is not claimed (\rr{ADM-003}, N-03).
+
+\textbf{Trust boundaries.} TB1 client and adapter; TB2 adapter and decision service; TB3 content service and encrypted-envelope service; TB4 executor, connector and downstream service; TB5 storage processes and blob backend; TB6 control plane and administrators. Section~\ref{sec:trust} lists the evidence that crosses each boundary.
+\begin{longtable}{@{}P{0.07\textwidth}P{0.34\textwidth}P{0.08\textwidth}P{0.29\textwidth}P{0.12\textwidth}@{}}
+\caption{Threats}\label{tab:threats}\\
+\toprule ID & Threat & Who & Mitigations & Tests\\\midrule\endfirsthead
+\toprule ID & Threat & Who & Mitigations & Tests\\\midrule\endhead
+TH-01 & Forged identity, role, tenant or delegation supplied as authority. & E1, E2 & \rr{ID-001}, \rr{ID-002}, \rr{DEC-007} & T-03\\
+TH-02 & Policy fails open: an erroring or skipped deny rule, or a missing attribute, lets another rule allow. & E7 & \rr{POL-005}, \rr{POL-006} & T-02\\
+TH-03 & A business rule, role or tenant-scope result overrides a platform ceiling. & E7 & \rr{POL-007} & T-01, T-02\\
+TH-04 & Stale revisions or elapsed policy time bounds authorize after authority changes. & E1 & \rr{REL-003}, \rr{DEC-006} & T-13, T-14\\
+TH-05 & Arguments, target or amount change between approval and dispatch. & E2, E3 & \rr{AGT-004}, \rr{APR-001} & T-04\\
+TH-06 & The approver is shown a description that differs from what executes. & E2 & \rr{APR-005} & T-04\\
+TH-07 & Double spend or duplicate dispatch under concurrency or retry. & E1, E2 & \rr{APR-004}, \rr{INV-002} & T-05\\
+TH-08 & An unknown external outcome is treated as failure and retried, or leaks a reservation. & E3 & \rr{INV-003}, \rr{INV-006}, \rr{INV-007} & T-05\\
+TH-09 & Retrieved content instructs the agent to change the registry, widen delegation or call another tool. & E2 & \rr{MCP-004}, \rr{AGT-001} & T-03, T-04\\
+TH-10 & A denied unit leaks through search, citations, counts, ranks or derived output. & E1, E2 & \rr{DSC-001}, \rr{SRH-004}, \rr{DRV-002} & T-09\\
+TH-11 & Data read through one tool is sent out through another. & E2 & \rr{FLW-002}, \rr{FLW-003}, \rr{FLW-007} & T-21\\
+TH-12 & A compromised gateway substitutes a recipient or retrieves an unauthorized encrypted envelope. & E4 & \rr{DEC-008}, \rr{TRU-003}, \rr{KEY-002} & T-03, T-11\\
+TH-13 & A storage disk or backup is read. & E5 & \rr{CRY-002}, \rr{CRY-003} & T-10, T-18\\
+TH-14 & A recipient keeps keys or plaintext after revocation. & E9 & \rr{KEY-010}, \rr{CNT-008} & T-13\\
+TH-15 & An orphan or unpublished blob becomes readable, or a publication race publishes obsolete state. & E1, E4 & \rr{PUB-003}, \rr{PUB-004} & T-08\\
+TH-16 & Existence or metadata of a hidden object is inferred from errors, HEAD or listings. & E1 & \rr{CNT-004}, \rr{CNT-005} & T-09\\
+TH-17 & Secrets or protected content appear in logs, traces, dumps or support bundles. & E6, E7 & \rr{KEY-007}, \rr{AUD-003} & T-19\\
+TH-18 & A less-trusted role gains privileges of a more-trusted role through the shared code base. & E4 & \rr{MOD-002}, \rr{MOD-004} & T-20\\
+TH-19 & An ordinary API request disables the authorizer or grants itself administrator rights. & E7 & \rr{ADM-002} & T-20\\
+TH-20 & A decision or continuation is replayed, misbound, or has its obligations altered. & E4, E8 & \rr{DEC-008}, \rr{CNT-005} & T-03, T-09\\
+TH-21 & Stale failover or backup restoration revives revoked grants or loses acknowledged writes. & E8 & \rr{AVL-002}, \rr{AVL-003}, \rr{AVL-008} & T-16, T-18\\
+TH-22 & Mandatory audit records are lost under load or exporter failure. & E7 & \rr{AUD-002} & T-15\\
+TH-23 & A connector follows a redirect or rebinding to a destination that was not approved. & E3 & \rr{AGT-005} & T-04\\
+TH-24 & A recipient key is substituted in enrollment or client-side sharing. & E1, E6 & \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-003} & T-03, T-11\\
+TH-25 & A derived output uses a label or source permission that is stale or below its declared lineage. & E2 & \rr{DRV-007}, \rr{DRV-009}, \rr{FLW-003} & T-09, T-21\\
+TH-26 & Egress is dispatched on a stale context mark while a concurrent read raises it. & E2 & \rr{FLW-007} & T-21\\
+TH-27 & A transaction left visible but unreplicated by a cancelled synchronous wait is treated as durable. & E8 & \rr{AVL-004}, \rr{INV-002} & T-16\\
+\bottomrule
+\end{longtable}
+
+\subsection{Architecture and roles}\label{sec:arch}
+The storage service owns the operation and the decision service owns policy evaluation. Adapters carry authenticated identity and delegated authority across their boundary; backend credentials remain with storage; payload data keys and recipient private keys remain with clients. The envelope service stores only recipient-encrypted key packages. No caller can bypass the catalog by presenting an object path or a previously allowed MCP tool name.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[box/.style={draw=ink!70,rounded corners=2pt,fill=pale,align=center,minimum height=12mm,text width=36mm,font=\small},later/.style={box,dashed,fill=white},arr/.style={-{Stealth[length=2mm]},ink}]
+\node[box] (http) at (0,0) {Native client SDK\\encrypt / decrypt, R1};
+\node[later] (mcp) at (5,0) {MCP service\\R2};
+\node[later] (s3) at (10,0) {S3 facade\\R3};
+\node[box,text width=70mm] (content) at (5,-2) {Object and content service\\resolve, authorize, publish, disclose};
+\node[box] (dec) at (0,-4) {Decision authority\\policies and signed grants};
+\node[box] (catalog) at (5,-4) {Catalog and audit\\namespace, versions, metadata};
+\node[box] (backend) at (10,-4) {Private durable backend\\immutable object bytes};
+\draw[arr] (http.south) -- ++(0,-7mm) -| ([xshift=-22mm]content.north);
+\draw[arr] (mcp) -- (content);
+\draw[arr] (s3.south) -- ++(0,-7mm) -| ([xshift=22mm]content.north);
+\draw[arr] (content.south west) -- (dec.north);
+\draw[arr] (content) -- (catalog);
+\draw[arr] (content.south east) -- (backend.north);
+\end{tikzpicture}
+\caption[Storage foundation and later service interfaces]{Object storage and shared access control form the foundation. MCP and S3 communicate with that foundation; they do not introduce another store or authorization system.}
+\end{figure}
+
+From R1-B the content service requests only opaque recipient envelopes from the isolated envelope service under signed decisions. Clients verify those envelopes and decrypt locally. Optional model-context assembly and plaintext tools run within authorized client custody; server-side execution has no payload decryptor. These features do not sit on the ordinary object-read or object-write path.
+\begin{longtable}{@{}P{0.14\textwidth}P{0.56\textwidth}P{0.14\textwidth}@{}}
+\toprule Role & Hosts & First phase\\\midrule\endhead
+\code{decision} & Decide/DecideBatch, trusted context, snapshot activation, decision-signing key & R1-A\\
+\code{control} & Policy releases, catalog administration and shared approvals; reservation workflows only when the optional executor is enabled & R1-A\\
+\code{storage} & Native object/content API, enforcement and publication, external-backend adapter; documents in R1-C & R1-B\\
+\code{keys} & Opaque recipient-envelope delivery and registry; no private recipient keys or payload decryptor & R1-B\\
+\code{mcp} & Authenticated MCP facade calling content and decision services; no direct backend, client-key or catalog access & R2\\
+\code{tools} & Optional encrypted-package or non-content control executor; plaintext model/tool processing belongs to authorized clients & R2, optional\\
+\code{blob} & Custom replicated blob service and repair, when selected & R3\\
+\bottomrule
+\end{longtable}
+Roles are deployment and security boundaries of one product, not separate permission domains. The decision service is the only evaluator; no adapter, executor or broker evaluates policy. Storage, decision and catalog availability is qualified before MCP is introduced. Additional MCP replicas cannot bypass storage admission limits or create a second source of permission state.
+
+\subsection{Phase 0 decisions}\label{sec:decisions}
+D-01 to D-03 are decided. The others are open: each has a default so that work can be planned, but the default is not a decision until the owner records it. Work gated by an open decision does not start before it is closed.
+\begin{longtable}{@{}P{0.06\textwidth}P{0.22\textwidth}P{0.46\textwidth}P{0.12\textwidth}@{}}
+\toprule ID & Decision & Options (default first) & Gates\\\midrule\endhead
+D-01 & Policy evaluator & Decided: our own evaluator for our own policy format \code{fga.policy/v1} (Section~\ref{sec:policyformat}), in which a matching deny always overrides an allow across roles and scopes. Upstream engines are studied for ideas only (D-03): there is no compatibility promise with any upstream policy format, and no upstream engine is used as a runtime, reference or test oracle. Conditions use CEL through a qualified library. & R1-A\\
+D-02 & Object storage & Decided: our own object storage. R1 is a single-node store on local disk behind the backend contract (\rr{BKD-001}), with the catalog in PostgreSQL; the replicated store of Part~5 and the S3-compatible API come in R3. No external object store is used. Everything runs locally for now; the multi-node topology of Section~\ref{sec:availability} is a later target. & R1-B\\
+D-03 & Upstream study and license record & Decided in principle: MinIO and Cerbos are studied for ideas only, and no upstream code is copied, translated, paraphrased or reproduced from memory (\rr{SRC-001}). The license record is completed before first distribution (\rr{SRC-004}). & P0\\
+D-04 & Identity providers and workload identity & Qualified first-hop authentication and delegation profiles; supported OIDC providers; how workload certificates are issued, rotated and bound to roles (\rr{TRU-002}). & R1-A\\
+D-05 & PostgreSQL HA and failure domains & HA controller, quorum-commit and authority-fencing design, failure domains, and the security-state recovery procedure (\rr{AVL-001}, \rr{AVL-008}). & R1-A fence; R1-B recovery; ha profile when deployed\\
+D-06 & Label order and label sources & Per-tenant order, authorized labels and collection defaults; which participating client workloads may attest labels or lineage. The server cannot classify encrypted content or verify semantic truth from ciphertext. & R1-C\\
+D-07 & First downstream connector & The one real provider used only if the optional external executor is enabled (\rr{SMALL-003}); no connector is required for R1 or baseline MCP. & R2 extension\\
+D-08 & Client key custody and recovery & Choose the qualified client SDK, authenticated key-enrollment method, owner or organization custodian and optional client-side hardware/KMS protection. Server recovery has no implicit client-key escrow. Close before any production payload can be uploaded. & R1-B\\
+D-09 & Recipient distribution and hierarchy & Flat independent object/unit data keys with client-created recipient HPKE envelopes are the baseline. A document/group KEK is deferred; any later client-only hierarchy requires measured scale benefit, explicit broader compromise scope and separate qualification. The server never unwraps a payload key. & R1-B baseline; later extension\\
+D-10 & Limits and S3 client set & Native storage request, object-size, stream and tenant limits close before R1-B. The S3 client list and protocol-specific limits close before R3 (\rr{S3P-005}). & R1-B; R3\\
+D-11 & Name and distribution license & Product name, license of original code, license compatibility of dependencies (\rr{SRC-004}). & first release\\
+\bottomrule
+\end{longtable}
+
+\subsection{Conventions}
+Requirements have the form \textbf{[ID]} statement \reqtag{phase}{tests}. Each identifies a coherent behavioral contract and its verification boundary. The phase is one of P0, R1-A, R1-B, R1-C, R2, R3. The tests are identifiers from Section~\ref{sec:testmatrix}; \code{REV} means a release review item and \code{LINT} means the specification check. A superscript \textsuperscript{\color{accent}\tiny NEW} marks a requirement added or strengthened since version 1.3; Appendix~\ref{app:mapping} maps every version 1.3 requirement to its successors.
+
+\must, \mustnot\ and \should\ carry their usual normative meaning. Limits and numbers marked ``initial'' or ``target'' are proposals to be qualified, not measured properties. Sizes use KiB = 1024 bytes. Money uses integer minor units with an explicit currency (\rr{DAT-005}).
+
+The case catalogue and fixtures in \texttt{vectors/} are summarized in Appendix~\ref{app:vectors}. Scenario-only cases state required behavior; concrete fixtures and recorded runs supply qualification evidence (\rr{TEST-003}).
+
+\textbf{Design latitude.} The normative boundaries, authority checks, failure outcomes and release evidence are binding. Interface sketches and module examples explain responsibilities; they do not prescribe incidental names, internal data structures or algorithms. Implementations may choose simpler or better mechanisms that preserve these contracts and demonstrate the same invariants. Byte encodings, dependency pins and operational recipes belong in the qualified companion profiles and runbooks, rather than being inferred from a sketch.

@@ -1,0 +1,310 @@
+CODE REVIEW V5
+Fresh review of the current checked-out commit
+Review date: 1 November 2026
+Reviewed commit: 0748925e04420841e68d583676a11c402b5cec20
+Repository: /Volumes/workdata/new_idea
+
+SCOPE AND VALIDATION STATUS
+
+The review examined the current checked-out commit directly. No archived source
+copy was created. Papers, design prose, and earlier review reports were not used as
+correctness evidence. The implementation and executable tests were the evidence.
+
+No implementation code or diagnostic tests were written or modified. All 11
+findings below are supported by source tracing, not newly reproduced failures.
+Where an existing test supports part of a finding, its precise evidentiary limit
+is stated. Passing the existing suite does not establish that these untested
+failure scenarios are absent.
+
+Paths and line numbers refer to the code as reviewed at the commit above. Later
+commits may move or change those locations. This report does not assert that later
+versions retain these findings.
+
+P1 denotes high-priority security or integrity work. P2 denotes a narrower
+correctness, confidentiality, availability, or workflow issue. Severity is separate
+from validation status.
+
+FINDINGS
+
+F01 [P1] Recovery can restore access removed by adding a deny role.
+Validation: SOURCE-SUPPORTED; independently cross-checked against the policy
+engine and administrative replay code. No new runtime reproduction.
+
+Identity changes are journaled using set subtraction: removed roles and attribute
+values count as access removal; additions do not. The policy engine supports
+deny-overrides, so adding a suspended role while retaining existing roles and
+attributes can change access from ALLOW to DENY without producing a journal entry.
+Restoring an earlier backup removes that restriction and permits access again.
+
+Conversely, replaying removal of a deny role can increase access. The underlying
+assumption that removing roles or attribute values is always restrictive is not
+valid for the supported policy semantics.
+
+Use a recovery representation that preserves restrictions under non-monotonic
+policy evaluation. Do not infer the security effect of an identity change solely
+from set subtraction.
+
+References:
+- /Volumes/workdata/new_idea/internal/catalog/admin.go:141
+- /Volumes/workdata/new_idea/internal/catalog/admin.go:233
+- /Volumes/workdata/new_idea/internal/policy/engine/engine.go:269
+
+F02 [P1] Tool execution can use a different reviewed definition from the one
+policy authorized.
+Validation: SOURCE-SUPPORTED transaction and binding analysis; no new runtime
+reproduction.
+
+tool review marks the executable tool record reviewed before separately updating
+its catalog resource and operation. During that interval, or after failure of the
+second step, a replacement tool can execute while policy still sees the previous
+version's attributes.
+
+For example, a replacement version 2 can become executable while the catalog still
+reports version 1, allowing a policy limited to version 1 to authorize the wrong
+executable definition. Dispatch verifies the destination transport digest, but
+not the executable tool schema against the authorized catalog resource.
+
+Publish the executable record and its policy-visible representation atomically,
+and bind the exact executable definition used for dispatch.
+
+References:
+- /Volumes/workdata/new_idea/cmd/fga-tools/main.go:248
+- /Volumes/workdata/new_idea/internal/executor/executor.go:326
+
+F03 [P1, internal trust boundary] Key-release decisions can combine different
+delegated subjects.
+Validation: SOURCE-SUPPORTED across supplemental-decision validation, the internal
+API, fence merging, and key release. No new runtime reproduction.
+
+Supplemental decisions are compared with the primary decision by tenant and actor,
+but not subject and delegation. A caller controlling storage-workload credentials
+could combine valid complementary decisions for the same agent acting for Alice
+and Bob, obtaining an original-file key even though neither subject has the
+complete permission set.
+
+Example: one delegation permits raw-read and unit A for Alice; another permits
+raw-read and unit B for Bob. Combining the signed supplemental batches can cover
+the complete original even though no single represented subject has all required
+permissions.
+
+Preconditions matter: this requires access to the internal storage-to-keys boundary
+and suitable valid decisions. Ordinary external requests do not directly supply
+these records and normally reuse one caller context.
+
+Compare the complete authority tuple, including subject and delegation, before
+merging decisions. Apply the same consistency rule to derived reader-path checks.
+
+References:
+- /Volumes/workdata/new_idea/internal/keycheck/keycheck.go:54
+- /Volumes/workdata/new_idea/internal/keycheck/keycheck.go:121
+- /Volumes/workdata/new_idea/internal/datakeysapi/datakeysapi.go:90
+- /Volumes/workdata/new_idea/internal/fence/fence.go:243
+- /Volumes/workdata/new_idea/internal/datakeys/datakeys.go:546
+
+F04 [P2] Budget refusal can deadlock the database connection pool.
+Validation: SOURCE-SUPPORTED connection-acquisition analysis; no new pool-exhaustion
+reproduction.
+
+ReserveTx holds a transaction connection, then calls whyNot when the budget update
+cannot succeed. whyNot requests another connection from the pool instead of using
+the existing transaction.
+
+With pool_max_conns=1, an insufficient, unknown, or wrong-currency budget cannot
+return until cancellation. Enough concurrent refusals can exhaust larger pools
+similarly while retaining the enclosing authority transaction and its locks.
+
+Query the budget through the existing transaction.
+
+References:
+- /Volumes/workdata/new_idea/internal/reservation/reservation.go:98
+- /Volumes/workdata/new_idea/internal/reservation/reservation.go:111
+
+F05 [P2] Derived uploads ignore conditional-write preconditions.
+Validation: SOURCE-SUPPORTED request-to-publication trace; no new runtime
+reproduction. The identified conditional-create case requires no concurrency.
+
+The API and SDK accept If-None-Match: *, but derived publication updates an existing
+output and replaces its head without checking that precondition. An authorized
+conditional-create request to an already-existing derived key can therefore publish
+another version instead of returning a precondition failure.
+
+Enforce the accepted write preconditions inside the derived publication transaction,
+consistently with the ordinary object path.
+
+References:
+- /Volumes/workdata/new_idea/internal/content/derived.go:326
+- /Volumes/workdata/new_idea/internal/content/derived.go:361
+- /Volumes/workdata/new_idea/internal/nativeapi/nativeapi.go:837
+- /Volumes/workdata/new_idea/sdk/go/client/client.go:389
+
+F06 [P2] Document preparation discloses reused-unit metadata before authorizing
+access to it.
+Validation: SOURCE-SUPPORTED. An existing executable test confirms that preparation
+can succeed across projects before finalization denies reuse; that test does not
+assert disclosure safety. No new diagnostic test was written.
+
+Begin loads and returns the source unit's ciphertext digest, ciphertext length,
+blob ID, and crypto-version ID. Its authorization checks only permission to create
+or update the destination document. Source-read permission is deferred until
+finalization.
+
+A caller permitted to create a destination document, but denied a source unit, can
+therefore obtain that unit's protected metadata using known unit/version IDs. This
+requires knowing those IDs, for example from previously held access; it is not a
+claim that random UUIDs are readily discoverable.
+
+Authorize source-unit disclosure before returning its metadata, or return only
+information the begin operation is independently permitted to disclose.
+
+References:
+- /Volumes/workdata/new_idea/internal/content/documents.go:219
+- /Volumes/workdata/new_idea/internal/content/documents.go:241
+- /Volumes/workdata/new_idea/internal/content/documents.go:328
+- /Volumes/workdata/new_idea/internal/nativeapi/nativeapi.go:600
+- /Volumes/workdata/new_idea/internal/content/documents_test.go:217
+
+F07 [P2] Oversized exports reveal hidden-object existence before authorization.
+Validation: SOURCE-SUPPORTED error-ordering and HTTP-mapping analysis; no new
+runtime reproduction.
+
+ExportObject checks stored ciphertext length before checking read/export permission.
+A hidden existing object over 32 MiB produces HTTP 413, while an absent object
+produces HTTP 404. The default upload limit allows objects in this size range.
+
+An authenticated caller can use a bucket/key and a syntactically valid recipient
+digest to observe this distinction without passing the object's read/export checks.
+This is an existence/size-class disclosure within the caller's tenant, not a
+cross-tenant or plaintext disclosure claim.
+
+Authorize before returning resource-dependent size errors. Unit-export variants
+have similar ordering but additionally require known member identifiers.
+
+References:
+- /Volumes/workdata/new_idea/internal/content/export.go:390
+- /Volumes/workdata/new_idea/internal/content/export.go:400
+- /Volumes/workdata/new_idea/internal/nativeapi/nativeapi.go:25
+
+F08 [P2] Server-mode document finalization can publish missing or corrupt staged
+payloads.
+Validation: SOURCE-SUPPORTED fault-dependent publication gap; no new storage-loss
+or corruption reproduction.
+
+Finalization checks the database's STAGED state and encryption mode, but does not
+verify the staged unit/original blobs before publication. If a blob is lost or
+corrupted after staging, particularly during an approval delay, finalization can
+advance the document head to unreadable content.
+
+Other publication paths explicitly verify staged blobs. Apply the same integrity
+check to server-mode document units and original files before publication.
+
+References:
+- /Volumes/workdata/new_idea/internal/content/serverdocuments.go:251
+- /Volumes/workdata/new_idea/internal/content/serverdocuments.go:269
+- /Volumes/workdata/new_idea/internal/content/serverdocuments.go:287
+
+F09 [P2] The client bridge does not bind returned packages to explicitly requested
+units.
+Validation: SOURCE-SUPPORTED request/package binding analysis; no new substitution
+reproduction and no signature forgery demonstrated or required by the scenario.
+
+For a request naming unit A, the bridge passes only the requested document version
+into verification. A faulty or malicious upstream can substitute a correctly
+signed, recipient-encrypted package for unit B of the same version. Internal package
+verification succeeds, and B's plaintext is returned for A's request.
+
+The resource path and tool calls with explicit unit selections share this gap.
+Carry the requested unit identities into verification and require returned identities
+to match the requested selection before exposing plaintext. This finding concerns
+explicit unit selectors; it does not assume bucket/key names are cryptographically
+signed by the package format.
+
+References:
+- /Volumes/workdata/new_idea/internal/mcpbridge/bridge.go:186
+- /Volumes/workdata/new_idea/internal/mcpbridge/bridge.go:212
+
+F10 [P2] Disconnecting stateful MCP requests can bypass concurrent-work limits.
+Validation: SOURCE-SUPPORTED application/dependency lifetime analysis; no new
+load or disconnect reproduction.
+
+Admission slots cover the HTTP request lifetime. In the supported stateful SDK
+transport, asynchronous MCP method execution can continue after that HTTP
+connection disconnects. The HTTP wrapper releases its slot while work remains
+active, allowing repeated submissions to exceed the intended concurrent-work limit.
+
+The scenario requires supported stateful sessions and requests whose method handlers
+continue after disconnection. It does not apply automatically to every transport
+mode. An authenticated client can repeatedly submit slow calls with unique request
+IDs on a session and disconnect after acceptance, accumulating work beyond the
+HTTP-wrapper counters.
+
+Hold the work permit until the actual method finishes, or reliably cancel and join
+the work before releasing it.
+
+Application reference:
+- /Volumes/workdata/new_idea/internal/mcpsvc/mcpsvc.go:288
+
+Pinned dependency examined: github.com/modelcontextprotocol/go-sdk v1.8.0.
+Executable dependency paths supporting the lifetime analysis:
+- internal/jsonrpc2/conn.go:232: connection context detachment when cancellation
+  propagation is not enabled.
+- mcp/streamable.go:1770: stateful HTTP response lifetime and request cancellation.
+- mcp/server.go:2004: asynchronous handling of method calls.
+
+F11 [P2] Pending approvals are reused after their bindings become obsolete.
+Validation: SOURCE-SUPPORTED approval lookup and settlement analysis; no new
+runtime reproduction. This fails closed and is not an authorization bypass.
+
+Pending-approval deduplication ignores policy epoch and resource bindings. Repeating
+an operation after a relevant resource or policy change can return the old pending
+approval. Once approved, execution rejects it as unusable because those bindings
+no longer match.
+
+This forces avoidable approval/retry cycles. Approving or rejecting the stale row
+lets a later request create a fresh approval; the finding is not a permanent or
+expiry-only lockout.
+
+Reuse only pending approvals whose material bindings still match the current
+operation.
+
+References:
+- /Volumes/workdata/new_idea/internal/approval/approval.go:122
+- /Volumes/workdata/new_idea/internal/content/delete.go:35
+- /Volumes/workdata/new_idea/internal/decisionsvc/service.go:831
+
+EXECUTED VALIDATION
+
+- make check-pg PASSED directly on the reviewed commit. This includes formatting
+  checks, go vet, existing race-enabled tests, and the PostgreSQL-backed test run
+  with fresh execution using disposable schemas.
+- govulncheck v1.9.0 reported zero reachable known vulnerabilities and one
+  non-reachable module-level advisory.
+- The tracked working tree remained clean, and HEAD remained
+  0748925e04420841e68d583676a11c402b5cec20 through the review.
+- No new diagnostic programs, tests, implementation changes, or archived source
+  copies were created.
+- Existing tests passing does not establish that the failure conditions above were
+  exercised. F06 has supporting existing-test flow evidence, but the protected
+  metadata disclosure itself was not newly asserted or reproduced.
+
+REVIEW COVERAGE AND LIMITS
+
+The review covered authentication, policy evaluation and authority-fence enforcement,
+delegation, approvals, compound key release, storage publication and disclosure,
+recovery, administrative operations, audit export, KMS wiring, executor dispatch,
+MCP request handling, and client-bridge verification.
+
+The review did not rely on papers, design documents, or previous review reports as
+correctness evidence. Comments and test names were not treated as proof of behavior.
+The MCP lifetime finding additionally inspected the executable source of the exact
+SDK version pinned by the committed dependency manifest.
+
+Some suspected issues were excluded after examining the implementation: delegation
+records are immutable apart from revocation; token-selected verification keys are
+rejected; JWT algorithm/key-type pairs are checked; and signature/authority-fence
+checks provide real protections. Missing comparisons alone were not promoted to
+findings without a reachable consequence. JWKS redirect/cache observations were
+not promoted to findings in this report.
+
+This is not an exhaustive proof of security or production qualification. The most
+urgent findings are the non-monotonic role-change recovery semantics, executable-
+tool binding, and consistency of authority contexts in compound key releases.

@@ -1,0 +1,41 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-147",
+  "kind": "label_authority",
+  "initial_state": {
+    "unit": "u1",
+    "label": "restricted",
+    "access_revision": 3,
+    "collection_floor": "internal",
+    "classifier_authorized": false
+  },
+  "inputs": [
+    {
+      "id": "proposal",
+      "operation": "propose_label",
+      "unit": "u1",
+      "label": "public",
+      "signer": "unregistered-client"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "proposal_submitted",
+      "request": "proposal"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "unit.label",
+      "equals": "restricted"
+    },
+    {
+      "path": "unit.access_revision",
+      "equals": 3
+    },
+    {
+      "path": "proposal.authoritative",
+      "equals": false
+    }
+  ]
+}

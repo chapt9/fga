@@ -1,0 +1,208 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-144",
+  "kind": "recovery_authority",
+  "initial_state": {
+    "backup_incarnation": 3,
+    "backup_recipient_status": "ACTIVE",
+    "boundary": "recipient-envelope authority admission",
+    "identity": {
+      "tenant": "acme",
+      "actor": "bob",
+      "subject": "bob",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "resource": {
+      "id": "o1",
+      "version": "v1",
+      "state": "LIVE",
+      "access_revision": 1
+    },
+    "recipient": {
+      "id": "bob",
+      "key": "bob-k1",
+      "fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+      "status": "ACTIVE",
+      "revision": 8
+    },
+    "envelope": {
+      "id": "e1",
+      "object": "o1",
+      "version": "v1",
+      "recipient": "bob",
+      "recipient_key": "bob-k1",
+      "state": "ACTIVE",
+      "origin_verified": true
+    },
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "bob",
+        "resource": "o1",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "bob",
+        "resource": "e1",
+        "actions": [
+          "release"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "bob",
+        "resource": "bob-k1",
+        "actions": [
+          "receive-key"
+        ],
+        "effect": "ALLOW"
+      },
+      {
+        "tenant": "acme",
+        "principal": "key-admin",
+        "resource": "bob-k1",
+        "actions": [
+          "revoke"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "authority_available": true,
+    "audit_capacity_available": true,
+    "security_journal": [],
+    "revocation_operator": {
+      "tenant": "acme",
+      "principal": "key-admin",
+      "status": "ACTIVE"
+    },
+    "now": "2026-10-31T12:00:00Z"
+  },
+  "inputs": [
+    {
+      "id": "baseline",
+      "operation": "admit_recipient_envelope",
+      "recipient": "bob",
+      "object": "o1",
+      "version": "v1",
+      "envelope": "e1",
+      "emit": false
+    },
+    {
+      "id": "backup",
+      "operation": "take_catalog_backup",
+      "incarnation": 3
+    },
+    {
+      "id": "revoke",
+      "operation": "revoke_recipient_and_record_recovery",
+      "actor": "key-admin",
+      "recipient": "bob",
+      "key": "bob-k1",
+      "new_revision": 9
+    },
+    {
+      "id": "restore",
+      "operation": "restore_backup",
+      "incarnation": 3,
+      "backup_from": "backup"
+    },
+    {
+      "id": "request_before",
+      "operation": "get_recipient_envelope",
+      "recipient": "bob"
+    },
+    {
+      "id": "reconcile",
+      "operation": "reconcile_security_journal",
+      "new_incarnation": 4,
+      "recipient_revision": 9
+    },
+    {
+      "id": "request_after",
+      "operation": "get_recipient_envelope",
+      "recipient": "bob"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "baseline_eligible",
+      "request": "baseline"
+    },
+    {
+      "step": "backup_saved",
+      "request": "backup"
+    },
+    {
+      "step": "revocation_recorded",
+      "request": "revoke"
+    },
+    {
+      "step": "restored",
+      "request": "restore"
+    },
+    {
+      "step": "before_reconciliation",
+      "request": "request_before"
+    },
+    {
+      "step": "security_reconciled",
+      "request": "reconcile"
+    },
+    {
+      "step": "after_reconciliation",
+      "request": "request_after"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "baseline.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "backup.recipient_status",
+      "equals": "ACTIVE"
+    },
+    {
+      "path": "revoke.committed",
+      "equals": true
+    },
+    {
+      "path": "revoke.recovery_record_durable",
+      "equals": true
+    },
+    {
+      "path": "restore.admission_open",
+      "equals": false
+    },
+    {
+      "path": "reconcile.recipient_status",
+      "equals": "REVOKED"
+    },
+    {
+      "path": "request_after.reason",
+      "equals": "RECIPIENT_REVOKED"
+    },
+    {
+      "path": "request_before.outcome",
+      "equals": "DENY"
+    },
+    {
+      "path": "request_after.outcome",
+      "equals": "DENY"
+    },
+    {
+      "path": "envelopes_delivered",
+      "equals": 0
+    }
+  ]
+}

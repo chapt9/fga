@@ -1,0 +1,45 @@
+\Needspace{10\baselineskip}
+\subsection*{Requirements per phase}
+\begin{longtable}{@{}P{0.14\textwidth}P{0.16\textwidth}P{0.12\textwidth}@{}}
+\toprule Phase & Requirements & New\\\midrule
+P0 & 29 & 10\\
+R1-A & 71 & 10\\
+R1-B & 84 & 21\\
+R1-C & 32 & 14\\
+R2 & 41 & 9\\
+R3 & 20 & 1\\
+\midrule Total & 277 & 65\\
+\bottomrule
+\end{longtable}
+
+\Needspace{12\baselineskip}
+\subsection*{Requirements verified by each test}
+\begin{longtable}{@{}P{0.07\textwidth}P{0.10\textwidth}P{0.64\textwidth}P{0.08\textwidth}@{}}
+\toprule Test & Phase & Requirements & Vectors\\\midrule\endhead
+\hyperlink{test:T-01}{T-01} & R1-A, R1-B & \rr{DAT-001}, \rr{DEC-001}, \rr{DEC-002}, \rr{DEC-003}, \rr{DEC-004}, \rr{DEC-010}, \rr{DLG-003}, \rr{ENF-003}, \rr{POL-001}, \rr{POL-002}, \rr{POL-003}, \rr{POL-004}, \rr{POL-007}, \rr{POL-008}, \rr{POL-010}, \rr{POL-011}, \rr{POL-012}, \rr{POL-014}, \rr{RES-001}, \rr{RES-003}, \rr{RES-007}, \rr{TEST-004} & 10\\
+\hyperlink{test:T-02}{T-02} & R1-A & \rr{POL-002}, \rr{POL-005}, \rr{POL-006}, \rr{POL-007}, \rr{POL-009}, \rr{POL-013} & 10\\
+\hyperlink{test:T-03}{T-03} & R1-A, R1-B, R2 & \rr{AGT-007}, \rr{DAT-002}, \rr{DAT-007}, \rr{DEC-007}, \rr{DEC-008}, \rr{DEC-011}, \rr{DEC-012}, \rr{DLG-001}, \rr{DLG-002}, \rr{DLG-003}, \rr{DLG-004}, \rr{DLG-005}, \rr{DLG-006}, \rr{DLG-007}, \rr{ID-001}, \rr{ID-002}, \rr{ID-003}, \rr{ID-004}, \rr{ID-005}, \rr{ID-006}, \rr{ID-007}, \rr{MCP-004}, \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-003}, \rr{RCP-009}, \rr{RES-009}, \rr{TRU-001}, \rr{TRU-002}, \rr{TRU-003}, \rr{TRU-004}, \rr{TRU-006} & 14\\
+\hyperlink{test:T-04}{T-04} & R1-B, R2 & \rr{AGT-001}, \rr{AGT-002}, \rr{AGT-003}, \rr{AGT-004}, \rr{AGT-005}, \rr{AGT-006}, \rr{APR-001}, \rr{APR-005}, \rr{APR-007}, \rr{ENF-001}, \rr{ENF-002}, \rr{ENF-003}, \rr{ENF-004}, \rr{ENF-005}, \rr{MCP-004} & 5\\
+\hyperlink{test:T-05}{T-05} & R1-B, R2 & \rr{APR-002}, \rr{APR-003}, \rr{APR-004}, \rr{APR-006}, \rr{DAT-005}, \rr{INV-001}, \rr{INV-002}, \rr{INV-003}, \rr{INV-004}, \rr{INV-005}, \rr{INV-006}, \rr{INV-007}, \rr{INV-008}, \rr{INV-009} & 7\\
+\hyperlink{test:T-06}{T-06} & R1-A, R1-B, R1-C, R2 & \rr{ADP-001}, \rr{CNT-001}, \rr{CNT-002}, \rr{CNT-003}, \rr{CNT-009}, \rr{DAT-003}, \rr{DOC-001}, \rr{DOC-003}, \rr{DOC-005}, \rr{DOC-006}, \rr{DOC-007}, \rr{DOC-008}, \rr{MCP-001}, \rr{MCP-002}, \rr{MCP-003}, \rr{MCP-006}, \rr{MCP-008}, \rr{RES-001}, \rr{RES-002}, \rr{RES-003}, \rr{RES-004}, \rr{RES-005}, \rr{RES-006}, \rr{RES-007}, \rr{RES-008} & 8\\
+\hyperlink{test:T-07}{T-07} & R3 & \rr{S3P-001}, \rr{S3P-002}, \rr{S3P-003}, \rr{S3P-004}, \rr{S3P-005}, \rr{S3P-006}, \rr{S3P-007}, \rr{S3P-008}, \rr{S3P-009} & 0\\
+\hyperlink{test:T-08}{T-08} & R1-B, R1-C & \rr{BKD-001}, \rr{BKD-002}, \rr{BKD-003}, \rr{BKD-004}, \rr{BKD-005}, \rr{CNT-009}, \rr{DOC-001}, \rr{DOC-002}, \rr{PUB-001}, \rr{PUB-002}, \rr{PUB-003}, \rr{PUB-004}, \rr{PUB-005}, \rr{PUB-006}, \rr{PUB-007}, \rr{PUB-008} & 7\\
+\hyperlink{test:T-09}{T-09} & R1-B, R1-C, R2 & \rr{CNT-004}, \rr{CNT-005}, \rr{CNT-006}, \rr{CNT-007}, \rr{CNT-009}, \rr{DOC-004}, \rr{DOC-007}, \rr{DRV-001}, \rr{DRV-002}, \rr{DRV-003}, \rr{DRV-004}, \rr{DRV-005}, \rr{DRV-007}, \rr{DRV-008}, \rr{DRV-009}, \rr{DSC-001}, \rr{DSC-002}, \rr{DSC-003}, \rr{DSC-004}, \rr{DSC-005}, \rr{DSC-006}, \rr{LAB-001}, \rr{LAB-002}, \rr{LAB-003}, \rr{LAB-004}, \rr{LAB-005}, \rr{MCP-003}, \rr{SRH-001}, \rr{SRH-002}, \rr{SRH-003}, \rr{SRH-004} & 11\\
+\hyperlink{test:T-10}{T-10} & R1-B, R1-C, R2 & \rr{CRY-001}, \rr{CRY-002}, \rr{CRY-003}, \rr{CRY-004}, \rr{CRY-006}, \rr{CRY-007}, \rr{CRY-008}, \rr{CRY-009}, \rr{KEY-001}, \rr{KEY-004}, \rr{KEY-005}, \rr{KEY-006}, \rr{KEY-011}, \rr{KEY-016}, \rr{MCP-005}, \rr{RCP-004}, \rr{RCP-006}, \rr{RCP-007}, \rr{RCP-008}, \rr{RCP-011} & 0\\
+\hyperlink{test:T-11}{T-11} & R1-B, R1-C, R2 & \rr{CRY-005}, \rr{CRY-010}, \rr{KEY-002}, \rr{KEY-003}, \rr{KEY-009}, \rr{KEY-011}, \rr{KEY-012}, \rr{KEY-013}, \rr{KEY-014}, \rr{KEY-015}, \rr{PUB-002}, \rr{PUB-003}, \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-004}, \rr{RCP-005}, \rr{RCP-008}, \rr{RES-009}, \rr{TRU-005} & 8\\
+\hyperlink{test:T-12}{T-12} & R1-B, R1-C & \rr{CRY-009}, \rr{KEY-001}, \rr{KEY-004}, \rr{KEY-005}, \rr{KEY-008}, \rr{KEY-016}, \rr{KEY-017}, \rr{RCP-011} & 1\\
+\hyperlink{test:T-13}{T-13} & R1-A, R1-B, R1-C, R2 & \rr{AVL-008}, \rr{CNT-008}, \rr{CRY-010}, \rr{DAT-003}, \rr{DAT-004}, \rr{DAT-007}, \rr{DEC-005}, \rr{DEC-006}, \rr{DLG-005}, \rr{DRV-009}, \rr{KEY-010}, \rr{KEY-014}, \rr{KEY-015}, \rr{POL-008}, \rr{REL-003} & 10\\
+\hyperlink{test:T-14}{T-14} & R1-A & \rr{DAT-004}, \rr{DAT-007}, \rr{REL-001}, \rr{REL-002}, \rr{REL-003}, \rr{REL-004}, \rr{REL-005}, \rr{REL-006} & 4\\
+\hyperlink{test:T-15}{T-15} & R1-A, R1-B, R2, R3 & \rr{AUD-001}, \rr{AUD-002}, \rr{AVL-001}, \rr{AVL-005}, \rr{BKD-001}, \rr{REP-001}, \rr{REP-002}, \rr{REP-003} & 0\\
+\hyperlink{test:T-16}{T-16} & R1-B, R2, R3 & \rr{AVL-001}, \rr{AVL-002}, \rr{AVL-003}, \rr{AVL-004}, \rr{AVL-008}, \rr{REP-009} & 3\\
+\hyperlink{test:T-17}{T-17} & R3 & \rr{REP-002}, \rr{REP-004}, \rr{REP-005}, \rr{REP-006}, \rr{REP-008} & 0\\
+\hyperlink{test:T-18}{T-18} & R1-B, R1-C, R3 & \rr{AVL-005}, \rr{AVL-008}, \rr{BKD-005}, \rr{DAT-006}, \rr{KEY-017}, \rr{RCP-011}, \rr{REP-011} & 0\\
+\hyperlink{test:T-19}{T-19} & R1-A, R1-B & \rr{AUD-003}, \rr{DAT-006}, \rr{KEY-007}, \rr{REL-006} & 0\\
+\hyperlink{test:T-20}{T-20} & R1-A, R1-B, R1-C, R2, R3 & \rr{ADM-001}, \rr{ADM-002}, \rr{AGT-008}, \rr{GATE-004}, \rr{MCP-008}, \rr{MOD-001}, \rr{MOD-002}, \rr{MOD-003}, \rr{MOD-004}, \rr{REP-007}, \rr{REP-008}, \rr{REP-010}, \rr{TRU-002} & 3\\
+\hyperlink{test:T-21}{T-21} & R1-C, R2 & \rr{DRV-001}, \rr{DRV-007}, \rr{DRV-008}, \rr{DRV-009}, \rr{FLW-001}, \rr{FLW-002}, \rr{FLW-003}, \rr{FLW-004}, \rr{FLW-005}, \rr{FLW-007}, \rr{FLW-008}, \rr{LAB-002}, \rr{MCP-007} & 14\\
+\hyperlink{test:T-22}{T-22} & R1-A, R1-B, R1-C, R2 & \rr{AVL-006}, \rr{AVL-007}, \rr{CNT-007}, \rr{DEC-009}, \rr{PERF-001}, \rr{SIZ-001}, \rr{SIZ-002} & 0\\
+\bottomrule
+\end{longtable}
+
+\subsection*{Requirements verified by review or by the specification check}
+\rr{ADM-003}, \rr{AUD-004}, \rr{DRV-006}, \rr{ENF-006}, \rr{FLW-006}, \rr{GATE-001}, \rr{GATE-002}, \rr{GATE-003}, \rr{LIB-001}, \rr{LIB-002}, \rr{LIB-003}, \rr{OVR-001}, \rr{OVR-002}, \rr{OVR-003}, \rr{PUB-009}, \rr{QUAL-001}, \rr{QUAL-002}, \rr{QUAL-003}, \rr{QUAL-004}, \rr{QUAL-005}, \rr{RCP-010}, \rr{SMALL-002}, \rr{SMALL-003}, \rr{SMALL-004}, \rr{SMALL-005}, \rr{SRC-001}, \rr{SRC-002}, \rr{SRC-003}, \rr{SRC-004}, \rr{TEST-001}, \rr{TEST-002}, \rr{TEST-003}.

@@ -1,0 +1,6 @@
+{
+  "schema": "fga.evidence/v2",
+  "note": "No implementation execution evidence is supplied with the document revision.",
+  "case_runs": [],
+  "test_runs": []
+}

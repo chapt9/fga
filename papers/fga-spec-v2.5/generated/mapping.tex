@@ -1,0 +1,92 @@
+\begin{longtable}{@{}P{0.16\textwidth}P{0.09\textwidth}P{0.37\textwidth}P{0.28\textwidth}@{}}
+\toprule 1.3 ID & Result & 2.5 requirements & Note\\\midrule\endhead
+SRC-001 & kept & \rr{SRC-001} & Moved to Part 6.\\
+SRC-002 & kept & \rr{SRC-002} & Moved to Part 6.\\
+SRC-003 & kept & \rr{SRC-003} & Moved to Part 6; license record added as SRC-004.\\
+QUAL-001 & kept & \rr{QUAL-001} & Moved to Part 6.\\
+QUAL-002 & kept & \rr{QUAL-002} & Moved to Part 6.\\
+QUAL-003 & kept & \rr{QUAL-003} & Moved to Part 6.\\
+QUAL-004 & kept & \rr{QUAL-004} & Moved to Part 6.\\
+QUAL-005 & kept & \rr{QUAL-005} & Moved to Part 6.\\
+LIB-001 & split & \rr{LIB-001}, \rr{S3P-004} & Raw S3 routing requirement moved to the S3 profile.\\
+LIB-002 & kept & \rr{LIB-002} & Moved to Part 6.\\
+LIB-003 & kept & \rr{LIB-003} & Moved to Part 6.\\
+MOD-001 & kept & \rr{MOD-001} & Moved to Part 6.\\
+MOD-002 & kept & \rr{MOD-002} & Moved to Part 6; per-role import allowlist added as MOD-004.\\
+MOD-003 & kept & \rr{MOD-003} & Moved to Part 6.\\
+UNIFIED-001 & split & \rr{CNT-001}, \rr{CNT-002}, \rr{TRU-006} & Content service and the MCP principal rule separated.\\
+SMALL-001 & moved & \rr{ENF-003} & Adapter rule moved to the enforcement part.\\
+SMALL-002 & kept & \rr{SMALL-002} & Moved to Part 6.\\
+SMALL-003 & kept & \rr{SMALL-003} & Moved to Part 6.\\
+SMALL-004 & kept & \rr{SMALL-004} & Moved to Part 6.\\
+ID-001 & split & \rr{ID-001}, \rr{ID-002}, \rr{ID-003}, \rr{ID-004}, \rr{ID-005}, \rr{ID-006}, \rr{ID-007} & Also absorbs the context-provenance prose of 1.3 Section 4.5 and the token-profile prose of Section 3.3.\\
+ID-002 & split & \rr{DLG-001}, \rr{DLG-002}, \rr{DLG-003}, \rr{DLG-004}, \rr{DLG-005}, \rr{DLG-006}, \rr{DLG-007} & One obligation per requirement.\\
+CANON-001 & split & \rr{RES-001}, \rr{RES-002}, \rr{RES-003}, \rr{RES-006} & Compound-operation rule from Section 4.2 prose added.\\
+CANON-002 & split & \rr{RES-003}, \rr{RES-004}, \rr{RES-005}, \rr{RES-007}, \rr{RES-008} & \\
+CANON-003 & moved & \rr{CNT-003} & Content-specific; moved to Part 3.\\
+COMPAT-001 & split & \rr{POL-001}, \rr{POL-002}, \rr{POL-013} & Evaluator contract (POL-001) makes the engine replaceable; YAML front end from Section 3.3 prose added.\\
+COMPAT-002 & split & \rr{POL-003}, \rr{POL-004}, \rr{DLG-003} & \\
+COMPAT-003 & kept & \rr{POL-012} & Strengthened with a differential reference oracle.\\
+POL-001 & split & \rr{POL-008}, \rr{POL-009} & \\
+POL-002 & split & \rr{POL-003}, \rr{POL-007} & Platform-ceiling rule added as POL-007.\\
+POL-003 & split & \rr{POL-011}, \rr{APR-007}, \rr{APR-001}, \rr{APR-002}, \rr{APR-003} & Approval prose of Section 5.5 moved to enforcement.\\
+POL-004 & kept & \rr{POL-010} & \\
+POL-005 & split & \rr{POL-005}, \rr{POL-006} & Strict evaluation is now required in production.\\
+AUTH-001 & split & \rr{DEC-002}, \rr{DEC-003}, \rr{DEC-010} & \\
+AUTH-002 & split & \rr{DEC-007}, \rr{DEC-008}, \rr{TRU-001}, \rr{TRU-002} & Signed decisions added.\\
+AUTH-003 & split & \rr{DEC-005}, \rr{DEC-006}, \rr{DEC-009} & \\
+AUTH-004 & split & \rr{ENF-001}, \rr{ENF-002}, \rr{ENF-003}, \rr{ENF-004} & \\
+AUTH-005 & split & \rr{DEC-004}, \rr{DEC-001} & \\
+DATA-001 & split & \rr{DAT-001}, \rr{DAT-002} & \\
+DATA-002 & split & \rr{DAT-003}, \rr{DAT-004} & Cache rules of Section 7.2 included.\\
+DATA-003 & split & \rr{APR-004}, \rr{APR-006}, \rr{DAT-005}, \rr{INV-007} & \\
+STO-001 & split & \rr{BKD-003}, \rr{PUB-001} & \\
+STO-002 & split & \rr{S3P-001}, \rr{S3P-002}, \rr{S3P-009} & Moved to Part 5 (R3).\\
+STO-003 & split & \rr{S3P-002}, \rr{S3P-003}, \rr{S3P-006} & Moved to Part 5 (R3).\\
+STO-004 & split & \rr{S3P-007}, \rr{CNT-004}, \rr{CNT-008} & Stream lease bound added.\\
+STO-005 & split & \rr{PUB-002}, \rr{PUB-003}, \rr{PUB-007}, \rr{PUB-008}, \rr{S3P-008} & \\
+STO-006 & split & \rr{PUB-004}, \rr{PUB-005}, \rr{PUB-006}, \rr{PUB-009} & Deletion states added to the state machine.\\
+STO-007 & split & \rr{CNT-005}, \rr{CNT-006} & No-hidden-effects prose of Section 8.7 included.\\
+STO-008 & split & \rr{BKD-001}, \rr{BKD-004}, \rr{REP-010} & \\
+AGT-001 & split & \rr{AGT-001}, \rr{AGT-002}, \rr{AGT-007}, \rr{AGT-008} & Section 9.3 prose included.\\
+AGT-002 & split & \rr{AGT-003}, \rr{AGT-004}, \rr{AGT-005}, \rr{AGT-006} & Invocation protocol of Section 9.2 included.\\
+AGT-003 & split & \rr{INV-001}, \rr{INV-002}, \rr{INV-003}, \rr{INV-004}, \rr{INV-005}, \rr{INV-008} & UNKNOWN resolution added as INV-006.\\
+AGT-004 & split & \rr{FLW-001}, \rr{FLW-002}, \rr{FLW-006} & Session high-water mark added as FLW-003 to FLW-005.\\
+ADP-001 & split & \rr{ENF-005}, \rr{ENF-006}, \rr{ADP-001} & \\
+AI-001 & split & \rr{MCP-004}, \rr{DSC-006} & \\
+AI-002 & split & \rr{DSC-001}, \rr{DSC-002}, \rr{DSC-003}, \rr{DRV-004} & Section 10.5 steps included.\\
+DOC-001 & split & \rr{DOC-001}, \rr{DOC-002}, \rr{DOC-003}, \rr{DOC-004}, \rr{DOC-005}, \rr{DOC-008} & Section 10.2 prose included.\\
+DOC-002 & split & \rr{DOC-006}, \rr{DOC-007} & \\
+DOC-003 & split & \rr{DSC-004}, \rr{DSC-005}, \rr{SRH-001}, \rr{SRH-002}, \rr{SRH-003}, \rr{DRV-006} & Derived-output rules rewritten as DRV-001 to DRV-005.\\
+MCP-001 & split & \rr{MCP-002}, \rr{MCP-003}, \rr{MCP-006} & \\
+MCP-002 & split & \rr{MCP-003}, \rr{MCP-001}, \rr{MCP-005}, \rr{SIZ-002} & Section 10.7 scaling prose included.\\
+CRY-001 & kept & \rr{CRY-001} & \\
+CRY-002 & split & \rr{CRY-002}, \rr{CRY-003}, \rr{CRY-004}, \rr{CRY-005} & \\
+CRY-003 & split & \rr{CRY-006}, \rr{CRY-007}, \rr{CRY-008} & \\
+KEY-001 & split & \rr{KEY-002}, \rr{KEY-003}, \rr{KEY-011}, \rr{KEY-004}, \rr{KEY-005}, \rr{KEY-006} & Sections 12.3 and 12.4 prose included.\\
+KEY-002 & kept & \rr{KEY-007} & \\
+KEY-003 & split & \rr{KEY-009}, \rr{AUD-004} & \\
+KEY-004 & split & \rr{RCP-001}, \rr{RCP-002}, \rr{RCP-003} & \\
+KEY-005 & split & \rr{RCP-004}, \rr{RCP-005}, \rr{RCP-006}, \rr{RCP-007}, \rr{RCP-008} & \\
+KEY-006 & split & \rr{KEY-010}, \rr{KEY-008}, \rr{RCP-009}, \rr{RCP-010} & Rotation table of Section 12.6 included.\\
+REL-001 & split & \rr{REL-001}, \rr{REL-002}, \rr{REL-004} & \\
+REL-002 & kept & \rr{REL-003} & \\
+OPS-001 & moved & \rr{REL-006} & \\
+ADM-001 & split & \rr{ADM-001}, \rr{ADM-002}, \rr{ADM-003} & \\
+AUD-001 & kept & \rr{AUD-003} & \\
+AUD-002 & split & \rr{AUD-001}, \rr{AUD-002} & \\
+HA-001 & split & \rr{REP-001}, \rr{REP-002} & Moved to Part 5 (R3).\\
+HA-002 & kept & \rr{REP-003} & Moved to Part 5 (R3).\\
+HA-003 & split & \rr{AVL-002}, \rr{AVL-003}, \rr{AVL-004}, \rr{REP-009} & Control-plane part moved to Part 1.\\
+HA-004 & split & \rr{AVL-005}, \rr{REP-011} & \\
+HA-005 & split & \rr{REP-004}, \rr{REP-005}, \rr{REP-006} & \\
+MAINT-001 & kept & \rr{REP-007} & \\
+MAINT-002 & kept & \rr{REP-008} & \\
+SCALE-001 & split & \rr{AVL-001}, \rr{AVL-006}, \rr{AVL-007} & Topology table of Section 14.1 included.\\
+TEST-001 & kept & \rr{TEST-001} & \\
+TEST-002 & kept & \rr{TEST-002} & \\
+\bottomrule
+\end{longtable}
+
+\subsection*{New or strengthened since version 1.3}
+\rr{APR-005}, \rr{AVL-008}, \rr{BKD-002}, \rr{BKD-005}, \rr{CNT-007}, \rr{CNT-009}, \rr{CRY-009}, \rr{CRY-010}, \rr{DAT-006}, \rr{DAT-007}, \rr{DEC-008}, \rr{DEC-011}, \rr{DEC-012}, \rr{DRV-001}, \rr{DRV-002}, \rr{DRV-003}, \rr{DRV-005}, \rr{DRV-007}, \rr{DRV-008}, \rr{DRV-009}, \rr{FLW-003}, \rr{FLW-004}, \rr{FLW-005}, \rr{FLW-007}, \rr{FLW-008}, \rr{GATE-001}, \rr{GATE-002}, \rr{GATE-003}, \rr{GATE-004}, \rr{INV-006}, \rr{INV-009}, \rr{KEY-001}, \rr{KEY-012}, \rr{KEY-013}, \rr{KEY-014}, \rr{KEY-015}, \rr{KEY-016}, \rr{KEY-017}, \rr{LAB-001}, \rr{LAB-002}, \rr{LAB-003}, \rr{LAB-004}, \rr{LAB-005}, \rr{MCP-007}, \rr{MCP-008}, \rr{MOD-004}, \rr{OVR-001}, \rr{OVR-002}, \rr{OVR-003}, \rr{PERF-001}, \rr{POL-012}, \rr{POL-014}, \rr{RCP-011}, \rr{REL-005}, \rr{RES-009}, \rr{S3P-005}, \rr{SIZ-001}, \rr{SMALL-005}, \rr{SRC-004}, \rr{SRH-004}, \rr{TEST-003}, \rr{TEST-004}, \rr{TRU-003}, \rr{TRU-004}, \rr{TRU-005}.

@@ -1,0 +1,138 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-142",
+  "kind": "authority_order",
+  "initial_state": {
+    "tenant": "acme",
+    "principal": "alice",
+    "identity_revision": 4,
+    "object": "o1",
+    "generation": 7,
+    "version": "v8",
+    "version_state": "STAGED",
+    "boundary": "publication authority admission; cryptographic and backend preparation is completed setup",
+    "now": "2026-10-31T12:00:00Z",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "policy_epoch": 8,
+    "recovery_incarnation": 3,
+    "current_version": "v7",
+    "metadata_revision": 2,
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "o1",
+        "actions": [
+          "new-version"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "ceiling_denies": [],
+    "upload_intent": {
+      "id": "upload-o1-v8",
+      "actor": "alice",
+      "subject": "alice",
+      "expected_generation": 7,
+      "expected_current_version": "v7",
+      "version": "v8",
+      "state": "STAGED",
+      "expires_at": "2026-10-31T13:00:00Z"
+    },
+    "prepared_payload": {
+      "version": "v8",
+      "blob": "blob-o1-v8",
+      "crypto_version": "crypto-o1-v8",
+      "ciphertext_length": 128,
+      "ciphertext_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "descriptor_signature_verified": true,
+      "signer_status": "ACTIVE",
+      "durable_receipt": {
+        "blob": "blob-o1-v8",
+        "ciphertext_length": 128,
+        "ciphertext_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "qualified_completion": true
+      }
+    },
+    "initial_envelopes": [],
+    "mandatory_approvals": [],
+    "audit_capacity_available": true
+  },
+  "inputs": [
+    {
+      "id": "prepare",
+      "operation": "prepare_publish",
+      "identity_revision": 4,
+      "expected_generation": 7,
+      "object": "o1",
+      "version": "v8",
+      "intent": "upload-o1-v8"
+    },
+    {
+      "id": "revoke",
+      "operation": "revoke_principal",
+      "principal": "alice",
+      "new_revision": 5
+    },
+    {
+      "id": "commit",
+      "operation": "publish",
+      "prepared_request": "prepare"
+    }
+  ],
+  "schedule": [
+    {
+      "step": "prepared",
+      "request": "prepare"
+    },
+    {
+      "step": "revocation_committed",
+      "request": "revoke",
+      "must_complete_before": "admission"
+    },
+    {
+      "step": "admission",
+      "request": "commit"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "prepare.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "prepare.publication_ready",
+      "equals": true
+    },
+    {
+      "path": "revoke.committed",
+      "equals": true
+    },
+    {
+      "path": "commit.reason",
+      "equals": "AUTHORITY_CHANGED"
+    },
+    {
+      "path": "commit.outcome",
+      "equals": "DENY"
+    },
+    {
+      "path": "object.current_version",
+      "not_equals": "v8"
+    },
+    {
+      "path": "publication_audit_success_count",
+      "equals": 0
+    }
+  ]
+}

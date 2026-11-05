@@ -1,0 +1,24 @@
+Specification 2.5 document validation - 31 October 2026
+
+Structural checker: PASS, 277 requirements, 22 test families, 115 cases.
+Concrete fixtures: 10; scenario-only cases: 105.
+Historical mapping: all 85 rows checked against the available v1.3 source.
+Checker regression tests: 15 passed.
+Requirement identifiers: all 277 identifiers of 2.4 retained; none added or removed.
+Cases added in 2.5: V-153 (ceiling declaration), V-154 (time-condition form).
+
+Standalone source: no unresolved local input directives.
+Tectonic standalone compilation: PASS, 99 pages.
+No overfull or underfull boxes in the build log; no unresolved ?? markers.
+All 277 requirement markers present in the extracted PDF text.
+Pages 14 and 15 (policy format) were inspected as rendered images. The other pages were not
+inspected visually in this revision.
+
+Qualification mode still rejects absent implementation evidence: 74 errors for
+--qualify R1-B --features core, and 77 with --features core,ha (family T-16 and the
+multi-node cases are added by the ha feature).
+
+These checks validate the document and its checker. They do not qualify any implementation,
+cryptographic interoperability, production concurrency, recovery or performance. This
+revision supplies no implementation execution evidence. Phase 0 decisions D-04 to D-11 and
+applicable implementation evidence remain release gates.

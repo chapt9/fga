@@ -1,0 +1,143 @@
+{
+  "schema": "fga.fixture/v1",
+  "case_id": "V-141",
+  "kind": "grant_binding",
+  "initial_state": {
+    "decision_id": "d1",
+    "operation_id": "read-u1",
+    "signed_obligations": [
+      {
+        "type": "metadata_projection",
+        "version": 1,
+        "parameters": {
+          "fields": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "signer": "registered-test-authority",
+    "tenant": "acme",
+    "identity": {
+      "tenant": "acme",
+      "actor": "alice",
+      "subject": "alice",
+      "identity_revision": 4,
+      "status": "ACTIVE",
+      "expires_at": "2026-10-31T18:00:00Z",
+      "roles": [
+        "reviewer"
+      ]
+    },
+    "resource": {
+      "id": "u1",
+      "version": "v1",
+      "state": "LIVE",
+      "generation": 1,
+      "access_revision": 1
+    },
+    "policy_epoch": 8,
+    "recovery_incarnation": 3,
+    "now": "2026-10-31T12:00:00Z",
+    "valid_until": "2026-10-31T12:00:30Z",
+    "audience": "storage",
+    "policy_grants": [
+      {
+        "tenant": "acme",
+        "principal": "alice",
+        "resource": "u1",
+        "actions": [
+          "read"
+        ],
+        "effect": "ALLOW"
+      }
+    ],
+    "signing_setup": {
+      "purpose": "decision",
+      "status": "ACTIVE",
+      "trusted_verifiers": [
+        "storage"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "id": "issue",
+      "operation": "issue_signed_decision",
+      "decision_id": "d1"
+    },
+    {
+      "id": "verify_original",
+      "operation": "verify_transmitted_grant",
+      "decision_from": "issue",
+      "consume": false
+    },
+    {
+      "id": "remove",
+      "operation": "alter_transmitted_grant",
+      "decision_id": "d1",
+      "obligations": [],
+      "decision_from": "issue",
+      "verify_after_alteration": true
+    },
+    {
+      "id": "widen",
+      "operation": "alter_transmitted_grant",
+      "decision_id": "d1",
+      "obligations": [
+        {
+          "type": "metadata_projection",
+          "version": 1,
+          "parameters": {
+            "fields": [
+              "id",
+              "title"
+            ]
+          }
+        }
+      ],
+      "decision_from": "issue",
+      "verify_after_alteration": true
+    }
+  ],
+  "schedule": [
+    {
+      "step": "issue_valid_grant",
+      "request": "issue"
+    },
+    {
+      "step": "verify_original_grant",
+      "request": "verify_original"
+    },
+    {
+      "step": "verify_removed_obligation",
+      "request": "remove"
+    },
+    {
+      "step": "verify_widened_obligation",
+      "request": "widen"
+    }
+  ],
+  "assertions": [
+    {
+      "path": "issue.outcome",
+      "equals": "ALLOW"
+    },
+    {
+      "path": "verify_original.accepted",
+      "equals": true
+    },
+    {
+      "path": "remove.accepted",
+      "equals": false
+    },
+    {
+      "path": "widen.accepted",
+      "equals": false
+    },
+    {
+      "path": "protected_effect_count",
+      "equals": 0
+    }
+  ]
+}
