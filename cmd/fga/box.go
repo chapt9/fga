@@ -41,8 +41,11 @@ import (
 //	fga box add-unlock-key -dir D -id ID -public-key B64 -out FILE
 //	             let another program's unlock key open the box, and write the
 //	             box for it to FILE
-//	fga box import -dir D -in FILE
-//	             take the box another program locked for this one's key
+//	fga box import -dir D -in FILE [-tenant T -principal P]
+//	             take the box another program locked for this one's key,
+//	             only when it is the box of P in T, the person's own;
+//	             -tenant and -principal default to $FGA_TENANT and
+//	             $FGA_PRINCIPAL
 //	fga box show -dir D
 //	fga box remove-unlocker -dir D -id ID
 //
@@ -172,8 +175,8 @@ func boxCommand(cmd string, args []string) error {
 	id := fs.String("id", "", "the unlocker's ID, such as \"fga program, dana-laptop\"")
 	protect := fs.Bool("protect", false, "protect this program's unlock key with a passphrase")
 	passphraseFile := fs.String("passphrase-file", "", "file holding the passphrase (default $FGA_KEY_PASSPHRASE)")
-	tenant := fs.String("tenant", os.Getenv("FGA_TENANT"), "init: the box owner's tenant")
-	principal := fs.String("principal", os.Getenv("FGA_PRINCIPAL"), "init: the box owner")
+	tenant := fs.String("tenant", os.Getenv("FGA_TENANT"), "init, import: the box owner's tenant")
+	principal := fs.String("principal", os.Getenv("FGA_PRINCIPAL"), "init, import: the box owner")
 	publicKey := fs.String("public-key", "", "add-unlock-key: the other program's unlock public key (base64)")
 	in := fs.String("in", "", "import: the box file")
 	out := fs.String("out", "", "add-unlock-key: where to write the box for the other program")
@@ -230,8 +233,8 @@ func boxCommand(cmd string, args []string) error {
 		fmt.Printf("added unlock key %s as %q; the box for it is %s\n", keybox.UnlockKeyFingerprint(pub), *id, *out)
 		return nil
 	case "import":
-		if *in == "" {
-			return errors.New("box import needs -in")
+		if *in == "" || *tenant == "" || *principal == "" {
+			return errors.New("box import needs -in, and -tenant and -principal (or $FGA_TENANT and $FGA_PRINCIPAL): whose box it must be")
 		}
 		if boxMode(*dir) {
 			return fmt.Errorf("%s holds a box already", *dir)
@@ -243,6 +246,14 @@ func boxCommand(cmd string, args []string) error {
 		b, err := keybox.Parse(raw)
 		if err != nil {
 			return err
+		}
+		// Only the person's own box is taken, before it is opened or kept:
+		// a box locked for this program's unlock key may be anyone's, and
+		// every command would then work as its owner (security review of 5
+		// November 2026, finding 2).
+		if b.Owner.Tenant != *tenant || b.Owner.Principal != *principal {
+			return fmt.Errorf("%w: the box belongs to %q of %q, not to %q of %q; import only your own box", keybox.ErrBinding,
+				b.Owner.Principal, b.Owner.Tenant, *principal, *tenant)
 		}
 		priv, uid, err := readUnlockKey(*dir, passphrase)
 		if err != nil {

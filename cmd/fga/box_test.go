@@ -81,14 +81,25 @@ func TestKeyBox(t *testing.T) {
 	if err := boxCommand("add-unlock-key", []string{"-dir", dir, "-id", "fga program, laptop 2", "-public-key", base64.StdEncoding.EncodeToString(pub), "-out", file}); err != nil {
 		t.Fatal(err)
 	}
-	if err := boxCommand("import", []string{"-dir", second, "-in", file}); err != nil {
+	// Only the person's own box is taken, and nothing is kept of another's
+	// (security review of 5 November 2026, finding 2).
+	for name, who := range map[string][]string{"someone else's": {"-tenant", "t-acme", "-principal", "mallory"},
+		"another tenant's": {"-tenant", "t-other", "-principal", "dana"}, "anyone's": {}} {
+		if err := boxCommand("import", append([]string{"-dir", second, "-in", file}, who...)); err == nil {
+			t.Fatalf("imported the box as %s", name)
+		}
+		if boxMode(second) {
+			t.Fatalf("kept the box after refusing it as %s", name)
+		}
+	}
+	if err := boxCommand("import", []string{"-dir", second, "-in", file, "-tenant", "t-acme", "-principal", "dana"}); err != nil {
 		t.Fatal(err)
 	}
 	c2, err := loadClient(second, none)
 	if err != nil || c2.Recipient.Fingerprint() != c.Recipient.Fingerprint() {
 		t.Fatalf("the second program's keys: %v", err)
 	}
-	if err := boxCommand("import", []string{"-dir", second, "-in", file}); err == nil {
+	if err := boxCommand("import", []string{"-dir", second, "-in", file, "-tenant", "t-acme", "-principal", "dana"}); err == nil {
 		t.Fatal("a second import over the box")
 	}
 
@@ -151,6 +162,11 @@ func TestImportRustBox(t *testing.T) {
 	if err := os.WriteFile(file, v.Box, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := boxCommand("import", []string{"-dir", dir, "-in", file, "-tenant", "t-acme", "-principal", "lena"}); err == nil || boxMode(dir) {
+		t.Fatalf("dana's box imported for lena: %v", err)
+	}
+	t.Setenv("FGA_TENANT", "t-acme")
+	t.Setenv("FGA_PRINCIPAL", "dana")
 	if err := boxCommand("import", []string{"-dir", dir, "-in", file}); err != nil {
 		t.Fatal(err)
 	}

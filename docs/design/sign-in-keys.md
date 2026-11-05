@@ -83,7 +83,7 @@ Every client command then works from the box and signs its tokens as the box's o
 | `fga box init -dir D [-id ID] [-protect]` | Puts an enrolled key directory's keys in a box opened by a new unlock key, checks that the box opens with the same keys, then removes the separate key files |
 | `fga box unlock-key -dir D -id ID` | Makes this program's unlock key, for the program that has the box; prints its public key and fingerprint |
 | `fga box add-unlock-key -dir D -id ID -public-key B64 -out FILE` | After the person compared the fingerprint, lets the other program's unlock key open the box, and writes the box for it to FILE |
-| `fga box import -dir D -in FILE` | Takes the box another program locked for this one's key |
+| `fga box import -dir D -in FILE [-tenant T -principal P]` | Takes the box another program locked for this one's key, only when it is the box of P in T (by default `$FGA_TENANT` and `$FGA_PRINCIPAL`): another person's box is refused before it is opened or kept |
 | `fga box show` | The owner, the three keys, the unlockers and the trust list |
 | `fga box remove-unlocker -dir D -id ID` | Removes another program's unlocker, for a lost computer |
 | `fga trust add` in box mode | Pins a key in the box's trust list; it needs `-principal`, whose key it is |
@@ -101,7 +101,7 @@ MCP accounts and push accounts keep keys of their own, in a key directory with `
 | `internal/recovery` `TestBackupCoversEveryTable` | `sign_in_keys` is backed up |
 | `cmd/fga` `TestSignInKeyTokens` | The program's key file, its account variables, and reusing tokens per audience |
 | `sdk/go/keybox` `TestRustBox`, `TestGoBox`, `TestSealRefuses` | The box mosaic-key-store's Rust module made opens here byte for byte with both kinds of unlocker. The box made here opens too, and with `-update` it is written for the Rust module to open. Refusals: wrong secrets or keys, trailing bytes, a changed box, another name |
-| `cmd/fga` `TestKeyBox`, `TestImportRustBox` | Converting an enrolled key directory, then working from the box; pairing a second program by file; trust in the box; removing an unlocker; importing the Rust module's box |
+| `cmd/fga` `TestKeyBox`, `TestImportRustBox` | Converting an enrolled key directory, then working from the box; pairing a second program by file, refusing another person's box; trust in the box; removing an unlocker; importing the Rust module's box |
 
 ## Checked against the running demo (5 November 2026)
 
