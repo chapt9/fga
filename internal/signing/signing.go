@@ -179,9 +179,13 @@ type Record struct {
 	// them: a declassified derived version's transitive lineage (DRV-009).
 	// Enforcement binds and rechecks them like the checks' resources.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
-	SingleUse    bool         `json:"single_use"`
-	IssuedAt     time.Time    `json:"issued_at"`
-	ValidUntil   time.Time    `json:"valid_until"`
+	// ActorKey is the fingerprint of the sign-in key that signed the
+	// actor's token, when one did (docs/design/sign-in-keys.md); a
+	// request this decision chains to is held to that key's limits.
+	ActorKey   string    `json:"actor_key,omitempty"`
+	SingleUse  bool      `json:"single_use"`
+	IssuedAt   time.Time `json:"issued_at"`
+	ValidUntil time.Time `json:"valid_until"`
 }
 
 // Dependency is a resource a decision depends on, at the state it was

@@ -31,7 +31,9 @@ import (
 //	trust.json     pinned recipients and trusted signers (RCP-002)
 //
 // Endpoints and tokens come from $FGA_STORAGE_URL, $FGA_KEYS_URL,
-// $FGA_TOKEN (storage audience) and $FGA_KEYS_TOKEN (keys audience).
+// $FGA_TOKEN (storage audience) and $FGA_KEYS_TOKEN (keys audience), or,
+// with both unset, tokens the account signs itself with DIR/signin.key
+// (signin.go).
 //
 // The two private-key files may be protected with a passphrase
 // (docs/design/key-files.md). The passphrase comes from -passphrase-file or
@@ -215,9 +217,21 @@ func loadClient(dir string, passphrase func() ([]byte, error)) (*client.Client, 
 	if b, err := os.ReadFile(filepath.Join(dir, "key_version")); err == nil {
 		version, _ = strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 	}
-	return &client.Client{StorageURL: os.Getenv("FGA_STORAGE_URL"), KeysURL: os.Getenv("FGA_KEYS_URL"), HTTP: httpClient(),
+	c := &client.Client{StorageURL: os.Getenv("FGA_STORAGE_URL"), KeysURL: os.Getenv("FGA_KEYS_URL"), HTTP: httpClient(),
 		StorageToken: os.Getenv("FGA_TOKEN"), KeysToken: os.Getenv("FGA_KEYS_TOKEN"), Recipient: rk, KeyVersion: version,
-		Signer: crypto.SigningKeyFromPrivate(priv), Trust: trust, TempDir: dir}, nil
+		Signer: crypto.SigningKeyFromPrivate(priv), Trust: trust, TempDir: dir}
+	// Without fixed tokens, the account signs its own with its sign-in
+	// key, when the directory holds one (signin.go).
+	if c.StorageToken == "" && c.KeysToken == "" {
+		signer, err := loadSigner(dir, "fga", passphrase)
+		if err != nil {
+			return nil, err
+		}
+		if signer != nil {
+			c.Tokens = signer
+		}
+	}
+	return c, nil
 }
 
 func clientCommand(cmd string, args []string) error {

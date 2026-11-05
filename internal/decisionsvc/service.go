@@ -53,6 +53,9 @@ const (
 	ReasonAdmissionClosed    decision.Reason = "ADMISSION_CLOSED"
 	ReasonAuthentication     decision.Reason = "AUTHENTICATION_FAILED"
 	ReasonApprovalNotUsable  decision.Reason = "APPROVAL_NOT_USABLE"
+	// ReasonKeyLimit: a resource lies outside the limits of the sign-in
+	// key the evidence was signed with (docs/design/sign-in-keys.md).
+	ReasonKeyLimit decision.Reason = "KEY_LIMIT"
 )
 
 // Ref names an identity at the revision the adapter built the request from.
@@ -231,6 +234,11 @@ type Deps struct {
 	// signature on it.
 	Gateways     map[string][]string
 	SelfVerifier *signing.Verifier
+	// SignInKeys, if set, looks up ACTIVE sign-in keys: for a gateway's
+	// decision that a key-signed token began, whose key is checked again
+	// and limits the chained request, and for the gateway's own token
+	// checks (GET /v1/sign-in-keys).
+	SignInKeys authn.SignInKeys
 	// ToolOperations, if set, holds the tenants' registered tool
 	// operations (the executor, AGT-001); the catalog implements it.
 	ToolOperations ToolOperations
@@ -319,7 +327,7 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if req.Tenant == "" || adapter == "" || len(req.Checks) == 0 || len(req.Checks) > s.d.Limits.MaxChecks || !s.audiences[req.Audience] {
 		return deny(ReasonInvalidRequest)
 	}
-	authOK, chained := s.authenticated(adapter, req)
+	authOK, chained, key := s.authenticated(adapter, req)
 	if !authOK {
 		return deny(ReasonAuthentication)
 	}
@@ -419,6 +427,11 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 	if !targetsMatch(op, req.Checks, checks, bound) {
 		return deny(ReasonTargetMismatch)
 	}
+	// A sign-in key's limits only ever narrow: a resource outside them is
+	// denied whatever the rules allow.
+	if key != nil && !key.allows(bound, snap.Info.LabelOrder) {
+		return deny(ReasonKeyLimit)
+	}
 
 	env := decision.Envelope{Tenant: req.Tenant, Adapter: adapter, Actor: decision.Ref(req.Actor), Delegation: req.Delegation, Via: via}
 	if req.Subject != nil {
@@ -495,6 +508,9 @@ func (s *Service) decide(ctx context.Context, adapter string, req Request, resp 
 		return deny(gate.ReasonDecisionExpired)
 	}
 	rec := s.record(resp.DecisionID, adapter, req, op, binding, bound, snap, d.Results, incarnation)
+	if key != nil {
+		rec.ActorKey = key.fingerprint
+	}
 	rec.ObligationMappingVersion, rec.Obligations = mapping, obligations
 	if op.BindsLineage != "" {
 		// A derived version decided without its sources still depends on
@@ -567,30 +583,82 @@ func (s *Service) record(id, adapter string, req Request, op registry.Operation,
 // which the gate verifies against authoritative state; otherwise
 // caller-asserted identity plus a workload identity would be enough, which
 // TRU-003 forbids.
-func (s *Service) authenticated(adapter string, req Request) (bool, *signing.Record) {
+func (s *Service) authenticated(adapter string, req Request) (bool, *signing.Record, *keyUse) {
 	if req.Evidence == "" {
-		return req.Delegation != "" && adapter != PublicAdapter, nil
+		return req.Delegation != "" && adapter != PublicAdapter, nil, nil
 	}
 	if signed, ok := signing.ParseEvidence(req.Evidence); ok {
 		rec, ok := s.chained(adapter, req, signed)
-		return ok, rec
+		if !ok || rec.ActorKey == "" {
+			return ok, rec, nil
+		}
+		// The gateway's decision began with a key-signed token: the key
+		// must still be the actor's and ACTIVE, and its limits hold for
+		// every chained request.
+		if s.d.SignInKeys == nil {
+			return false, nil, nil
+		}
+		k, found, err := s.d.SignInKeys(rec.Tenant, rec.ActorKey)
+		if err != nil || !found || k.Principal != rec.Actor.ID {
+			return false, nil, nil
+		}
+		return true, rec, &keyUse{fingerprint: rec.ActorKey, limits: k.Limits}
 	}
 	audiences := s.d.AdapterAudiences[adapter]
 	if adapter == PublicAdapter {
 		audiences = []string{s.d.PublicAudience}
 	}
 	if s.d.Authn == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	for _, audience := range audiences {
 		if audience == "" {
 			continue
 		}
 		if c, err := s.d.Authn.Verify(req.Evidence, audience); err == nil {
-			return c.Tenant == req.Tenant && c.Subject == req.Actor.ID, nil
+			ok := c.Tenant == req.Tenant && c.Subject == req.Actor.ID
+			if !ok || c.SignInKey == "" {
+				return ok, nil, nil
+			}
+			return true, nil, &keyUse{fingerprint: c.SignInKey, limits: c.Limits}
 		}
 	}
-	return false, nil
+	return false, nil, nil
+}
+
+// keyUse is the sign-in key a request's evidence was signed with, and its
+// limits (docs/design/sign-in-keys.md).
+type keyUse struct {
+	fingerprint string
+	limits      authn.KeyLimits
+}
+
+// allows reports whether every resource lies within the key's limits: in
+// one of its spaces, for a resource in a space (a bucket's own name, or
+// the bucket attribute of what it holds), and at most its label, for a
+// resource with a label. A label outside the order is not within.
+func (k *keyUse) allows(resources []registry.Resource, order []string) bool {
+	l := k.limits
+	for _, r := range resources {
+		if len(l.Spaces) > 0 {
+			space, ok := r.Attributes["bucket"].(string)
+			if r.Type == "storage.bucket" {
+				space, ok = r.Attributes["name"].(string)
+			}
+			if ok && !slices.Contains(l.Spaces, space) {
+				return false
+			}
+		}
+		if l.MaxLabel != "" {
+			if label, ok := r.Attributes["label"].(string); ok {
+				max, at := slices.Index(order, l.MaxLabel), slices.Index(order, label)
+				if max < 0 || at < 0 || at > max {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // chained accepts a gateway's earlier decision as the user's evidence

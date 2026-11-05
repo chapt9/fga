@@ -167,8 +167,13 @@ func PrivateKeyFile(path string) (ed25519.PrivateKey, error) {
 }
 
 // Tokens returns the access-token verifier.
-func (c Common) Tokens() (*authn.Verifier, error) {
-	return c.TokenIssuer.Verifier(time.Now)
+// SignInLookupTimeout bounds one sign-in key lookup in the catalog.
+const SignInLookupTimeout = 5 * time.Second
+
+// Tokens returns the first-hop token verifier; keys answers sign-in key
+// lookups when token_issuer.sign_in_keys is set.
+func (c Common) Tokens(keys authn.SignInKeys) (*authn.Verifier, error) {
+	return c.TokenIssuer.VerifierWith(time.Now, keys)
 }
 
 // Verifier returns a decision verifier for audience. Single-use

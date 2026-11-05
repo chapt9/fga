@@ -135,7 +135,7 @@ func run(args []string) error {
 }
 
 func serve(ctx context.Context, cfg Config, pool *pgxpool.Pool, store *catalog.Store) error {
-	tokens, err := cfg.Tokens()
+	tokens, err := cfg.Tokens(store.SignInKeyLookup(roleconfig.SignInLookupTimeout))
 	if err != nil {
 		return err
 	}

@@ -132,6 +132,12 @@ func SigningKeyFingerprint(publicKey []byte) Digest {
 	return domainHash("fga.signing-key/v1", publicKey)
 }
 
+// SignInKeyFingerprint identifies an Ed25519 sign-in public key, a key
+// purpose of its own (RCP-001, sign-in-keys.md).
+func SignInKeyFingerprint(publicKey []byte) Digest {
+	return domainHash("fga.sign-in-key/v1", publicKey)
+}
+
 // PayloadAAD is the 60-byte payload binding of crypto-format-profile.tex
 // (CRY-003): "FGAAD001", tenant, object and crypto-version UUIDs, suite and
 // format.

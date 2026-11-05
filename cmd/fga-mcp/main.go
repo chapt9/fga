@@ -10,11 +10,13 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -215,9 +217,56 @@ func (p Peer) client() (*http.Client, error) {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }
 
-// tokens returns the verifier of the users' tokens.
+// tokens returns the verifier of the users' tokens. This role keeps no
+// catalog, so it looks sign-in keys up at the decision role
+// (GET /v1/sign-in-keys), which checks the token again for every tool call.
 func (c Config) tokens() (*authn.Verifier, error) {
-	return c.TokenIssuer.Verifier(time.Now)
+	if !c.TokenIssuer.SignInKeys {
+		return c.TokenIssuer.Verifier(time.Now)
+	}
+	client, err := c.Decision.client()
+	if err != nil {
+		return nil, err
+	}
+	return c.TokenIssuer.VerifierWith(time.Now, decisionSignInKeys(c.Decision.URL, client))
+}
+
+// decisionSignInKeys looks sign-in keys up at the decision role at base.
+func decisionSignInKeys(base string, client *http.Client) authn.SignInKeys {
+	return func(tenant, fingerprint string) (authn.SignInKey, bool, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		u := strings.TrimRight(base, "/") + "/v1/sign-in-keys/" + url.PathEscape(fingerprint) + "?tenant=" + url.QueryEscape(tenant)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return authn.SignInKey{}, false, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return authn.SignInKey{}, false, err
+		}
+		defer resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK:
+		case http.StatusNotFound:
+			return authn.SignInKey{}, false, nil
+		default:
+			return authn.SignInKey{}, false, fmt.Errorf("decision role: %s", resp.Status)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if err != nil {
+			return authn.SignInKey{}, false, err
+		}
+		var a struct {
+			Principal string          `json:"principal"`
+			PublicKey []byte          `json:"public_key"`
+			Limits    authn.KeyLimits `json:"limits"`
+		}
+		if err := strictjson.Decode(body, &a); err != nil || a.Principal == "" || len(a.PublicKey) != ed25519.PublicKeySize {
+			return authn.SignInKey{}, false, fmt.Errorf("decision role: malformed sign-in key: %v", err)
+		}
+		return authn.SignInKey{Tenant: tenant, Principal: a.Principal, Public: a.PublicKey, Limits: a.Limits}, true, nil
+	}
 }
 
 func main() {

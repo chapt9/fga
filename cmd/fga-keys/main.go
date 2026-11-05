@@ -110,7 +110,7 @@ func run(path string) error {
 	if err := catalog.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	tokens, err := cfg.Tokens()
+	tokens, err := cfg.Tokens(catalog.New(pool, cfg.OutboxCapacity).SignInKeyLookup(roleconfig.SignInLookupTimeout))
 	if err != nil {
 		return err
 	}

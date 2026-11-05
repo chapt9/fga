@@ -52,7 +52,7 @@ import (
 // export directory holds past it.
 var Tables = []string{
 	"tenants", "identities", "delegations", "capabilities", "tenant_epochs", "authority_state", "resources", "aliases", "share_grants",
-	"tool_operations", "recipient_keys", "signing_keys", "classifiers", "kek_versions", "buckets", "sources", "source_versions", "data_tools", "data_tool_versions",
+	"tool_operations", "recipient_keys", "signing_keys", "sign_in_keys", "classifiers", "kek_versions", "buckets", "sources", "source_versions", "data_tools", "data_tool_versions",
 	"objects", "object_versions",
 	"document_versions", "document_units",
 	"document_intents", "upload_intents", "derived_versions", "lineage", "envelopes",
@@ -748,6 +748,8 @@ func ReconcileWith(ctx context.Context, store *catalog.Store, blobs *blob.Store,
 			sql = `UPDATE delegations SET revoked = true, revision = revision + 1 WHERE tenant = $1 AND id = $2 AND NOT revoked`
 		case journal.SourceDisabled:
 			sql = `UPDATE sources SET disabled = true WHERE tenant = $1 AND id = $2 AND NOT disabled`
+		case journal.SignInKeyRemoved:
+			sql = catalog.RemoveSignInKeySQL
 		case journal.RecipientRevoked:
 			sql = `WITH k AS (UPDATE recipient_keys SET status = 'REVOKED', revision = revision + 1
 			                   WHERE tenant = $1 AND fingerprint = $2 AND status <> 'REVOKED' RETURNING fingerprint)

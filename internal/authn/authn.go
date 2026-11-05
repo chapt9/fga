@@ -51,6 +51,11 @@ type Claims struct {
 	Audience  []string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
+	// SignInKey is the fingerprint of the sign-in key that signed a
+	// token of SignInIssuer, and Limits are that key's limits; both are
+	// empty for any other issuer's token.
+	SignInKey string
+	Limits    KeyLimits
 }
 
 // private holds the claims beyond the registered ones.
@@ -66,6 +71,9 @@ type Verifier struct {
 	now         func() time.Time
 	types       []string
 	maxLifetime time.Duration
+	// signIn, when set, also accepts tokens of SignInIssuer
+	// (AcceptSignInKeys).
+	signIn SignInKeys
 }
 
 // NewVerifier returns a Verifier for issuer's Ed25519 keys, by key ID.
@@ -87,12 +95,19 @@ func (v *Verifier) Verify(token, audience string) (Claims, error) {
 		return fail("want exactly one signature")
 	}
 	h := tok.Headers[0]
-	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); !slices.Contains(v.types, typ) {
-		return fail("token type %q is not one of %q", typ, v.types)
-	}
 	_, x5cErr := h.Certificates(x509.VerifyOptions{})
 	if h.JSONWebKey != nil || !errors.Is(x5cErr, jose.ErrMissingX5cHeader) || h.ExtraHeaders["jku"] != nil || h.ExtraHeaders["x5u"] != nil {
 		return fail("the token names its own key")
+	}
+	// A token an account signed itself goes to its own check, which
+	// verifies everything again with the registered key; the issuer is
+	// only read here to choose the check.
+	var claimed jwt.Claims
+	if err := tok.UnsafeClaimsWithoutVerification(&claimed); err == nil && claimed.Issuer == SignInIssuer {
+		return v.verifySignIn(tok, h, audience)
+	}
+	if typ, _ := h.ExtraHeaders[jose.HeaderType].(string); !slices.Contains(v.types, typ) {
+		return fail("token type %q is not one of %q", typ, v.types)
 	}
 	key, ok := v.keys(h.KeyID)
 	if !ok {

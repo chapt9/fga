@@ -104,7 +104,7 @@ func run(path string) error {
 		return err
 	}
 	defer blobs.Close()
-	tokens, err := cfg.Tokens()
+	tokens, err := cfg.Tokens(store.SignInKeyLookup(roleconfig.SignInLookupTimeout))
 	if err != nil {
 		return err
 	}

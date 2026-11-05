@@ -80,6 +80,9 @@ type Journal struct {
 	RevokedKind        string
 	SourceSetKind      string
 	SourceDisabledKind string
+	// SignInKeyRemovedKind names a sign-in key's removal
+	// (journal.SignInKeyRemoved).
+	SignInKeyRemovedKind string
 }
 
 // Admin makes administrative changes inside one transaction.

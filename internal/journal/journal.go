@@ -61,10 +61,13 @@ const (
 	SourceSet = "source-set"
 	// SourceDisabled names a disabled source of JSON readings.
 	SourceDisabled = "source-disabled"
+	// SignInKeyRemoved names a removed sign-in key by its fingerprint;
+	// reconcile removes it again, so a restore cannot bring it back.
+	SignInKeyRemoved = "sign-in-key-removed"
 )
 
 var kinds = []string{IdentityDisabled, DelegationRevoked, RecipientRevoked, SignerCompromised, EpochRaised, Incarnation, GrantRemoved, AccessRemoved,
-	IdentitySet, SourceSet, SourceDisabled}
+	IdentitySet, SourceSet, SourceDisabled, SignInKeyRemoved}
 
 // Entry is one journaled change. Subject names what changed: an identity,
 // delegation or key, an epoch or an incarnation number. Seq is its

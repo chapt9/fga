@@ -145,10 +145,6 @@ func serve(args []string) error {
 	for id, b64 := range cfg.PublisherKeys {
 		publishers[id], _ = roleconfig.PublicKey(b64) // validated
 	}
-	tokens, err := cfg.TokenIssuer.Verifier(time.Now)
-	if err != nil {
-		return err
-	}
 	// The journal must exist: it is created once by journal init, never
 	// implicitly.
 	j, err := journal.Open(cfg.JournalDir, time.Now)
@@ -165,13 +161,18 @@ func serve(args []string) error {
 	if err := catalog.Migrate(ctx, pool); err != nil {
 		return err
 	}
+	store := cfg.store(pool)
+	tokens, err := cfg.TokenIssuer.VerifierWith(time.Now, store.SignInKeyLookup(roleconfig.SignInLookupTimeout))
+	if err != nil {
+		return err
+	}
 	common := roleconfig.Common{Profile: cfg.Profile, Listen: cfg.Listen, TLS: cfg.TLS, DevAdapter: cfg.DevConsole}
 	server, consoleOf, err := common.Server(nil)
 	if err != nil {
 		return err
 	}
 	server.Handler = adminapi.Handler(adminapi.Config{
-		Ops:    adminops.Ops{Store: cfg.store(pool), Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now},
+		Ops:    adminops.Ops{Store: store, Journal: func() (*journal.Journal, error) { return j, nil }, Now: time.Now},
 		Tokens: tokens, Audience: cfg.Audience, Admins: cfg.Admins, Consoles: cfg.Consoles, ConsoleOf: consoleOf,
 		Policy: func() (adminapi.Policy, error) { return adminapi.LoadPolicy(cfg.BundleDir, publishers) },
 		Logger: slog.Default(),

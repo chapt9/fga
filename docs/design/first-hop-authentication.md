@@ -48,6 +48,10 @@ Exactly one of `keys`, `jwks_url` and `jwks_file` is set.
 - **Claims.** A production provider must issue the same claims as the development profile, `fga_tenant` included (a claim mapper in Keycloak, an optional claim in Entra ID).
 - **Profiles.** Production refuses the `fga-dev` issuer and a key set fetched over plain http.
 
+## Key-signed tokens
+
+A role with `token_issuer.sign_in_keys` also accepts tokens an account signs itself with a sign-in key an administrator registered for it: issuer `fga-sign-in-key`, the key's fingerprint as `kid`, exactly one audience, at most 5 minutes, and only for the key's owner. The key is looked up on every token, and its limits narrow the decision. See [sign-in-keys.md](sign-in-keys.md).
+
 ## Binding at the decision role
 
 1. The adapter is authenticated by its connection.

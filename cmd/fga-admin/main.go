@@ -23,6 +23,12 @@
 //	grant              -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source|source-client]
 //	revoke             -tenant T -actor ID [-type T -actions a,b | -preset storage|approver|source|source-client]   (journaled)
 //	signing-key add    -tenant T -principal ID -public-key B64
+//	sign-in-key add    -tenant T -principal ID -public-key B64 -key-label TEXT [-limits JSON]
+//	                   register a key the account signs its own short tokens with, after checking its
+//	                   fingerprint with the owner; limits {"services":[…],"max_label":"…","spaces":[…]}
+//	                   narrow it below the account (docs/design/sign-in-keys.md)
+//	sign-in-key remove -tenant T -principal ID -fingerprint FP   (journaled; refused from the next request on)
+//	sign-in-key list   -tenant T -principal ID
 //	classifier add     -tenant T -id NAME -signer FP          register a label classifier with its ACTIVE signing key (LAB-002, D-06)
 //	classifier revoke  -tenant T -id NAME
 //	signing-key retire|compromise -tenant T -fingerprint FP  (compromise is journaled)
@@ -98,6 +104,7 @@ import (
 
 	"fga/internal/adminops"
 	"fga/internal/auditexport"
+	"fga/internal/authn"
 	"fga/internal/backupcrypt"
 	"fga/internal/blob"
 	"fga/internal/catalog"
@@ -196,6 +203,8 @@ func run(args []string) error {
 	principal := fs.String("principal", "", "principal identity")
 	publicKey := fs.String("public-key", "", "base64 public key")
 	fingerprint := fs.String("fingerprint", "", "key fingerprint")
+	keyLabel := fs.String("key-label", "", "sign-in key: where it is used")
+	keyLimits := fs.String("limits", "", "sign-in key: limits as JSON")
 	signerFP := fs.String("signer", "", "classifier add: the classifier's ACTIVE content-signing key fingerprint")
 	epoch := fs.Uint64("epoch", 0, "policy epoch")
 	out := fs.String("out", "", "backup directory or key file to create")
@@ -360,6 +369,47 @@ func run(args []string) error {
 			fmt.Println(fp)
 		}
 		return err
+	case "sign-in-key add":
+		if err := need(*tenant, *principal, *publicKey, *keyLabel); err != nil {
+			return errors.New("sign-in-key add needs -tenant, -principal, -public-key and -key-label")
+		}
+		pub, err := base64.StdEncoding.DecodeString(*publicKey)
+		if err != nil {
+			return err
+		}
+		var limits authn.KeyLimits
+		if *keyLimits != "" {
+			if err := strictjson.Decode([]byte(*keyLimits), &limits); err != nil {
+				return fmt.Errorf("-limits: %w", err)
+			}
+		}
+		fp, err := ops.AddSignInKey(ctx, operator, *tenant, *principal, pub, *keyLabel, limits)
+		if err == nil {
+			fmt.Println(fp)
+		}
+		return err
+	case "sign-in-key remove":
+		if err := need(*tenant, *principal, *fingerprint); err != nil {
+			return errors.New("sign-in-key remove needs -tenant, -principal and -fingerprint")
+		}
+		removed, err := ops.RemoveSignInKey(ctx, operator, *tenant, *principal, *fingerprint)
+		if err == nil && !removed {
+			fmt.Println("the key was removed already")
+		}
+		return err
+	case "sign-in-key list":
+		if err := need(*tenant, *principal); err != nil {
+			return errors.New("sign-in-key list needs -tenant and -principal")
+		}
+		keys, err := ops.SignInKeys(ctx, *tenant, *principal)
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			limits, _ := json.Marshal(k.Limits)
+			fmt.Printf("%s  %-7s  %s  %s\n", k.Fingerprint, k.Status, k.Label, limits)
+		}
+		return nil
 	case "classifier add":
 		if err := need(*tenant, *id, *signerFP); err != nil {
 			return errors.New("classifier add needs -tenant, -id and -signer")

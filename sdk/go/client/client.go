@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"fga/internal/cryptowire"
@@ -74,6 +75,10 @@ type Client struct {
 	HTTP         *http.Client
 	StorageToken string
 	KeysToken    string
+	// Tokens, when set, signs a fresh token per audience for every request
+	// that has no fixed token above: an account that signs its own tokens
+	// with a sign-in key (docs/design/sign-in-keys.md).
+	Tokens TokenSource
 	// Approval is presented with every request when set (the Fga-Approval
 	// header); operations that need one use it.
 	Approval   string
@@ -85,6 +90,27 @@ type Client struct {
 	// private (0600) and removed afterwards (CRY-006).
 	TempDir string
 	Now     func() time.Time
+}
+
+// Audiences of the roles a Client calls.
+const (
+	StorageAudience = "fga-storage"
+	KeysAudience    = "fga-keys"
+)
+
+// TokenSource returns a valid access token for audience.
+type TokenSource interface {
+	Token(audience string) (string, error)
+}
+
+// audienceOf is the audience of the role a request URL addresses: the keys
+// role's when it is under KeysURL (the longer of two matching bases),
+// otherwise the storage role's.
+func (c *Client) audienceOf(url string) string {
+	if c.KeysURL != "" && strings.HasPrefix(url, c.KeysURL) && (!strings.HasPrefix(url, c.StorageURL) || len(c.KeysURL) > len(c.StorageURL)) {
+		return KeysAudience
+	}
+	return StorageAudience
 }
 
 func (c *Client) do(ctx context.Context, method, url, token string, body io.Reader, length int64, header map[string]string, out any) (*http.Response, error) {
@@ -106,6 +132,11 @@ func (c *Client) doLimit(ctx context.Context, method, url, token string, body io
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
+	}
+	if token == "" && c.Tokens != nil {
+		if token, err = c.Tokens.Token(c.audienceOf(url)); err != nil {
+			return nil, err
+		}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if c.Approval != "" {

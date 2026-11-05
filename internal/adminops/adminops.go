@@ -114,6 +114,7 @@ func (o Ops) event(tenant string, who Who, change, typ, id string) audit.Event {
 func (o Ops) journal() catalog.Journal {
 	return catalog.Journal{StateKind: journal.IdentitySet, RemovalKind: journal.AccessRemoved, DisabledKind: journal.IdentityDisabled,
 		RevokedKind: journal.DelegationRevoked, SourceSetKind: journal.SourceSet, SourceDisabledKind: journal.SourceDisabled,
+		SignInKeyRemovedKind: journal.SignInKeyRemoved,
 		Append: func(kind, tenant, subject string) (string, []string, error) {
 			if o.Journal == nil {
 				return "", nil, catalog.ErrNoJournal

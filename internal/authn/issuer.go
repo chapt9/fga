@@ -44,6 +44,10 @@ type IssuerConfig struct {
 	// MaxLifetime bounds a token's lifetime (Go duration, default 1h, at
 	// most 24h).
 	MaxLifetime string `json:"max_lifetime,omitempty"`
+	// SignInKeys also accepts tokens an account signs itself with a
+	// registered sign-in key (SignInIssuer); the role answers the key
+	// lookups (Verifier.AcceptSignInKeys).
+	SignInKeys bool `json:"sign_in_keys,omitempty"`
 }
 
 // Validate reports the configuration's problems; production refuses the
@@ -58,6 +62,8 @@ func (c IssuerConfig) Validate(production bool) error {
 	switch {
 	case c.Issuer == "" || sources != 1:
 		return errors.New("token_issuer needs issuer and exactly one of keys, jwks_url and jwks_file")
+	case c.Issuer == SignInIssuer:
+		return errors.New("token_issuer.issuer " + SignInIssuer + " is reserved for sign-in keys")
 	case production && c.Issuer == DevIssuer:
 		return errors.New("the development token issuer is not allowed in production")
 	case c.JWKSURL != "" && !strings.HasPrefix(c.JWKSURL, "https://"):
@@ -82,7 +88,21 @@ func (c IssuerConfig) lifetime() (time.Duration, error) {
 	return d, nil
 }
 
-// Verifier returns the issuer's token verifier.
+// VerifierWith returns the issuer's token verifier, which also accepts
+// tokens signed with sign-in keys from keys when SignInKeys is set. A role
+// that cannot look keys up passes nil, and then may not set SignInKeys.
+func (c IssuerConfig) VerifierWith(now func() time.Time, keys SignInKeys) (*Verifier, error) {
+	v, err := c.Verifier(now)
+	if err != nil || !c.SignInKeys {
+		return v, err
+	}
+	if keys == nil {
+		return nil, errors.New("token_issuer.sign_in_keys: this role cannot look sign-in keys up")
+	}
+	return v.AcceptSignInKeys(keys), nil
+}
+
+// Verifier returns the issuer's token verifier, without sign-in keys.
 func (c IssuerConfig) Verifier(now func() time.Time) (*Verifier, error) {
 	lifetime, err := c.lifetime()
 	if err != nil {

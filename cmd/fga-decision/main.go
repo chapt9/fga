@@ -26,6 +26,7 @@ import (
 
 	"fga/internal/admission"
 	"fga/internal/approval"
+	"fga/internal/authn"
 	"fga/internal/catalog"
 	"fga/internal/decision"
 	"fga/internal/decisionsvc"
@@ -140,7 +141,7 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	if err != nil {
 		return nil, err
 	}
-	tokens, err := tokenVerifier(cfg)
+	tokens, err := tokenVerifier(cfg, store.SignInKeyLookup(signInLookupTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -152,17 +153,22 @@ func wire(ctx context.Context, cfg Config, store *catalog.Store) (*decisionsvc.S
 	}, time.Now)
 	return decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Authn: tokens, AdapterAudiences: cfg.AdapterAudiences, PublicAudience: cfg.PublicAudience, Gateways: cfg.Gateways, SelfVerifier: self,
+		SignInKeys: store.SignInKeyLookup(signInLookupTimeout),
 		Operations: registry.CoreOperations(types), Authority: store, Approvals: approval.New(store.Pool(), time.Now),
 		Signer: signer, Outbox: store, Audiences: cfg.Audiences, MaxAge: maxAge, Limits: decisionsvc.DefaultLimits,
 		Admission: admission.New(cfg.limits()), ToolOperations: store, Lineage: store, Now: time.Now})
 }
 
-// tokenVerifier returns the configured first-hop token verifier, or nil.
-func tokenVerifier(cfg Config) (decisionsvc.TokenVerifier, error) {
+// signInLookupTimeout bounds one sign-in key lookup in the catalog.
+const signInLookupTimeout = 5 * time.Second
+
+// tokenVerifier returns the configured first-hop token verifier, or nil;
+// keys answers sign-in key lookups.
+func tokenVerifier(cfg Config, keys authn.SignInKeys) (decisionsvc.TokenVerifier, error) {
 	if cfg.TokenIssuer == nil {
 		return nil, nil
 	}
-	return cfg.TokenIssuer.Verifier(time.Now)
+	return cfg.TokenIssuer.VerifierWith(time.Now, keys)
 }
 
 func loadSigner(cfg Config) (*signing.Signer, error) {

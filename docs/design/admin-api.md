@@ -22,6 +22,9 @@ A refusal is logged with the console, tenant and subject; it changes nothing.
 | `POST /v1/admin/identities/{id}/disable` | disable an identity (final). Refused with 409 and `unreadable`, client-mode files per bucket, while it is the last reader of any; optional body `{"confirm_unreadable": true}` disables it anyway (see "Last readers") |
 | `POST /v1/admin/identities/{id}/capabilities/grant` | grant a `preset` (`storage`, `approver`, `source`, `source-client`) or `capabilities` (type to actions) |
 | `POST /v1/admin/identities/{id}/capabilities/revoke` | revoke them; answers whether the identity held any |
+| `GET /v1/admin/identities/{id}/sign-in-keys` | the account's sign-in keys, active and removed, with their labels and limits ([sign-in-keys.md](sign-in-keys.md)) |
+| `POST /v1/admin/identities/{id}/sign-in-keys` | register a sign-in key: `{"public_key", "label", "limits"}`; answers its fingerprint. 400 for a key registered before, active or removed |
+| `POST /v1/admin/identities/{id}/sign-in-keys/{fp}/remove` | remove one at once, journaled; answers whether it was still active |
 | `GET /v1/admin/delegations`, `POST /v1/admin/delegations` | list; add one (`id`, `actor`, `subject`, `audience`, `grants`, `expires_in`, optional `parent`) |
 | `POST /v1/admin/delegations/{id}/revoke` | revoke a delegation |
 | `GET /v1/admin/buckets`, `POST /v1/admin/buckets` | list; create one (`name`, `project`, `label`, `scope`, `encryption`, defaults `internal` and `server`) |
@@ -44,7 +47,7 @@ Lists answer `{"items": [...], "next": "..."}`; pass `next` as `after` for the f
 - 404 for an unknown identity or delegation, and 409 for one that exists.
 - 503 when a change cannot be recorded as it must be: the security journal cannot record its entry, the catalog is bound to another journal, or the audit outbox is full. 503 also when the bundle cannot be used (audit F5).
 
-The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create`, `mcp enable` and `source add|put|try|review|disable|list` make the same changes through the same code, `internal/adminops`.
+The `fga-admin` commands `identity put`, `identity disable`, `grant`, `revoke`, `delegation add`, `delegation revoke`, `bucket create`, `mcp enable`, `sign-in-key add|remove|list` and `source add|put|try|review|disable|list` make the same changes through the same code, `internal/adminops`.
 
 ## Audit and journal
 

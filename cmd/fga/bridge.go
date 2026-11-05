@@ -36,8 +36,22 @@ func mcpBridge(args []string) error {
 		return err
 	}
 	token := os.Getenv("FGA_MCP_TOKEN")
-	if *dir == "" || *upstream == "" || token == "" {
-		return errors.New("mcp-bridge needs -dir or $FGA_KEY_DIR, -mcp-url or $FGA_MCP_URL, and $FGA_MCP_TOKEN")
+	if *dir == "" || *upstream == "" {
+		return errors.New("mcp-bridge needs -dir or $FGA_KEY_DIR, -mcp-url or $FGA_MCP_URL, and $FGA_MCP_TOKEN or a sign-in key")
+	}
+	passphrase := func() ([]byte, error) { return keyfile.Passphrase("FGA_KEY_PASSPHRASE", *passphraseFile) }
+	// Without $FGA_MCP_TOKEN, the account (an MCP account, with keys of its
+	// own) signs its tokens with its sign-in key (signin.go).
+	var tokens tokenSource = fixedToken(token)
+	if token == "" {
+		signer, err := loadSigner(*dir, "fga-mcp-bridge", passphrase)
+		if err != nil {
+			return err
+		}
+		if signer == nil {
+			return errors.New("mcp-bridge needs $FGA_MCP_TOKEN or a sign-in key in its key directory")
+		}
+		tokens = signer
 	}
 	// An agent acting for a user names its delegation; the MCP role binds
 	// the session to it, and the decision role checks that it names this
@@ -46,14 +60,14 @@ func mcpBridge(args []string) error {
 	if dlg != "" && !mcpwire.ValidDelegation(dlg) {
 		return errors.New("$FGA_MCP_DELEGATION is not a delegation ID")
 	}
-	c, err := loadClient(*dir, func() ([]byte, error) { return keyfile.Passphrase("FGA_KEY_PASSPHRASE", *passphraseFile) })
+	c, err := loadClient(*dir, passphrase)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	b, err := mcpbridge.New(ctx, mcpbridge.Deps{UpstreamURL: *upstream, HTTP: &http.Client{Transport: bearer{token: token, delegation: dlg},
+	b, err := mcpbridge.New(ctx, mcpbridge.Deps{UpstreamURL: *upstream, HTTP: &http.Client{Transport: bearer{tokens: tokens, delegation: dlg},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		Key: c.Recipient, Trust: c.Trust, SignerStatus: c.SignerStatus, Logger: log})
 	if err != nil {
@@ -64,13 +78,33 @@ func mcpBridge(args []string) error {
 	return b.Serve(ctx, &mcp.StdioTransport{})
 }
 
+// mcpAudience is the MCP role's token audience.
+const mcpAudience = "fga-mcp"
+
+// tokenSource returns a token for an audience.
+type tokenSource interface {
+	Token(audience string) (string, error)
+}
+
+// fixedToken is $FGA_MCP_TOKEN.
+type fixedToken string
+
+func (t fixedToken) Token(string) (string, error) { return string(t), nil }
+
 // bearer is a transport that presents the MCP token and, for an agent,
 // its delegation.
-type bearer struct{ token, delegation string }
+type bearer struct {
+	tokens     tokenSource
+	delegation string
+}
 
 func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	token, err := b.tokens.Token(mcpAudience)
+	if err != nil {
+		return nil, err
+	}
 	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer "+b.token)
+	r.Header.Set("Authorization", "Bearer "+token)
 	if b.delegation != "" {
 		r.Header.Set(mcpwire.DelegationHeader, b.delegation)
 	}

@@ -90,6 +90,9 @@ func Handler(c Config) http.Handler {
 	route("POST /v1/admin/identities/{id}/disable", s.disableIdentity)
 	route("POST /v1/admin/identities/{id}/capabilities/grant", s.grant)
 	route("POST /v1/admin/identities/{id}/capabilities/revoke", s.revoke)
+	route("GET /v1/admin/identities/{id}/sign-in-keys", s.listSignInKeys)
+	route("POST /v1/admin/identities/{id}/sign-in-keys", s.addSignInKey)
+	route("POST /v1/admin/identities/{id}/sign-in-keys/{fp}/remove", s.removeSignInKey)
 	route("GET /v1/admin/delegations", s.listDelegations)
 	route("POST /v1/admin/delegations", s.addDelegation)
 	route("POST /v1/admin/delegations/{id}/revoke", s.revokeDelegation)
@@ -670,7 +673,7 @@ func (s *server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, adminops.ErrInvalid), errors.Is(err, catalog.ErrBadDelegation):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, catalog.ErrNoRow):
-		writeError(w, http.StatusNotFound, "no such identity, delegation, source or data tool")
+		writeError(w, http.StatusNotFound, "no such identity, delegation, source, data tool or sign-in key")
 	case errors.Is(err, catalog.ErrSelfReview):
 		writeError(w, http.StatusForbidden, "the author of a draft cannot review it; another administrator does")
 	case errors.Is(err, catalog.ErrDraftConflict), errors.Is(err, catalog.ErrDisabled):

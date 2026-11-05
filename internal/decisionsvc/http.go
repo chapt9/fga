@@ -96,6 +96,27 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.DecidePublic(r.Context(), token, req))
 	})
+	// A gateway (the MCP role), which keeps no catalog, looks up the
+	// ACTIVE sign-in key that signed a user's token here, for its own
+	// token check; the decisions it then asks for check the token again.
+	mux.HandleFunc("GET /v1/sign-in-keys/{fingerprint}", func(w http.ResponseWriter, r *http.Request) {
+		adapter, err := adapterOf(r)
+		if err != nil || len(s.d.Gateways[adapter]) == 0 || s.d.SignInKeys == nil {
+			http.Error(w, "not a gateway", http.StatusForbidden)
+			return
+		}
+		k, found, err := s.d.SignInKeys(r.URL.Query().Get("tenant"), r.PathValue("fingerprint"))
+		switch {
+		case err != nil:
+			http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
+			return
+		case !found:
+			http.Error(w, "no active sign-in key", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(SignInKeyAnswer{Principal: k.Principal, PublicKey: k.Public, Limits: k.Limits})
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -128,3 +149,10 @@ func (s *Service) admit(w http.ResponseWriter, caller string) (func(), bool) {
 }
 
 func encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+// SignInKeyAnswer is the answer of GET /v1/sign-in-keys/{fingerprint}.
+type SignInKeyAnswer struct {
+	Principal string          `json:"principal"`
+	PublicKey []byte          `json:"public_key"`
+	Limits    authn.KeyLimits `json:"limits"`
+}

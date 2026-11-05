@@ -356,7 +356,10 @@ func NewWith(t testing.TB, opts Options) *Stack {
 	if st.Issuer, err = authn.NewIssuer("fga-dev", "tok-1", tokPriv, now); err != nil {
 		t.Fatal(err)
 	}
-	tokens := authn.NewVerifier("fga-dev", map[string]ed25519.PublicKey{"tok-1": tokPub}, now)
+	// The stack accepts tokens signed with sign-in keys too, looked up in
+	// its catalog (docs/design/sign-in-keys.md).
+	signInKeys := st.Catalog.SignInKeyLookup(5 * time.Second)
+	tokens := authn.NewVerifier("fga-dev", map[string]ed25519.PublicKey{"tok-1": tokPub}, now).AcceptSignInKeys(signInKeys)
 	st.Tokens = tokens
 	st.Decisions, err = decisionsvc.New(decisionsvc.Deps{Decider: decider, Gate: g, Releases: releases, Resolver: resolver, Types: types,
 		Operations: registry.CoreOperations(types), Authority: st.Catalog, Signer: signer, Outbox: st.Catalog,
@@ -364,7 +367,8 @@ func NewWith(t testing.TB, opts Options) *Stack {
 		Audiences: []string{content.Audience, content.KeysAudience, ToolsAudience}, MaxAge: 30 * time.Second, Limits: decisionsvc.Limits{MaxChecks: 50, Deadline: 5 * time.Second},
 		Now: now, Authn: tokens, AdapterAudiences: map[string][]string{StorageAdapter: {content.Audience}, "keys-1": {content.KeysAudience},
 			MCPAdapter: {MCPAudience}, ToolsAdapter: {ToolsAudience}}, PublicAudience: PublicAudience, ToolOperations: st.Catalog, Lineage: st.Catalog,
-		Gateways: map[string][]string{MCPAdapter: {content.Audience, ToolsAudience}}, SelfVerifier: st.Verifier(content.Audience)})
+		Gateways: map[string][]string{MCPAdapter: {content.Audience, ToolsAudience}}, SelfVerifier: st.Verifier(content.Audience),
+		SignInKeys: signInKeys})
 	if err != nil {
 		t.Fatal(err)
 	}
