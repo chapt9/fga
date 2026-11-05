@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -71,10 +72,35 @@ type SignInKey struct {
 // every token, with no cache, so a removed key stops at once.
 type SignInKeys func(tenant, fingerprint string) (key SignInKey, ok bool, err error)
 
-// AcceptSignInKeys lets v accept key-signed tokens, with keys from keys.
+// MaxSignInLookups bounds the sign-in key lookups one verifier runs at
+// once. A lookup comes before a token's signature can be checked, so
+// without a bound a flood of made-up tokens would queue a catalog query,
+// or a call to the decision role, for every request; over the bound a
+// token is refused at once, closed (security review of 5 November 2026,
+// finding 3). Every role's verifier has it (AcceptSignInKeys).
+const MaxSignInLookups = 16
+
+var errLookupsBusy = errors.New("too many sign-in key lookups in progress")
+
+// AcceptSignInKeys lets v accept key-signed tokens, with keys from keys,
+// at most MaxSignInLookups lookups at a time.
 func (v *Verifier) AcceptSignInKeys(keys SignInKeys) *Verifier {
-	v.signIn = keys
+	v.signIn = bounded(keys, MaxSignInLookups)
 	return v
+}
+
+// bounded runs at most n of keys' lookups at once; one more fails at once.
+func bounded(keys SignInKeys, n int) SignInKeys {
+	slots := make(chan struct{}, n)
+	return func(tenant, fingerprint string) (SignInKey, bool, error) {
+		select {
+		case slots <- struct{}{}:
+		default:
+			return SignInKey{}, false, errLookupsBusy
+		}
+		defer func() { <-slots }()
+		return keys(tenant, fingerprint)
+	}
 }
 
 var fingerprintText = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

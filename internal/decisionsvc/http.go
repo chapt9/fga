@@ -105,6 +105,14 @@ func (s *Service) Handler(adapterOf AdapterOf) http.Handler {
 			http.Error(w, "not a gateway", http.StatusForbidden)
 			return
 		}
+		// A lookup takes one of the gateway's request slots, as its
+		// decisions do, so a flood of them cannot exhaust the catalog
+		// (security review of 5 November 2026, finding 3).
+		release, ok := s.admit(w, adapter)
+		if !ok {
+			return
+		}
+		defer release()
 		k, found, err := s.d.SignInKeys(r.URL.Query().Get("tenant"), r.PathValue("fingerprint"))
 		switch {
 		case err != nil:

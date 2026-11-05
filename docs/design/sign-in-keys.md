@@ -33,7 +33,8 @@ The check reads the issuer only to choose this path. It then verifies everything
 - **Turning it on.** A role accepts key-signed tokens when its `token_issuer` has `"sign_in_keys": true` (`IssuerConfig.VerifierWith`).
 - **Storage, keys, tools, decision and `fga-admin serve`** look keys up in their catalog (`catalog.Store.ActiveSignInKey`): an ACTIVE key of an enabled identity.
 - **The decision role** verifies the token again, independently, as for any first-hop evidence.
-- **The MCP role** has no catalog. It looks keys up at the decision role: `GET /v1/sign-in-keys/{fingerprint}?tenant=T`, answered only to a configured gateway adapter, with the owner, public key and limits.
+- **The MCP role** has no catalog. It looks keys up at the decision role: `GET /v1/sign-in-keys/{fingerprint}?tenant=T`, answered only to a configured gateway adapter, with the owner, public key and limits. Each lookup takes one of the gateway's request slots there, as its decisions do.
+- **Lookups are bounded.** A lookup comes before the token's signature can be checked, so each role's verifier runs at most 16 at once (`authn.MaxSignInLookups`); a token over the bound is refused at once (security review of 5 November 2026, finding 3).
 
 ## Limits
 

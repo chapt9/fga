@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +124,60 @@ func TestSignInTokens(t *testing.T) {
 	}
 	if c, err := f.verifier().Verify(good, "fga-storage"); err != nil || c.Limits.MaxLabel != "internal" || c.Limits.Spaces[0] != "greenhouse" {
 		t.Errorf("limits with the claims: %+v, %v", c.Limits, err)
+	}
+}
+
+// TestSignInLookupsAreBounded is the regression test of the security
+// review of 5 November 2026, finding 3: a key lookup runs before a
+// token's signature is checked, so made-up tokens queued one lookup each.
+// Now at most MaxSignInLookups run at once, and a token over the bound
+// is refused at once, without a lookup; the bound frees as lookups end.
+func TestSignInLookupsAreBounded(t *testing.T) {
+	f := newSignInFixture(t)
+	release := make(chan struct{})
+	entered := make(chan struct{}, MaxSignInLookups+1)
+	var calls atomic.Int32
+	v := NewVerifier(DevIssuer, nil, func() time.Time { return f.now }).AcceptSignInKeys(func(tenant, fp string) (SignInKey, bool, error) {
+		calls.Add(1)
+		entered <- struct{}{}
+		<-release
+		return SignInKey{Tenant: "t-acme", Principal: "dana", Public: f.pub}, true, nil
+	})
+	good, err := SignInToken(f.priv, f.fp, "t-acme", "dana", "fga", "fga-storage", f.now, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range MaxSignInLookups {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := v.Verify(good, "fga-storage"); err != nil {
+				t.Errorf("a token within the bound: %v", err)
+			}
+		}()
+	}
+	for range MaxSignInLookups {
+		<-entered
+	}
+	over := make(chan error, 1)
+	go func() { _, err := v.Verify(good, "fga-storage"); over <- err }()
+	select {
+	case err := <-over:
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "too many") {
+			t.Fatalf("a token over the bound: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("a token over the bound waited for a lookup")
+	}
+	if n := calls.Load(); n != MaxSignInLookups {
+		t.Fatalf("%d lookups ran, want %d", n, MaxSignInLookups)
+	}
+	close(release)
+	wg.Wait()
+	if _, err := v.Verify(good, "fga-storage"); err != nil {
+		t.Fatalf("once the lookups ended: %v", err)
 	}
 }
 
